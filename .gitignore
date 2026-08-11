@@ -1,0 +1,19 @@
+# Built binaries
+mdfix/mdfix
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# prosevary local DB / caches
+prosevary/data/*.sqlite
+prosevary/data/*.sqlite-*
+
+# Editor / OS
+*.swp
+*.swo
+*~
+.DS_Store
+*.bak

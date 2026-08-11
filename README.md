@@ -1,0 +1,82 @@
+# mdtools
+
+Private toolkit for markdown structure and controlled prose variation.
+
+| Tool | Language | Job |
+|---|---|---|
+| **mdfix** | Ragel → C | Deterministic markdown auto-fixer (lists, headings, Chicago passes, …) |
+| **prosevary** | Python 3 | Generate-then-gate lexical variation (freeze terms, embeddings, local LLM) |
+
+These used to be copy-pasted across `slow32-book`, `mush`, `religions`, and others.
+This repo is the source of truth.
+
+## Canonical history (mdfix)
+
+As of the import (2026-08-11), copies ranked:
+
+1. **`slow32-book/mdfix.rl`** — newest; adds `--no-arrow-aside` (notation arrows stay `→`)
+2. **`mush/mdfix.rl`** — one feature behind (missing that flag)
+3. **recycledreply / religions / slow-32 examples** — older shared baseline
+
+Import took (1). Downstream trees should install from here instead of vendoring.
+
+## Build & install
+
+### Requirements
+
+- **mdfix:** `cc`, optionally `ragel` (to regenerate `mdfix.c` from `mdfix.rl`)
+- **prosevary:** Python 3.10+, `PyYAML`; optional Ollama / sentence-transformers
+
+### Install to `~/.local`
+
+```bash
+make install PREFIX=$HOME/.local
+# ensure ~/.local/bin is on PATH
+mdfix -h
+prosevary --help
+```
+
+Or work from a clone without installing:
+
+```bash
+make -C mdfix
+./mdfix/mdfix -n --no-arrow-aside chapter.md
+
+PYTHONPATH=. python3 -m prosevary -v chapter.md
+```
+
+### Book / mush consumers
+
+```makefile
+MDFIX    ?= mdfix
+PROSEVARY ?= prosevary
+
+fix-md:
+	$(MDFIX) -i -v --no-arrow-aside *.md
+```
+
+For the SLOW-32 book series, **always** pass `--no-arrow-aside`. The default
+arrow→em-dash pass is correct for pure prose projects (e.g. mush) and wrong
+for technical notation pipelines (`C → IR → asm`).
+
+## Layout
+
+```text
+mdfix/           # Ragel source, generated C, Makefile
+prosevary/        # Python package (python -m prosevary)
+scripts/          # install helpers
+Makefile          # top-level build/install
+```
+
+## prosevary status
+
+Scaffold: segmentation, freeze extraction, SQLite synonym/cache schema,
+embed/LLM backends (Ollama / ST / offline hash), dry-run pipeline.
+Not a silent CI auto-fixer — human `git diff` before commit.
+
+Optional later: gRPC `VarySentence` service for warm model residency
+(Hyperia-style composition with embed-svc / local-model adapter).
+
+## License
+
+Private. All rights reserved unless noted otherwise.
