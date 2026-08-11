@@ -202,6 +202,20 @@ class Store:
         self.conn.commit()
         return int(cur.lastrowid)
 
+    def get_run(self, run_id: int) -> Optional[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT * FROM runs WHERE id = ?", (run_id,)
+        ).fetchone()
+
+    def decisions_for_run(self, run_id: int) -> List[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            SELECT sent_index, original, candidate, cosine, status, reason
+            FROM decisions WHERE run_id = ? ORDER BY sent_index
+            """,
+            (run_id,),
+        ).fetchall()
+
     def log_decision(
         self,
         run_id: int,

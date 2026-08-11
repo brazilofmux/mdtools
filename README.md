@@ -56,7 +56,7 @@ fix-md:
 ```
 
 For the SLOW-32 book series, **always** pass `--no-arrow-aside`. The default
-arrow→em-dash pass is correct for pure prose projects (e.g. mush) and wrong
+arrow→em-dash pass is correct for pure prose projects (e.g., mush) and wrong
 for technical notation pipelines (`C → IR → asm`).
 
 ## Layout
@@ -71,8 +71,10 @@ Makefile          # top-level build/install
 ## prosevary status
 
 Scaffold: segmentation, freeze extraction, SQLite synonym/cache schema,
-embed/LLM backends (Ollama / ST / offline hash), dry-run pipeline.
-Not a silent CI auto-fixer — human `git diff` before commit.
+embed/LLM backends (Ollama / ST / offline hash), dry-run pipeline, and
+advisory `--report` editorial metrics. Not a silent CI auto-fixer — human
+`git diff` before commit. Expect a long road to `mdfix`-grade maturity; the
+segmenter is the pacing item.
 
 Optional later: gRPC `VarySentence` service for warm model residency
 (Hyperia-style composition with embed-svc / local-model adapter).

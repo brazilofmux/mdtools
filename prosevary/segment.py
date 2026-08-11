@@ -178,8 +178,14 @@ def split_sentences(prose: str) -> List[Tuple[int, int, str]]:
     out: List[Tuple[int, int, str]] = []
     for a, b in spans:
         chunk = prose[a:b]
-        if chunk.strip():
-            out.append((a, b, chunk))
+        if not chunk.strip():
+            continue
+        # Trailing whitespace belongs to the gap between sentences, not to the
+        # sentence. The final span runs to end-of-region, so leaving the
+        # newline inside it means an accepted rewrite silently eats it.
+        # reconstruct() re-emits anything outside a span verbatim.
+        trimmed = chunk.rstrip()
+        out.append((a, a + len(trimmed), trimmed))
     return out
 
 

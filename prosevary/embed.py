@@ -41,6 +41,9 @@ def cosine(a: Sequence[float], b: Sequence[float]) -> float:
 
 class Embedder(ABC):
     model_id: str
+    # False when cosine on this backend is not meaningfully semantic, so
+    # callers can report that the tau gate is decorative.
+    semantic: bool = True
 
     @abstractmethod
     def embed(self, text: str) -> List[float]:
@@ -63,6 +66,8 @@ class HashEmbedder(Embedder):
     Useful for scaffolding and freeze/pipeline tests without a model.
     Cosine is only weakly semantic — do not trust τ on this backend.
     """
+
+    semantic = False
 
     def __init__(self, dim: int = 256):
         self.dim = dim

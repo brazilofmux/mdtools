@@ -44,6 +44,21 @@ class PipelineResult:
         return sum(1 for d in self.decisions if d.status == "kept")
 
 
+def active_gates(embedder: Embedder, judge: Judge) -> List[str]:
+    """
+    Names of the gates that actually assess a candidate on these backends.
+
+    Offline fallbacks (HashEmbedder, NullJudge) are inert: reporting them as
+    though they ran would overstate how much a rewrite was vetted.
+    """
+    gates = ["freeze"]
+    if getattr(embedder, "semantic", True):
+        gates.append("tau")
+    if getattr(judge, "enforcing", True):
+        gates.append("judge")
+    return gates
+
+
 def run_pipeline(
     doc: Document,
     store: Store,
@@ -59,6 +74,12 @@ def run_pipeline(
     max_sentences: Optional[int] = None,
 ) -> PipelineResult:
     rng = random.Random(seed)
+    gates = active_gates(embedder, judge)
+    passed_reason = "passed " + "+".join(gates)
+    # A non-semantic embedder must not gate. Its cosine is a token-overlap
+    # score, so it rates a one-word synonym swap ~0.92 and a genuine rewrite
+    # ~0.24 — exactly backwards. Still computed and logged as telemetry.
+    tau_enforced = "tau" in gates
     glossary = glossary_terms if glossary_terms is not None else set()
     # merge DB freeze terms
     glossary = set(glossary) | set(store.all_freeze_terms())
@@ -100,7 +121,7 @@ def run_pipeline(
             cvec = embedder.embed_cached(cand, store)
             cos = cosine(orig_vec, cvec)
             last_cos = cos
-            if cos < tau:
+            if tau_enforced and cos < tau:
                 last_status = "reject-tau"
                 last_reason = f"cosine {cos:.4f} < tau {tau}"
                 continue
@@ -124,7 +145,7 @@ def run_pipeline(
                 candidate=chosen,
                 cosine=chosen_cos,
                 status="accepted",
-                reason="passed freeze+tau+judge",
+                reason=passed_reason,
             )
         else:
             reason = (
