@@ -91,6 +91,12 @@ up to three spaces, pandoc's `markdown` reader does not, and pandoc is the
 output dialect. The text line may itself be indented 0–3, may look like a thematic
 break (`-----` under `-----` is a heading), and must be a single line.
 
+Front matter opens only when line 1 is exactly `---` (trailing whitespace
+allowed, a fourth dash disqualifies) **and** a closing `---` or `...` follows.
+An unclosed opener is a thematic break, not an unterminated metadata block:
+treating it as one meant a single mis-read line froze the whole document
+(#64).
+
 `reference_def` and `footnote_def` carry no counterpart in Pandoc's block list
 at all — like front matter, they are *definitions*, and `[id]: http://x` on its
 own yields an empty block list. They are separate kinds rather than paragraphs

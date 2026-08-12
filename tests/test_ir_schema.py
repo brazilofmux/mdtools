@@ -469,6 +469,37 @@ class BlockKindTests(IRTestCase):
         self.assertEqual(len(code), 1)
         self.assertEqual((code[0]["line"], code[0]["endLine"]), (3, 5))
 
+    def test_unclosed_front_matter_does_not_swallow_the_file(self) -> None:
+        # Issue #64. `---` with no closer is a thematic break, and treating
+        # it as an unterminated metadata block froze the whole document:
+        # every block came back protected and mdfix reported the file clean.
+        self.assertEqual(self._kinds("---\n\n# H\n\nBody.\n"),
+                         ["thematic_break", "heading", "paragraph"])
+
+    def test_a_delimiter_is_exactly_three_dashes(self) -> None:
+        # The old test accepted `---` plus a space plus anything, so a Pandoc
+        # dash row at line 1 opened front matter.
+        # pandoc: HorizontalRule + Para. The point is that it is not front
+        # matter — before #64 this opened a block that ran to EOF.
+        self.assertEqual(self._kinds("---    ----\n12     34\n"),
+                         ["thematic_break", "paragraph"])
+        self.assertNotIn("frontmatter", self._kinds("----\ntitle: T\n----\n"))
+
+    def test_trailing_whitespace_after_the_delimiter_is_allowed(self) -> None:
+        self.assertEqual(self._kinds("---   \ntitle: T\n---\n\n# H\n"),
+                         ["frontmatter", "heading"])
+
+    def test_a_dot_delimiter_closes_front_matter(self) -> None:
+        # Pandoc accepts `...` as a terminator; mdfix did not, so the block
+        # was unclosed and ran to EOF.
+        record = self._ir("---\ntitle: T\n...\n\n# H\n")[1]
+        self.assertEqual(record["kind"], "frontmatter")
+        self.assertEqual((record["line"], record["endLine"]), (1, 3))
+
+    def test_empty_front_matter(self) -> None:
+        self.assertEqual(self._kinds("---\n---\n\n# H\n"),
+                         ["frontmatter", "heading"])
+
     def test_frontmatter_only_at_the_top(self) -> None:
         self.assertEqual(self._kinds("---\na: 1\n---\n"), ["frontmatter"])
         # A later `---` is a thematic break, not a second front matter.

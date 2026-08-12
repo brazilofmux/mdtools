@@ -430,11 +430,55 @@ static int is_code_fence(const char *line)
 }
 
 /* YAML frontmatter delimiter: exactly "---" then whitespace/EOL */
+/*
+ * A YAML metadata delimiter is exactly three of its character and then
+ * nothing but whitespace. The old test accepted `---` followed by a space
+ * and anything after it, so a Pandoc dash row (`---    ----`) or any
+ * thematic break at line 1 opened front matter — and since an unclosed
+ * opener ran to EOF, one mis-read line swallowed the document.
+ *
+ * Verified with `pandoc -t json`: `----` is not a delimiter (four dashes
+ * parse as a table row), `---   ` is, and `...` closes a block that `---`
+ * opened.
+ */
+static int fmatter_delim_of(const char *line, char c)
+{
+    if (line[0] != c || line[1] != c || line[2] != c)
+        return 0;
+    int i = 3;
+    if (line[i] == c)
+        return 0;               /* four or more is not a delimiter */
+    while (line[i] == ' ' || line[i] == '\t')
+        i++;
+    return line[i] == '\0';
+}
+
 static int is_fmatter_delim(const char *line)
 {
-    return line[0] == '-' && line[1] == '-' && line[2] == '-'
-        && (line[3] == '\0' || line[3] == '\n' || line[3] == '\r'
-            || line[3] == ' '  || line[3] == '\t');
+    return fmatter_delim_of(line, '-');
+}
+
+/* Pandoc closes a metadata block with `---` or `...`. */
+static int is_fmatter_close(const char *line)
+{
+    return fmatter_delim_of(line, '-') || fmatter_delim_of(line, '.');
+}
+
+/*
+ * Index of the closing delimiter, or -1 when this file has no front matter.
+ *
+ * Returning -1 for an unclosed opener is the point. Pandoc reads `---` with
+ * no closer as a thematic break and carries on parsing; treating it as an
+ * unterminated metadata block instead freezes everything after it.
+ */
+static int frontmatter_close_line(void)
+{
+    if (nlines == 0 || !is_fmatter_delim(lines[0]))
+        return -1;
+    for (int j = 1; j < nlines; j++)
+        if (is_fmatter_close(lines[j]))
+            return j;
+    return -1;
 }
 
 static enum linetype classify(const char *line)
@@ -1420,17 +1464,16 @@ static void emit_ir(FILE *out, const char *source)
     ir_cursor = 0;
     ir_prev_last = -1;
 
-    /* Front matter: only the very first line can open it, and an unclosed
-     * block runs to EOF — both exactly as process() treats it. */
-    if (nlines > 0 && is_fmatter_delim(lines[0])) {
-        int j = 1;
-        while (j < nlines && !is_fmatter_delim(lines[j]))
-            j++;
-        int end = (j < nlines) ? j : nlines - 1;
-        ir_block(out, "frontmatter", 0, end, 1);
-        i = end + 1;
-        prev_content_type = LT_TEXT;
-        had_blank = 0;
+    /* Front matter: only the very first line can open it, and only when a
+     * closing delimiter exists. An unclosed `---` is a thematic break. */
+    {
+        int close = frontmatter_close_line();
+        if (close > 0) {
+            ir_block(out, "frontmatter", 0, close, 1);
+            i = close + 1;
+            prev_content_type = LT_TEXT;
+            had_blank = 0;
+        }
     }
 
     for (; i < nlines; i++) {
@@ -3013,7 +3056,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 3017 "mdfix.c"
+#line 3060 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -3021,20 +3064,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 3025 "mdfix.c"
+#line 3068 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 3410 "mdfix.rl"
+#line 3453 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 3161 "mdfix.rl"
+#line 3204 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -3074,7 +3117,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 3037 "mdfix.rl"
+#line 3080 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial || ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -3111,19 +3154,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 3030 "mdfix.rl"
+#line 3073 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 3030 "mdfix.rl"
+#line 3073 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 3345 "mdfix.rl"
+#line 3388 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -3147,7 +3190,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 3390 "mdfix.rl"
+#line 3433 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -3168,7 +3211,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 3368 "mdfix.rl"
+#line 3411 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -3191,13 +3234,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 3410 "mdfix.rl"
+#line 3453 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 3290 "mdfix.rl"
+#line 3333 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -3220,7 +3263,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 3203 "mdfix.rl"
+#line 3246 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_CHAR('.');
@@ -3271,13 +3314,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 3410 "mdfix.rl"
+#line 3453 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 3253 "mdfix.rl"
+#line 3296 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -3315,7 +3358,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 3312 "mdfix.rl"
+#line 3355 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -3349,7 +3392,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 3099 "mdfix.rl"
+#line 3142 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -3362,7 +3405,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 3073 "mdfix.rl"
+#line 3116 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -3376,7 +3419,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 3111 "mdfix.rl"
+#line 3154 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -3389,7 +3432,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 3086 "mdfix.rl"
+#line 3129 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -3403,7 +3446,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 3123 "mdfix.rl"
+#line 3166 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -3442,7 +3485,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 3030 "mdfix.rl"
+#line 3073 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -3455,7 +3498,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 3459 "mdfix.c"
+#line 3502 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -3481,7 +3524,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 3485 "mdfix.c"
+#line 3528 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -3525,7 +3568,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 3529 "mdfix.c"
+#line 3572 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -3574,7 +3617,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 3578 "mdfix.c"
+#line 3621 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -3593,7 +3636,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 3597 "mdfix.c"
+#line 3640 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -3619,7 +3662,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 3623 "mdfix.c"
+#line 3666 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -3668,7 +3711,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 3672 "mdfix.c"
+#line 3715 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -3748,7 +3791,7 @@ case 13:
 
 	}
 
-#line 3417 "mdfix.rl"
+#line 3460 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';
@@ -3795,9 +3838,13 @@ static int apply_scanner(char *line, int linenum)
 
 static void process(FILE *out)
 {
+    /*
+     * Decided once, up front: front matter exists only when line 0 opens it
+     * *and* a closing delimiter follows. Deciding line by line let an
+     * unclosed `---` swallow the file, since nothing ever reconsidered.
+     */
+    const int fmatter_close = frontmatter_close_line();
     int in_frontmatter     = 0;
-    int frontmatter_opened = 0;   /* have we seen the opening --- ? */
-    int frontmatter_closed = 0;   /* have we seen the closing --- ? */
     struct fence_state fence = {0, 0, 0, 0, 0};
     enum raw_html_kind raw_html = RAW_HTML_NONE;
 
@@ -3825,9 +3872,8 @@ static void process(FILE *out)
          * Only the very first line can open frontmatter.
          * The next --- closes it.  After that, --- is a thematic break.
          */
-        if (type == LT_FMATTER && !fence.active) {
-            if (!frontmatter_opened && i == 0) {
-                frontmatter_opened = 1;
+        if (type == LT_FMATTER && !fence.active && fmatter_close > 0) {
+            if (i == 0) {
                 in_frontmatter = 1;
                 fix_trailing_ws(line, i + 1);
                 fprintf(out, "%s\n", line);
@@ -3835,8 +3881,7 @@ static void process(FILE *out)
                 had_blank = 0;
                 continue;
             }
-            if (in_frontmatter && !frontmatter_closed) {
-                frontmatter_closed = 1;
+            if (i == fmatter_close) {
                 in_frontmatter = 0;
                 fix_trailing_ws(line, i + 1);
                 fprintf(out, "%s\n", line);
