@@ -64,8 +64,10 @@ Each has an identifier so issues and tests can cite it.
 
 - **I1.1 UTF-8 or refuse.** Input that is not well-formed UTF-8 is rejected
   with a diagnostic naming the byte offset. It is never parsed, and never
-  copied into the IR. *(Today: accepted silently, and the invalid bytes reach
-  the JSON, producing output no parser will read.)*
+  copied into the IR. NUL is refused with it: U+0000 is valid Unicode but
+  every fixer is `strlen`-bounded, so a NUL silently truncated the line and
+  dropped the rest on output. A leading BOM is stripped, matching Pandoc,
+  and offsets skip past it so I1.3 still holds. *(Issue #53, done.)*
 - **I1.2 Normalization is reported, not performed.** L1 detects text that is
   not NFC and says so. It does not rewrite it. Normalizing belongs to L3 —
   see Q2.
