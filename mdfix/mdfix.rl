@@ -85,6 +85,7 @@ enum linetype {
     LT_ORDERED,
     LT_FMATTER,
     LT_CODEFENCE,
+    LT_INDENTCODE,  /* four-column-indented code; emitted verbatim */
     LT_TEXT         /* everything else: paragraphs, blockquotes, etc. */
 };
 
@@ -411,6 +412,47 @@ static int is_list_type(enum linetype t)
 static int is_list_continuation(const char *line)
 {
     return (line[0] == ' ' && line[1] == ' ');
+}
+
+/*
+ * Column where a list item's content begins — past the marker and the
+ * whitespace after it. `- x` gives 2, `1. x` gives 3, `    - x` gives 6.
+ *
+ * Indented code nested in a list starts four columns past *this*, not four
+ * past the margin, so without it either list continuations get frozen as code
+ * or code inside a list gets rewritten as prose. Returns -1 when the line is
+ * not a list item.
+ */
+static int list_content_column(const char *line)
+{
+    int chars = 0;
+    int col = indent_columns(line, &chars);
+    int i = chars;
+
+    if (line[i] == '-' || line[i] == '*' || line[i] == '+') {
+        col++;
+        i++;
+    } else if (isdigit((unsigned char)line[i])) {
+        while (isdigit((unsigned char)line[i])) {
+            col++;
+            i++;
+        }
+        if (line[i] != '.' && line[i] != ')')
+            return -1;
+        col++;
+        i++;
+    } else {
+        return -1;
+    }
+
+    int spaces = 0;
+    while (line[i] == ' ' || line[i] == '\t') {
+        col += (line[i] == '\t') ? (MD_TAB_STOP - (col % MD_TAB_STOP)) : 1;
+        i++;
+        spaces++;
+    }
+    /* A marker with no following space is not a list item. */
+    return spaces ? col : -1;
 }
 
 static int is_table_line(const char *line)
@@ -2014,6 +2056,7 @@ static void process(FILE *out)
 
     enum linetype prev_content_type = LT_BLANK;
     int prev_was_list_ctx = 0;    /* was previous content in a list context? */
+    int list_content_col = 0;     /* content column of the enclosing list item */
     int had_blank = 1;            /* start-of-file counts as separation */
 
     for (int i = 0; i < nlines; i++) {
@@ -2068,13 +2111,26 @@ static void process(FILE *out)
         /* ── Opening code fence ── */
         struct fence_state opener;
         if (parse_fence_opener(line, &opener)) {
+            /*
+             * A fence strictly left of the enclosing item's content column
+             * (indent < list_content_col) ends the list; one at or past that
+             * column is inside the item and leaves it standing. Without this
+             * the list context leaked past the fenced block, so a later
+             * four-column code block was measured against a stale threshold
+             * and went back to being rewritten as prose.
+             */
+            if (indent_columns(line, NULL) < list_content_col) {
+                prev_was_list_ctx = 0;
+                list_content_col = 0;
+            }
             flush_paragraph(out);
             fix_fence_canonical(line, i + 1, 1);
             opener.open_line = i + 1;
             fence = opener;
             fix_trailing_ws(line, i + 1);
             fprintf(out, "%s\n", line);
-            prev_content_type = LT_TEXT;
+            /* Not LT_TEXT: indented code may follow a fence with no blank. */
+            prev_content_type = LT_CODEFENCE;
             had_blank = 0;
             continue;
         }
@@ -2101,11 +2157,38 @@ static void process(FILE *out)
         }
 
         /*
-         * Determine if we're in a "list context" — the previous content
-         * was a list item or a continuation of one (indented text).
+         * Indented code block: four or more columns past the enclosing
+         * container's content column.
+         *
+         * Two rules keep this from swallowing prose. Indented code cannot
+         * interrupt a paragraph, so a line following text is a lazy
+         * continuation no matter how far it is indented. And the threshold is
+         * relative to the list item's content column, so a continuation line
+         * inside `- item` stays prose while genuinely nested code does not.
+         *
+         * Everything here is emitted verbatim: mdfix was converting arrows
+         * and reflowing long lines inside blocks that Pandoc and CommonMark
+         * both parse as code.
          */
-        int in_list_context = is_list_type(prev_content_type)
-            || (prev_content_type == LT_TEXT && prev_was_list_ctx);
+        if (indent_columns(line, NULL) >= list_content_col + 4
+            && (had_blank || prev_content_type != LT_TEXT))
+        {
+            type = LT_INDENTCODE;
+            flush_paragraph(out);
+            fprintf(out, "%s\n", line);
+            prev_content_type = type;
+            had_blank = 0;
+            /* prev_was_list_ctx is left alone: code nested in a list item is
+             * still inside that item. */
+            continue;
+        }
+
+        /*
+         * Determine if we're in a "list context" — the previous content
+         * was a list item, or a continuation / nested block that left the
+         * list flag standing (text, fence, or indented code inside an item).
+         */
+        int in_list_context = is_list_type(prev_content_type) || prev_was_list_ctx;
 
         /*
          * Fix 2: Insert blank line BEFORE list.
@@ -2173,12 +2256,27 @@ static void process(FILE *out)
         }
 
         /* Update list context tracking */
-        if (is_list_type(type))
+        if (is_list_type(type)) {
             prev_was_list_ctx = 1;
-        else if (type == LT_TEXT && is_list_continuation(line))
-            prev_was_list_ctx = prev_was_list_ctx; /* preserve */
-        else
+            int content_col = list_content_column(line);
+            if (content_col >= 0)
+                list_content_col = content_col;
+        } else if (type == LT_TEXT && is_list_continuation(line)) {
+            prev_was_list_ctx = 1;
+            /*
+             * A nested item raises list_content_col; an outdented continuation
+             * of the outer item must restore the outer content column, or
+             * later nested code is measured against the inner threshold and
+             * rewritten as prose.
+             */
+            int cont_col = indent_columns(line, NULL);
+            if (cont_col < list_content_col)
+                list_content_col = cont_col;
+        } else {
             prev_was_list_ctx = 0;
+            /* Left the list: indented code is measured from the margin again. */
+            list_content_col = 0;
+        }
 
         prev_content_type = type;
         had_blank = 0;

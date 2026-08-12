@@ -93,6 +93,7 @@ enum linetype {
     LT_ORDERED,
     LT_FMATTER,
     LT_CODEFENCE,
+    LT_INDENTCODE,  /* four-column-indented code; emitted verbatim */
     LT_TEXT         /* everything else: paragraphs, blockquotes, etc. */
 };
 
@@ -419,6 +420,47 @@ static int is_list_type(enum linetype t)
 static int is_list_continuation(const char *line)
 {
     return (line[0] == ' ' && line[1] == ' ');
+}
+
+/*
+ * Column where a list item's content begins — past the marker and the
+ * whitespace after it. `- x` gives 2, `1. x` gives 3, `    - x` gives 6.
+ *
+ * Indented code nested in a list starts four columns past *this*, not four
+ * past the margin, so without it either list continuations get frozen as code
+ * or code inside a list gets rewritten as prose. Returns -1 when the line is
+ * not a list item.
+ */
+static int list_content_column(const char *line)
+{
+    int chars = 0;
+    int col = indent_columns(line, &chars);
+    int i = chars;
+
+    if (line[i] == '-' || line[i] == '*' || line[i] == '+') {
+        col++;
+        i++;
+    } else if (isdigit((unsigned char)line[i])) {
+        while (isdigit((unsigned char)line[i])) {
+            col++;
+            i++;
+        }
+        if (line[i] != '.' && line[i] != ')')
+            return -1;
+        col++;
+        i++;
+    } else {
+        return -1;
+    }
+
+    int spaces = 0;
+    while (line[i] == ' ' || line[i] == '\t') {
+        col += (line[i] == '\t') ? (MD_TAB_STOP - (col % MD_TAB_STOP)) : 1;
+        i++;
+        spaces++;
+    }
+    /* A marker with no following space is not a list item. */
+    return spaces ? col : -1;
 }
 
 static int is_table_line(const char *line)
@@ -1577,7 +1619,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 1581 "mdfix.c"
+#line 1623 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -1585,20 +1627,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 1589 "mdfix.c"
+#line 1631 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 1958 "mdfix.rl"
+#line 2000 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 1709 "mdfix.rl"
+#line 1751 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -1638,7 +1680,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 1601 "mdfix.rl"
+#line 1643 "mdfix.rl"
 	{te = p+1;{
                 if (ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -1675,19 +1717,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 1594 "mdfix.rl"
+#line 1636 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 1594 "mdfix.rl"
+#line 1636 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 1893 "mdfix.rl"
+#line 1935 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -1711,7 +1753,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 1938 "mdfix.rl"
+#line 1980 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -1732,7 +1774,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 1916 "mdfix.rl"
+#line 1958 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -1755,13 +1797,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 1958 "mdfix.rl"
+#line 2000 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 1838 "mdfix.rl"
+#line 1880 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -1784,7 +1826,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 1751 "mdfix.rl"
+#line 1793 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_CHAR('.');
@@ -1835,13 +1877,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 1958 "mdfix.rl"
+#line 2000 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 1801 "mdfix.rl"
+#line 1843 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -1879,7 +1921,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 1860 "mdfix.rl"
+#line 1902 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -1913,7 +1955,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 1655 "mdfix.rl"
+#line 1697 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -1922,7 +1964,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 1637 "mdfix.rl"
+#line 1679 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -1932,7 +1974,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 1663 "mdfix.rl"
+#line 1705 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -1941,7 +1983,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 1646 "mdfix.rl"
+#line 1688 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -1951,7 +1993,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 1671 "mdfix.rl"
+#line 1713 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -1990,7 +2032,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 1594 "mdfix.rl"
+#line 1636 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -2003,7 +2045,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 2007 "mdfix.c"
+#line 2049 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -2029,7 +2071,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 2033 "mdfix.c"
+#line 2075 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -2073,7 +2115,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 2077 "mdfix.c"
+#line 2119 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -2122,7 +2164,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 2126 "mdfix.c"
+#line 2168 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -2141,7 +2183,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 2145 "mdfix.c"
+#line 2187 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -2167,7 +2209,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 2171 "mdfix.c"
+#line 2213 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -2216,7 +2258,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 2220 "mdfix.c"
+#line 2262 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -2296,7 +2338,7 @@ case 13:
 
 	}
 
-#line 1965 "mdfix.rl"
+#line 2007 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';
@@ -2349,6 +2391,7 @@ static void process(FILE *out)
 
     enum linetype prev_content_type = LT_BLANK;
     int prev_was_list_ctx = 0;    /* was previous content in a list context? */
+    int list_content_col = 0;     /* content column of the enclosing list item */
     int had_blank = 1;            /* start-of-file counts as separation */
 
     for (int i = 0; i < nlines; i++) {
@@ -2403,13 +2446,26 @@ static void process(FILE *out)
         /* ── Opening code fence ── */
         struct fence_state opener;
         if (parse_fence_opener(line, &opener)) {
+            /*
+             * A fence strictly left of the enclosing item's content column
+             * (indent < list_content_col) ends the list; one at or past that
+             * column is inside the item and leaves it standing. Without this
+             * the list context leaked past the fenced block, so a later
+             * four-column code block was measured against a stale threshold
+             * and went back to being rewritten as prose.
+             */
+            if (indent_columns(line, NULL) < list_content_col) {
+                prev_was_list_ctx = 0;
+                list_content_col = 0;
+            }
             flush_paragraph(out);
             fix_fence_canonical(line, i + 1, 1);
             opener.open_line = i + 1;
             fence = opener;
             fix_trailing_ws(line, i + 1);
             fprintf(out, "%s\n", line);
-            prev_content_type = LT_TEXT;
+            /* Not LT_TEXT: indented code may follow a fence with no blank. */
+            prev_content_type = LT_CODEFENCE;
             had_blank = 0;
             continue;
         }
@@ -2436,11 +2492,38 @@ static void process(FILE *out)
         }
 
         /*
-         * Determine if we're in a "list context" — the previous content
-         * was a list item or a continuation of one (indented text).
+         * Indented code block: four or more columns past the enclosing
+         * container's content column.
+         *
+         * Two rules keep this from swallowing prose. Indented code cannot
+         * interrupt a paragraph, so a line following text is a lazy
+         * continuation no matter how far it is indented. And the threshold is
+         * relative to the list item's content column, so a continuation line
+         * inside `- item` stays prose while genuinely nested code does not.
+         *
+         * Everything here is emitted verbatim: mdfix was converting arrows
+         * and reflowing long lines inside blocks that Pandoc and CommonMark
+         * both parse as code.
          */
-        int in_list_context = is_list_type(prev_content_type)
-            || (prev_content_type == LT_TEXT && prev_was_list_ctx);
+        if (indent_columns(line, NULL) >= list_content_col + 4
+            && (had_blank || prev_content_type != LT_TEXT))
+        {
+            type = LT_INDENTCODE;
+            flush_paragraph(out);
+            fprintf(out, "%s\n", line);
+            prev_content_type = type;
+            had_blank = 0;
+            /* prev_was_list_ctx is left alone: code nested in a list item is
+             * still inside that item. */
+            continue;
+        }
+
+        /*
+         * Determine if we're in a "list context" — the previous content
+         * was a list item, or a continuation / nested block that left the
+         * list flag standing (text, fence, or indented code inside an item).
+         */
+        int in_list_context = is_list_type(prev_content_type) || prev_was_list_ctx;
 
         /*
          * Fix 2: Insert blank line BEFORE list.
@@ -2508,12 +2591,27 @@ static void process(FILE *out)
         }
 
         /* Update list context tracking */
-        if (is_list_type(type))
+        if (is_list_type(type)) {
             prev_was_list_ctx = 1;
-        else if (type == LT_TEXT && is_list_continuation(line))
-            prev_was_list_ctx = prev_was_list_ctx; /* preserve */
-        else
+            int content_col = list_content_column(line);
+            if (content_col >= 0)
+                list_content_col = content_col;
+        } else if (type == LT_TEXT && is_list_continuation(line)) {
+            prev_was_list_ctx = 1;
+            /*
+             * A nested item raises list_content_col; an outdented continuation
+             * of the outer item must restore the outer content column, or
+             * later nested code is measured against the inner threshold and
+             * rewritten as prose.
+             */
+            int cont_col = indent_columns(line, NULL);
+            if (cont_col < list_content_col)
+                list_content_col = cont_col;
+        } else {
             prev_was_list_ctx = 0;
+            /* Left the list: indented code is measured from the margin again. */
+            list_content_col = 0;
+        }
 
         prev_content_type = type;
         had_blank = 0;
