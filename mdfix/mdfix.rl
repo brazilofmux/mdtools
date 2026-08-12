@@ -281,18 +281,44 @@ struct fence_state {
  *   side: a deeper-indented delimiter *inside* the block is content, and
  *   treating it as a closer would truncate the block.
  */
+/*
+ * Markdown indentation, measured in columns rather than characters.
+ *
+ * CommonMark uses a tab stop of four, so a leading tab is four columns of
+ * indentation even though it is one byte. Counting bytes let a tab-indented
+ * delimiter pass a three-space limit and close a fence the dialect still
+ * considers open — mdfix then applied prose fixes to the remaining code.
+ *
+ * out_chars receives the byte length of that whitespace, which callers still
+ * need when copying the original indentation verbatim.
+ */
+#define MD_TAB_STOP 4
+
+static int indent_columns(const char *line, int *out_chars)
+{
+    int col = 0;
+    int i = 0;
+    while (line[i] == ' ' || line[i] == '\t') {
+        col += (line[i] == '\t') ? (MD_TAB_STOP - (col % MD_TAB_STOP)) : 1;
+        i++;
+    }
+    if (out_chars)
+        *out_chars = i;
+    return col;
+}
+
 static int fence_prefix(
     const char *line,
-    int max_indent,
-    int *indent,
+    int max_indent_cols,
+    int *indent_chars,
+    int *indent_cols,
     char *marker,
     int *run_length,
     const char **rest)
 {
     int i = 0;
-    while (line[i] == ' ' || line[i] == '\t')
-        i++;
-    if (max_indent >= 0 && i > max_indent)
+    int cols = indent_columns(line, &i);
+    if (max_indent_cols >= 0 && cols > max_indent_cols)
         return 0;
 
     char c = line[i];
@@ -304,7 +330,8 @@ static int fence_prefix(
     if (i - start < 3)
         return 0;
 
-    *indent = start;
+    *indent_chars = start;
+    *indent_cols = cols;
     *marker = c;
     *run_length = i - start;
     *rest = line + i;
@@ -315,9 +342,10 @@ static int fence_prefix(
 static int parse_fence_opener(const char *line, struct fence_state *fence)
 {
     const char *rest;
-    int indent, run_length;
+    int indent_chars, indent_cols, run_length;
     char marker;
-    if (!fence_prefix(line, -1, &indent, &marker, &run_length, &rest))
+    if (!fence_prefix(line, -1, &indent_chars, &indent_cols,
+                      &marker, &run_length, &rest))
         return 0;
     if (marker == '`' && strchr(rest, '`') != NULL)
         return 0;
@@ -325,16 +353,18 @@ static int parse_fence_opener(const char *line, struct fence_state *fence)
     fence->active = 1;
     fence->marker = marker;
     fence->length = run_length;
-    fence->indent = indent;
+    /* Columns: the closer's allowance is measured relative to this. */
+    fence->indent = indent_cols;
     return 1;
 }
 
 static int is_fence_closer(const char *line, const struct fence_state *fence)
 {
     const char *rest;
-    int indent, run_length;
+    int indent_chars, indent_cols, run_length;
     char marker;
-    if (!fence_prefix(line, fence->indent + 3, &indent, &marker, &run_length, &rest))
+    if (!fence_prefix(line, fence->indent + 3, &indent_chars, &indent_cols,
+                      &marker, &run_length, &rest))
         return 0;
     if (marker != fence->marker || run_length < fence->length)
         return 0;
@@ -728,14 +758,16 @@ static int fix_fence_canonical(char *line, int linenum, int is_opening)
         return 0;
 
     const char *rest;
-    int indent, run_length;
+    int indent_chars, indent_cols, run_length;
     char marker;
-    if (!fence_prefix(line, -1, &indent, &marker, &run_length, &rest))
+    if (!fence_prefix(line, -1, &indent_chars, &indent_cols,
+                      &marker, &run_length, &rest))
         return 0;
 
     char buf[MAX_LINE];
     int bi = 0;
-    for (int k = 0; k < indent && bi < MAX_LINE - 1; k++)
+    /* Bytes, not columns: the original indentation is copied verbatim. */
+    for (int k = 0; k < indent_chars && bi < MAX_LINE - 1; k++)
         buf[bi++] = line[k];
     for (int k = 0; k < run_length && bi < MAX_LINE - 1; k++)
         buf[bi++] = marker;

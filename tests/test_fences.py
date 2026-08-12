@@ -5,7 +5,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from prosevary.segment import _fence_opener, _is_fence_closer, parse
+from prosevary.segment import (
+    LineKind,
+    _fence_opener,
+    _is_fence_closer,
+    indent_columns,
+    parse,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -195,6 +201,77 @@ class UnterminatedFenceTests(unittest.TestCase):
         self.assertIn(f"{good_path}: clean. Nothing to fix.", result.stdout)
         # And the unterminated warning must only be attributed once (bad.md).
         self.assertEqual(result.stdout.count("unterminated code fence"), 1)
+
+
+class IndentColumnTests(unittest.TestCase):
+    """Indentation is columns, not characters (issue #29)."""
+
+    def test_tab_advances_to_the_next_multiple_of_four(self) -> None:
+        for text, columns, chars in [
+            ("    x", 4, 4),
+            ("\tx", 4, 1),
+            (" \tx", 4, 2),
+            ("   \tx", 4, 4),
+            ("\t\tx", 8, 2),
+            ("x", 0, 0),
+            ("", 0, 0),
+        ]:
+            with self.subTest(text=text):
+                self.assertEqual(indent_columns(text), (columns, chars))
+
+    def test_tab_indented_delimiter_does_not_close_a_fence(self) -> None:
+        # One tab is four columns, past the three-column allowance, so this
+        # is fence content. Counting characters made it a closer and exposed
+        # the rest of the block — including the real closer — as prose.
+        fence = _fence_opener("```sh")
+        assert fence is not None
+        self.assertFalse(_is_fence_closer("\t```", fence))
+        self.assertTrue(_is_fence_closer("   ```", fence))
+        self.assertFalse(_is_fence_closer("    ```", fence))
+
+    def test_tab_closed_fence_exposes_nothing(self) -> None:
+        source = "```sh\ncode\n\t```\nAfter prose.\n"
+        doc = parse(source)
+        self.assertTrue(all(l.kind is LineKind.FENCE for l in doc.lines))
+        self.assertEqual(
+            [s.text for r in doc.regions for s in r.sentences], []
+        )
+        self.assertEqual(doc.reconstruct({}), source)
+
+    def test_tab_indented_opener_allows_a_tab_indented_closer(self) -> None:
+        # The allowance is relative: an opener at four columns tolerates a
+        # closer at four through seven.
+        fence = _fence_opener("\t```sh")
+        assert fence is not None
+        self.assertEqual(fence.indent, 4)
+        self.assertTrue(_is_fence_closer("\t```", fence))
+        self.assertTrue(_is_fence_closer("       ```", fence))
+        self.assertFalse(_is_fence_closer("\t    ```", fence))
+
+
+class MdfixTabFenceTests(unittest.TestCase):
+    def test_mdfix_does_not_fix_prose_after_a_tab_delimiter(self) -> None:
+        # mdfix reported an arrow rewrite on a line that is still code.
+        source = "```sh\ncode\n\t```\nAfter A → B.\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "in.md"
+            path.write_text(source, encoding="utf-8")
+            result = subprocess.run(
+                [str(MDFIX), "-n", "-v", str(path)],
+                capture_output=True, text=True,
+            )
+            self.assertNotIn("arrow aside", result.stdout + result.stderr)
+
+    def test_mdfix_still_fixes_prose_after_a_real_closer(self) -> None:
+        source = "```sh\ncode\n```\nAfter A → B.\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "in.md"
+            path.write_text(source, encoding="utf-8")
+            result = subprocess.run(
+                [str(MDFIX), "-n", "-v", str(path)],
+                capture_output=True, text=True,
+            )
+            self.assertIn("arrow aside", result.stdout + result.stderr)
 
 
 if __name__ == "__main__":
