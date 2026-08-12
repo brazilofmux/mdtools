@@ -6,6 +6,7 @@ Private toolkit for markdown structure and controlled prose variation.
 |---|---|---|
 | **mdfix** | Ragel → C | Deterministic markdown auto-fixer (lists, headings, Chicago passes, …) |
 | **mdquery** | Python 3 | Structural queries and extraction, via mdfix's IR |
+| **mdterms** | Python 3 | Glossary and terminology enforcement; emits edits for mdfix |
 | **prosevary** | Python 3 | Generate-then-gate lexical variation (freeze terms, embeddings, local LLM) |
 
 These used to be copy-pasted across `slow32-book`, `mush`, `religions`, and others.
@@ -52,6 +53,7 @@ make install PREFIX=$HOME/.local
 # ensure ~/.local/bin is on PATH
 mdfix -h
 mdquery --help
+mdterms --help
 prosevary --help
 ```
 
@@ -116,6 +118,7 @@ emphasis, bold colons, blockquote spacing) are still wanted without a profile.
 ```text
 mdfix/           # Ragel source, generated C, Makefile
 mdquery/          # Python package (python -m mdquery)
+mdterms/          # Python package (python -m mdterms)
 prosevary/        # Python package (python -m prosevary)
 docs/             # architecture decisions (start with architecture.md)
 scripts/          # install helpers
