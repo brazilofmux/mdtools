@@ -10,6 +10,10 @@ Private toolkit for markdown structure and controlled prose variation.
 These used to be copy-pasted across `slow32-book`, `mush`, `religions`, and others.
 This repo is the source of truth.
 
+Read [docs/dialect-policy.md](docs/dialect-policy.md) before adding a pass or a
+tool. It fixes the input dialects, the single canonical output profile, and the
+rule that Markdown grammar lives in exactly one implementation.
+
 ## Canonical history (mdfix)
 
 As of the import (2026-08-11), copies ranked:
@@ -87,6 +91,7 @@ for technical notation pipelines (`C → IR → asm`).
 ```text
 mdfix/           # Ragel source, generated C, Makefile
 prosevary/        # Python package (python -m prosevary)
+docs/             # architecture decisions (start with dialect-policy.md)
 scripts/          # install helpers
 Makefile          # top-level build/install
 ```
