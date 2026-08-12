@@ -6,6 +6,7 @@ Private toolkit for markdown structure and controlled prose variation.
 |---|---|---|
 | **mdfix** | Ragel → C | Deterministic markdown auto-fixer (lists, headings, Chicago passes, …) |
 | **mdquery** | Python 3 | Structural queries and extraction, via mdfix's IR |
+| **mdterms** | Python 3 | Glossary and terminology enforcement; emits edits for mdfix |
 | **prosevary** | Python 3 | Generate-then-gate lexical variation (freeze terms, embeddings, local LLM) |
 
 These used to be copy-pasted across `slow32-book`, `mush`, `religions`, and others.
@@ -43,6 +44,7 @@ Import took (1). Downstream trees should install from here instead of vendoring.
 
 - **mdfix:** `cc`, optionally `ragel` (to regenerate `mdfix.c` from `mdfix.rl`)
 - **mdquery:** Python 3.10+ (stdlib only; needs a built `mdfix`)
+- **mdterms:** Python 3.10+, `PyYAML`; needs a built `mdfix`
 - **prosevary:** Python 3.10+, `PyYAML`; optional Ollama / sentence-transformers
 
 ### Install to `~/.local`
@@ -52,6 +54,7 @@ make install PREFIX=$HOME/.local
 # ensure ~/.local/bin is on PATH
 mdfix -h
 mdquery --help
+mdterms --help
 prosevary --help
 ```
 
@@ -116,6 +119,7 @@ emphasis, bold colons, blockquote spacing) are still wanted without a profile.
 ```text
 mdfix/           # Ragel source, generated C, Makefile
 mdquery/          # Python package (python -m mdquery)
+mdterms/          # Python package (python -m mdterms)
 prosevary/        # Python package (python -m prosevary)
 docs/             # architecture decisions (start with architecture.md)
 scripts/          # install helpers
