@@ -82,7 +82,18 @@ repo adding a rule — the same trick pytest and ruff use for their caches.
 
 The glossary is found by walking up from the **input file**, then from cwd, so
 `prosevary book/ch/1.md` picks up `book/glossary_terms.yaml` regardless of
-where you invoked it. `--glossary` naming a missing file is a hard error, not
+**YAML is authoritative for glossary terms; the database is a cache of it.**
+Each run replaces the glossary-sourced freeze rows with exactly what the file
+contains, so deleting, renaming, or re-casing an entry takes effect on the
+next run — and an empty or absent glossary clears them. Import used to only
+add, so a deleted entry stayed frozen until someone hand-edited the database.
+
+Freeze terms added by hand or by a pattern rule are a different source and are
+never touched by an import. A term appearing in both stays hand-curated: it is
+frozen either way, and converting it would make it vanish the next time the
+YAML entry changed. That split is what #16's terminology layer will build on.
+
+`--glossary` naming a missing file is a hard error, not
 a silently empty freeze set.
 
 `--report-run` resolves the same default, so run IDs are per-database; the

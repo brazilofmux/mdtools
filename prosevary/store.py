@@ -207,12 +207,36 @@ class Store:
         )
 
     def import_glossary(self, terms: Iterable[str]) -> int:
-        n = 0
-        for t in terms:
-            self.upsert_freeze(t, "glossary")
-            n += 1
+        """
+        Make the glossary-sourced rows exactly `terms`.
+
+        **YAML is authoritative for these rows; the table is a cache of it.**
+        The previous version only upserted, so deleting or renaming an entry in
+        glossary_terms.yaml never unfroze it — the term stayed frozen until
+        someone hand-edited or deleted the database, contradicting the README's
+        description of the glossary as a file loaded at startup.
+
+        Passing an empty set therefore clears them, which is what "the project
+        has no glossary any more" means.
+
+        Rows added by hand or by a pattern rule are a different source and are
+        left alone. A term present in both stays whatever it already was: it is
+        frozen either way, and silently converting a manual row to a
+        glossary-backed one would make it vanish on the next import.
+        """
+        wanted = [t for t in terms if t]
+        self.conn.execute("DELETE FROM freeze_terms WHERE source = 'glossary'")
+        for term in wanted:
+            # DO NOTHING, not DO UPDATE: the conflict target collates NOCASE,
+            # so this fires when a manually curated row already covers the
+            # term. Deleting first is what lets a pure case change take effect.
+            self.conn.execute(
+                "INSERT INTO freeze_terms (term, source) VALUES (?, 'glossary') "
+                "ON CONFLICT(term) DO NOTHING",
+                (term,),
+            )
         self.conn.commit()
-        return n
+        return len(wanted)
 
     def all_freeze_terms(self) -> List[str]:
         rows = self.conn.execute("SELECT term FROM freeze_terms").fetchall()

@@ -391,8 +391,11 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     glossary = load_glossary_terms(gloss_path) if gloss_path is not None else set()
-    if glossary:
-        store.import_glossary(glossary)
+    # Unconditional, including the empty case. Importing only a non-empty
+    # glossary left the same staleness the sync was meant to remove: deleting
+    # the last entry, or the file itself, kept every term frozen from the
+    # database. YAML is authoritative for glossary-sourced rows.
+    store.import_glossary(glossary)
 
     source = args.input.read_text(encoding="utf-8")
     doc = parse(source)
