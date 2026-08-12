@@ -1,10 +1,15 @@
 """
 Freeze-term extraction: tokens that must survive any candidate rewrite.
+
+Checks are multiset-aware: protected content must appear the same number of
+times in the candidate as in the original. Presence-only checks allowed a
+rewrite to drop one of two ``LLVM`` tokens or one of two identical code spans.
 """
 
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, List, Optional, Set
@@ -15,14 +20,13 @@ except ImportError:  # pragma: no cover
     yaml = None  # type: ignore
 
 
-# Inline code, either `...` or ``...``
-_INLINE_CODE = re.compile(r"`+[^`]+`+")
 # Paths and home-relative roots used in this series
 _PATHISH = re.compile(
     r"(?:~/[\w./+-]+|/Users/[\w./+-]+|/(?:tmp|var|usr|home)/[\w./+-]+)"
 )
-# Bare hex-ish commit SHAs (7–40 hex)
-_SHA = re.compile(r"\b[0-9a-f]{7,40}\b")
+# Bare hex-ish commit SHAs (7–40 hex). Require at least one digit so English
+# words like "defaced" are not frozen as SHAs.
+_SHA = re.compile(r"\b(?=[0-9a-f]*\d)[0-9a-f]{7,40}\b")
 # ALL-CAPS tech tokens of length >= 2 (DBT, LLVM, MMIO, W^X is special)
 _SHOUT = re.compile(r"\b[A-Z][A-Z0-9][A-Z0-9+^_-]*\b")
 # SLOW-32 and similar product names
@@ -56,28 +60,110 @@ _INLINE_HTML_TAG = re.compile(r"</?[a-zA-Z][\w-]*(?:\s[^<>]*)?/?>")
 _FOOTNOTE_REF = re.compile(r"\[\^[^\]]+\]")
 _CITATION = re.compile(r"(?<![A-Za-z0-9])@[\w:-]+")
 _PANDOC_ATTR = re.compile(r"\{[#.][^}]*\}")
+# Glossary / shout tokens that look like identifiers: match on token boundaries
+# so "run" does not freeze inside "runtime".
+_IDENT_TERM = re.compile(r"^[\w][\w'-]*$", re.UNICODE)
 
 
 @dataclass
 class FreezeSet:
-    """Terms that must appear unchanged in an accepted candidate."""
+    """Terms and spans that must survive unchanged in an accepted candidate."""
 
     terms: Set[str] = field(default_factory=set)
-    # Exact substrings extracted from *this sentence* (code spans, paths)
+    # Exact substrings extracted from *this sentence* (code spans, paths, …).
+    # A list, not a set: each occurrence is protected separately.
     spans: List[str] = field(default_factory=list)
 
     def check(self, original: str, candidate: str) -> Optional[str]:
         """
         Return None if candidate preserves freezes, else a short reason string.
+
+        Multiset rules: each protected span/term must appear the same number of
+        times in the candidate as in the original. Presence-only checks let a
+        rewrite drop one of two identical tokens and still pass.
         """
-        for span in self.spans:
-            if span and span not in candidate:
-                return f"missing span: {span!r}"
-        # Case-sensitive for spans; glossary terms allow the form present in original
+        need_spans = Counter(s for s in self.spans if s)
+        for span, n in need_spans.items():
+            got = candidate.count(span)
+            if got != n:
+                return f"span {span!r}: need {n}, have {got}"
+
         for term in self.terms:
-            if term in original and term not in candidate:
-                return f"missing term: {term!r}"
+            n_orig = count_term_occurrences(original, term)
+            if n_orig == 0:
+                continue
+            n_cand = count_term_occurrences(candidate, term)
+            if n_cand != n_orig:
+                return f"term {term!r}: need {n_orig}, have {n_cand}"
         return None
+
+
+def count_term_occurrences(text: str, term: str) -> int:
+    """Count protected term occurrences under glossary boundary rules."""
+    if not term:
+        return 0
+    return len(list(_term_finditer(text, term)))
+
+
+def _term_finditer(text: str, term: str):
+    """
+    Yield match objects for term in text.
+
+    Identifier-like terms (letters/digits/underscore/hyphen/apostrophe) use
+    token boundaries so a glossary entry `run` does not match inside `runtime`.
+    Multi-word or punctuated terms match as exact substrings (case-sensitive).
+    """
+    if _IDENT_TERM.match(term):
+        # Avoid \b: it treats '-' as a boundary, which splits SLOW-32 oddly.
+        pat = re.compile(
+            r"(?<![\w'])" + re.escape(term) + r"(?![\w'])",
+            re.UNICODE,
+        )
+        return pat.finditer(text)
+    return re.finditer(re.escape(term), text)
+
+
+def extract_inline_code_spans(text: str) -> List[str]:
+    """
+    Inline code spans with matching backtick-run lengths (CommonMark-style).
+
+    An opener of n backticks closes only on a later run of exactly n backticks.
+    Shorter or longer runs inside the content do not close the span. The old
+    regex `` `+[^`]+`+ `` could not express that and mis-parsed nested ticks.
+    """
+    out: List[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] != "`":
+            i += 1
+            continue
+        j = i
+        while j < n and text[j] == "`":
+            j += 1
+        open_len = j - i
+        # Scan for a closer of the same length.
+        k = j
+        found = False
+        while k < n:
+            if text[k] != "`":
+                k += 1
+                continue
+            end = k
+            while end < n and text[end] == "`":
+                end += 1
+            close_len = end - k
+            if close_len == open_len:
+                out.append(text[i:end])
+                i = end
+                found = True
+                break
+            # Different length — content, keep scanning past this run.
+            k = end
+        if not found:
+            # Unclosed opener: skip it so we do not freeze a lone tick run.
+            i = j
+    return out
 
 
 def load_glossary_terms(path: Path) -> Set[str]:
@@ -102,8 +188,8 @@ def load_glossary_terms(path: Path) -> Set[str]:
 def sentence_freeze(text: str, glossary: Iterable[str]) -> FreezeSet:
     """Build a FreezeSet for one sentence against a global glossary."""
     fs = FreezeSet()
-    for m in _INLINE_CODE.finditer(text):
-        fs.spans.append(m.group(0))
+    for span in extract_inline_code_spans(text):
+        fs.spans.append(span)
     # Structural inlines before looser token patterns so destinations stay whole.
     for pat in (
         _INLINE_IMAGE,
@@ -127,9 +213,9 @@ def sentence_freeze(text: str, glossary: Iterable[str]) -> FreezeSet:
     for m in _PRODUCT.finditer(text):
         fs.spans.append(m.group(0))
 
-    # Glossary terms present as whole-ish substrings (case-sensitive first)
+    # Glossary: only forms that appear on token boundaries (case-sensitive).
     for term in glossary:
-        if term and term in text:
+        if term and count_term_occurrences(text, term) > 0:
             fs.terms.add(term)
 
     # Shout-case tokens often load-bearing even if not in glossary yet
