@@ -156,19 +156,30 @@ not a second canonical output and no pass may trade Pandoc correctness for it.
 Canonical output uses literal `—`, `–`, `…`, `“`, `”`, `‘`, `’`. It never emits
 `--`, `...`, or straight quotes as typographic shorthand.
 
-The reason is not aesthetic. Verified against pandoc 3.10:
+The reason is not aesthetic. Verified by rendering to HTML both ways — pandoc's
+default `+smart`, and the `-smart` a consumer may pass and we do not control:
 
-| Source | With `+smart` | With `-smart` |
+| Source | Renders under `+smart` | Renders under `-smart` |
 |---|---|---|
-| `"quoted"` | `Quoted DoubleQuote [...]` | plain `Str "\"quoted\""` |
-| `--`, `...` | `Str "\8211"`, `Str "\8230"` | literal ASCII |
-| `“quoted”` | `Str "\8220quoted\8221"` | `Str "\8220quoted\8221"` |
-| `—`, `…` | `Str "\8212"`, `Str "\8230"` | identical |
+| `"quoted"` | “quoted” | "quoted" |
+| `--` | – (en dash) | -- |
+| `...` | … | ... |
+| `“quoted”` | “quoted” | “quoted” |
+| `—` | — | — |
+| `…` | … | … |
 
-ASCII shorthand produces an AST that **depends on a reader flag mdtools does
-not control**. A consumer invoking `pandoc -f markdown-smart` gets a different
-document than one invoking plain `pandoc`. Literal Unicode parses identically
-under both.
+ASCII shorthand **renders differently depending on a flag mdtools does not
+control**, so a consumer invoking `pandoc -f markdown-smart` gets straight
+quotes and literal hyphens where the author meant typography. Worse, `--` does
+not even mean an em dash: Pandoc reads it as an **en dash**, so the shorthand is
+wrong even when smart is on. Literal Unicode renders identically under both.
+
+The rule is stated in terms of rendered output rather than AST shape on
+purpose. Pandoc's internal representation of literal curly quotes is
+version-dependent — 3.10 keeps them as a plain `Str` under both flags, while
+2.x folds them into `Quoted` under `+smart` — but the typography that reaches
+the reader is the same in every combination. It is the output that has to be
+reliable.
 
 Canonical output is therefore **smart-invariant** — it means the same thing
 regardless of how the downstream consumer invokes Pandoc. This is what makes
@@ -289,6 +300,14 @@ all three of header, dash row, and body row; tabs are valid separators in a
 dash row; `<div>` contents are Markdown while `<script>` contents are not. None
 of those were obvious in advance.
 
+Assert on **rendered output, not AST shape**, wherever the two would differ.
+The §4 rule was first written as an AST claim, passed against pandoc 3.10, and
+failed CI against the older Pandoc on the runner — which represents literal
+curly quotes differently while rendering them identically. AST shape is an
+implementation detail that moves between versions; the typography reaching the
+reader is the thing mdtools promises. Where a claim must hold across versions,
+check it against a container (`pandoc/core:2.19`) as well as the local install.
+
 In place today:
 
 - `tests/test_pandoc_equivalence.py` — output reparses to the input's AST.
@@ -299,11 +318,18 @@ In place today:
 - `tests/test_tool_parity.py` — the two implementations agree. Retired once
   §2 is implemented and there is only one implementation to check.
 - `tests/test_span_properties.py` — property tests over span reconstruction.
+- `tests/test_dialect_profile.py` — reads §3's table out of *this document* and
+  asserts it against `pandoc --list-extensions=markdown`, so an upstream
+  default flip fails CI instead of silently changing what our output means. It
+  also asserts the behaviors, since an extension can keep its default while its
+  semantics move.
+
+The document is the source of truth for that test, deliberately. Pinning the
+set in Python instead would let the two drift, which is the failure a policy
+document exists to prevent.
 
 Still needed:
 
-- A CI assertion that the pinned extension set in §3 matches
-  `pandoc --list-extensions=markdown`, so an upstream default flip is caught.
 - Coverage for the §7 gaps, each with the Pandoc AST as the assertion.
 - Round-trip identity for the span applier: an empty edit list must produce
   byte-identical output.

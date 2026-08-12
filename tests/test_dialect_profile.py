@@ -154,22 +154,44 @@ class ProfileBehaviorTests(unittest.TestCase):
         self.assertIn("Emph", native)
         self.assertIn("RawBlock", native)
 
-    def test_literal_unicode_punctuation_is_smart_invariant(self) -> None:
+    def _html(self, source: str, fmt: str) -> str:
+        result = subprocess.run(
+            [PANDOC, "-f", fmt, "-t", "html"],
+            input=source, capture_output=True, text=True, check=True,
+        )
+        return result.stdout
+
+    def test_literal_unicode_punctuation_renders_the_same_either_way(self) -> None:
         # §4, the reason canonical output never emits ASCII shorthand.
+        #
+        # Asserted on rendered output, not on the AST: pandoc's internal
+        # representation of literal curly quotes is version-dependent (3.10
+        # keeps a plain Str under both flags; 2.x folds them into Quoted under
+        # +smart). The typography that reaches the reader is stable in every
+        # combination, and that is the property mdtools actually depends on.
         source = "A “quoted” thing — an ellipsis…\n"
         self.assertEqual(
-            self._native(source, "markdown"),
-            self._native(source, "markdown-smart"),
+            self._html(source, "markdown"),
+            self._html(source, "markdown-smart"),
         )
 
-    def test_ascii_shorthand_is_not_smart_invariant(self) -> None:
-        # The negative that gives the rule its force: had this been invariant
+    def test_ascii_shorthand_renders_differently(self) -> None:
+        # The negative that gives the rule its force: had this been stable
         # too, §4 would be a style preference rather than a correctness one.
         source = 'A "quoted" thing -- an ellipsis...\n'
         self.assertNotEqual(
-            self._native(source, "markdown"),
-            self._native(source, "markdown-smart"),
+            self._html(source, "markdown"),
+            self._html(source, "markdown-smart"),
         )
+        # A consumer passing -smart gets the author's shorthand verbatim.
+        self.assertIn('"quoted"', self._html(source, "markdown-smart"))
+
+    def test_ascii_double_hyphen_is_not_an_em_dash(self) -> None:
+        # `--` reads as an en dash, so the shorthand is wrong even with smart
+        # on. Literal `—` is the only way to mean an em dash.
+        self.assertIn("–", self._html("a -- b\n", "markdown"))
+        self.assertNotIn("—", self._html("a -- b\n", "markdown"))
+        self.assertIn("—", self._html("a — b\n", "markdown"))
 
     def test_tabs_and_spaces_indent_alike(self) -> None:
         # §5. Pandoc expands tabs before parsing, so mdtools measures columns.
