@@ -1082,6 +1082,9 @@ static int is_wrappable_at(const char *line, enum linetype type, int index)
 
 #define IR_SCHEMA "mdtools-ir-3"
 
+static void emit_inline(FILE *out, const char *text, long long base,
+                        int line, int depth, long long parent);
+
 /*
  * A pipe-table delimiter row: `|---|---|`, `--|--`, `|:--|--:|`.
  *
@@ -1556,6 +1559,9 @@ static void ir_emit_heading(FILE *out, int i)
     fputs(",\"plain\":", out);
     ir_json_string(out, plain);
     fputs("}\n", out);
+
+    /* A link in a heading is where anchors and cross-references live. */
+    emit_inline(out, text, line_off[i] + p, i + 1, 1, line_off[i]);
 }
 
 static const char *ir_raw_html_name(enum raw_html_kind kind)
@@ -1644,6 +1650,231 @@ static int item_line_is_plain(int i, int content_col)
     return 1;
 }
 
+
+/* Inline IR at depth>0: links, images, code spans, footnote refs, raw HTML.
+ * Reference/shortcut forms keep labels, not resolved destinations. */
+
+/* A code span: matched backtick runs. Returns total length, or 0. */
+static int inline_code_len(const char *s, int *body_off, int *body_len)
+{
+    if (*s != '`')
+        return 0;
+    int run = 0;
+    while (s[run] == '`')
+        run++;
+    int j = run;
+    while (s[j]) {
+        int close = 0;
+        while (s[j + close] == '`')
+            close++;
+        if (close == run) {
+            *body_off = run;
+            *body_len = j - run;
+            return j + run;
+        }
+        j += close ? close : 1;
+    }
+    return 0;
+}
+
+/* `<http://x>` or `<a@b.com>`: a '<' whose contents hold no space and which
+ * is not a tag. Returns length, or 0. */
+static int inline_autolink_len(const char *s)
+{
+    if (*s != '<')
+        return 0;
+    int i = 1;
+    int has_colon_or_at = 0;
+    for (; s[i] && s[i] != '>'; i++) {
+        if (s[i] == ' ' || s[i] == '\t' || s[i] == '<')
+            return 0;
+        if (s[i] == ':' || s[i] == '@')
+            has_colon_or_at = 1;
+    }
+    return (s[i] == '>' && has_colon_or_at && i > 1) ? i + 1 : 0;
+}
+
+/* `[^label]` — a footnote reference, not a link. */
+static int inline_footnote_ref_len(const char *s, int *label_off, int *label_len)
+{
+    if (s[0] != '[' || s[1] != '^')
+        return 0;
+    int i = 2;
+    for (; s[i] && s[i] != ']'; i++)
+        if (s[i] == '[')
+            return 0;
+    if (s[i] != ']')
+        return 0;
+    *label_off = 2;
+    *label_len = i - 2;
+    return i + 1;
+}
+
+/* `[text][label]` or `[text]`, neither followed by '('. Returns length. */
+static int inline_ref_link_len(const char *s, int *text_off, int *text_len,
+                               int *label_off, int *label_len, int *shortcut)
+{
+    if (*s != '[')
+        return 0;
+    int i = 1, depth = 1;
+    for (; s[i]; i++) {
+        if (s[i] == '\\' && s[i + 1]) { i++; continue; }
+        if (s[i] == '[') depth++;
+        else if (s[i] == ']' && --depth == 0) break;
+    }
+    if (s[i] != ']')
+        return 0;
+    *text_off = 1;
+    *text_len = i - 1;
+    int after = i + 1;
+    if (s[after] == '(')
+        return 0;                      /* inline form; handled elsewhere */
+    if (s[after] == '[') {
+        int j = after + 1;
+        for (; s[j] && s[j] != ']'; j++)
+            if (s[j] == '[')
+                return 0;
+        if (s[j] != ']')
+            return 0;
+        *label_off = after + 1;
+        *label_len = j - (after + 1);
+        *shortcut = 0;
+        return j + 1;
+    }
+    *label_off = 1;
+    *label_len = i - 1;
+    *shortcut = 1;
+    return after;
+}
+
+static void ir_inline(FILE *out, const char *kind, long long start,
+                      long long end, int line, int protectd, int depth,
+                      long long parent)
+{
+    fprintf(out,
+        "{\"kind\":\"%s\",\"start\":%lld,\"end\":%lld,"
+        "\"line\":%d,\"endLine\":%d,\"protected\":%s,"
+        "\"depth\":%d,\"parent\":%lld",
+        kind, start, end, line, line, protectd ? "true" : "false",
+        depth, parent);
+}
+
+static void ir_inline_field(FILE *out, const char *name,
+                            const char *text, int len)
+{
+    char buf[MAX_LINE];
+    int n = len < MAX_LINE - 1 ? len : MAX_LINE - 1;
+    if (n < 0)
+        n = 0;
+    memcpy(buf, text, (size_t)n);
+    buf[n] = '\0';
+    fprintf(out, ",\"%s\":", name);
+    ir_json_string(out, buf);
+}
+
+/*
+ * Walk one line's content (no terminator), emitting inline records.
+ * `base` is the file offset of text[0]; spans are base + index so CRLF
+ * multi-line blocks must call this once per line with that line's line_off.
+ */
+static void emit_inline(FILE *out, const char *text, long long base,
+                        int line, int depth, long long parent)
+{
+    int i = 0;
+    while (text[i]) {
+        if (text[i] == '\\' && text[i + 1]) {
+            i += 2;               /* an escaped bracket opens nothing */
+            continue;
+        }
+
+        int body_off = 0, body_len = 0;
+        int span = inline_code_len(text + i, &body_off, &body_len);
+        if (span) {
+            ir_inline(out, "code_span", base + i, base + i + span, line,
+                      1, depth, parent);
+            ir_inline_field(out, "text", text + i + body_off, body_len);
+            fputs("}\n", out);
+            i += span;
+            continue;
+        }
+
+        if (text[i] == '<') {
+            span = inline_autolink_len(text + i);
+            if (span) {
+                ir_inline(out, "link", base + i, base + i + span, line,
+                          0, depth, parent);
+                ir_inline_field(out, "destination", text + i + 1, span - 2);
+                fputs(",\"form\":\"autolink\"}\n", out);
+                i += span;
+                continue;
+            }
+            span = inline_html_tag_len(text + i);
+            if (span) {
+                ir_inline(out, "raw_inline", base + i, base + i + span,
+                          line, 1, depth, parent);
+                fputs("}\n", out);
+                i += span;
+                continue;
+            }
+        }
+
+        if (text[i] == '[' || (text[i] == '!' && text[i + 1] == '[')) {
+            int image = (text[i] == '!');
+            int off = image ? 1 : 0;
+            int label_off = 0, label_len = 0, shortcut = 0;
+
+            span = inline_footnote_ref_len(text + i, &label_off, &label_len);
+            if (!image && span) {
+                ir_inline(out, "footnote_ref", base + i, base + i + span,
+                          line, 0, depth, parent);
+                ir_inline_field(out, "label", text + i + label_off, label_len);
+                fputs("}\n", out);
+                i += span;
+                continue;
+            }
+
+            int text_off = 0, text_len = 0;
+            span = inline_link_len(text + i, &text_off, &text_len);
+            if (span) {
+                /* Destination is everything between the '(' and the ')'. */
+                int dest_off = text_off + text_len + 2;
+                int dest_len = span - dest_off - 1;
+                ir_inline(out, image ? "image" : "link", base + i,
+                          base + i + span, line, 0, depth, parent);
+                ir_inline_field(out, "text", text + i + text_off, text_len);
+                ir_inline_field(out, "destination", text + i + dest_off,
+                                dest_len > 0 ? dest_len : 0);
+                fputs(",\"form\":\"inline\"}\n", out);
+                i += span;
+                continue;
+            }
+
+            span = inline_ref_link_len(text + i + off, &text_off, &text_len,
+                                       &label_off, &label_len, &shortcut);
+            if (span) {
+                ir_inline(out, image ? "image" : "link", base + i,
+                          base + i + off + span, line, 0, depth, parent);
+                ir_inline_field(out, "text", text + i + off + text_off, text_len);
+                ir_inline_field(out, "label", text + i + off + label_off,
+                                label_len);
+                fprintf(out, ",\"form\":\"%s\"}\n",
+                        shortcut ? "shortcut" : "reference");
+                i += off + span;
+                continue;
+            }
+        }
+        i++;
+    }
+}
+
+/* Scan each line with its real line_off — never invent terminators (CRLF). */
+static void emit_inline_lines(FILE *out, int from, int to, int depth)
+{
+    long long parent = line_off[from];
+    for (int k = from; k <= to; k++)
+        emit_inline(out, lines[k], line_off[k], k + 1, depth, parent);
+}
+
 static void emit_list_children(FILE *out, int from, int to, long long parent)
 {
     int i = from;
@@ -1698,6 +1929,11 @@ static void emit_list_children(FILE *out, int from, int to, long long parent)
                         "\"line\":%d,\"endLine\":%d,\"protected\":false,"
                         "\"depth\":1,\"parent\":%lld}\n",
                         start, end, run_start + 1, j, parent);
+                    for (int k = run_start; k < j; k++) {
+                        int skip = (k == i) ? marker : 0;
+                        emit_inline(out, lines[k] + skip,
+                                    line_off[k] + skip, k + 1, 2, start);
+                    }
                 }
             }
             run_start = -1;
@@ -1775,6 +2011,7 @@ static void emit_ir(FILE *out, const char *source)
                     form = "grid";
                 ir_open(out, "table", i, table_end - 1, 1);
                 fprintf(out, ",\"form\":\"%s\"}\n", form);
+                emit_inline_lines(out, i, table_end - 1, 1);
                 i = table_end - 1;
                 prev_content_type = LT_TABLEBLOCK;
                 had_blank = 0;
@@ -1862,6 +2099,7 @@ static void emit_ir(FILE *out, const char *source)
             if (is_table && end > i) {
                 ir_open(out, "table", i, end, 0);
                 fputs(",\"form\":\"pipe\"}\n", out);
+                emit_inline_lines(out, i, end, 1);
             } else {
                 ir_block(out, "line_block", i, end, 0);
             }
@@ -1914,6 +2152,7 @@ static void emit_ir(FILE *out, const char *source)
             fputs(",\"plain\":", out);
             ir_json_string(out, plain);
             fputs("}\n", out);
+            emit_inline(out, text, line_off[i] + start, i + 1, 1, line_off[i]);
             i++;
             prev_content_type = LT_HEADING;
             list_content_col = 0;
@@ -2020,6 +2259,7 @@ static void emit_ir(FILE *out, const char *source)
                    && is_blockquote_line(lines[j + 1]))
                 j++;
             ir_block(out, "block_quote", i, j, 0);
+            emit_inline_lines(out, i, j, 1);
             i = j;
             prev_content_type = LT_TEXT;
             list_content_col = 0;
@@ -2045,6 +2285,9 @@ static void emit_ir(FILE *out, const char *source)
                 j++;
             }
             ir_block(out, "paragraph", i, j, 0);
+            /* Per-line bases keep CRLF offsets honest; no synthetic join. */
+            for (int k = i; k <= j; k++)
+                emit_inline(out, lines[k], line_off[k], k + 1, 1, line_off[i]);
             i = j;
             prev_content_type = LT_TEXT;
             list_content_col = 0;

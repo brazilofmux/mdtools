@@ -201,6 +201,42 @@ On this repository's markdown that reaches most previously list-trapped
 sentences; remaining opaque items hold nested constructs. Full recursive
 walks (and nested block quotes) are the rest of #65.
 
+## Inline records
+
+Links, images, code spans and footnote references inside prose, so a consumer
+can find them without learning inline Markdown:
+
+```console
+$ mdfix --emit-ir chapter.md | grep '"kind":"link"'
+{"kind":"link","start":4,"end":20,...,"depth":1,"parent":0,"destination":"http://x","text":"text","form":"inline"}
+```
+
+| `kind` | Extra fields |
+|---|---|
+| `link` | `form`, plus `destination` (inline, autolink) or `text` + `label` (reference, shortcut) |
+| `image` | as `link` |
+| `code_span` | `text`; **protected** |
+| `footnote_ref` | `label` |
+| `raw_inline` | — ; **protected** |
+
+`form` is `inline`, `autolink`, `reference` or `shortcut`. Reference and
+shortcut links carry their **label rather than a resolved destination** — the
+consumer already has the `reference_def` records, and holding the document's
+link table in the emitter would buy nothing.
+
+These are **purely additive** — new kinds at `depth > 0`, which the nesting rule
+above already excludes from totality. No existing consumer changed and the
+schema name did not move.
+
+Scanned: paragraphs, headings, prose nested in list items, table cells and
+block quotes. Over this repository's own markdown the link, image and code-span
+counts match `pandoc -t json` exactly, in all thirteen documents.
+
+Cell boundaries are not modelled — a record inside a table locates the
+construct, and a consumer that edits must respect `protected` on the table
+record above it. Emphasis and strong are not emitted; `heading.plain` already
+resolves them where it matters.
+
 ## Known divergences from Pandoc
 
 The IR is mdfix's block segmentation, and mdfix is a line classifier rather
@@ -236,10 +272,12 @@ name, which the header record makes detectable.
 
 ## Not yet in schema 3
 
-- **Inline structure.** Links, images, footnote references, citations, emphasis
-  and inline code are not represented. A consumer that needs them today must
-  slice the span and scan it, which is exactly the grammar leak the boundary
-  exists to prevent — so this is the next thing to add, not a permanent shape.
+- **Remaining inline structure.** Links, images, code spans, footnote
+  references and raw inline HTML are emitted (see [Inline records](#inline-records)).
+  Still missing: emphasis/strong, citations, a full recursive inline tree
+  (nested markup inside link text), cell-level table structure, and title
+  attributes on destinations. Inline `endLine` is the construct's start line;
+  multi-line code spans are not joined across line boundaries.
 - **Partial nesting only.** Schema 3 emits plain list-item prose as nested
   `paragraph` records (`depth` / `parent`). A list is still one parent record,
   not a full tree of items; fence, table, raw HTML, indented code, heading, and

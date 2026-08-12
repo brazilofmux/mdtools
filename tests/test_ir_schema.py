@@ -757,6 +757,117 @@ class StructureNotParagraphTests(IRTestCase):
         )
 
 
+class InlineRecordTests(IRTestCase):
+    """
+    Inline structure: links, images, code spans, footnote references.
+
+    Purely additive — new kinds at depth > 0, which schema 3 already excludes
+    from totality. No consumer changed, which is why the schema name did not.
+    """
+
+    def _inline(self, source: str) -> list[dict]:
+        return [r for r in self._ir_raw(source)
+                if r["kind"] in ("link", "image", "code_span",
+                                 "footnote_ref", "raw_inline")]
+
+    def test_inline_link(self) -> None:
+        record = self._inline("See [text](http://x) here.\n")[0]
+        self.assertEqual(record["kind"], "link")
+        self.assertEqual(record["form"], "inline")
+        self.assertEqual(record["destination"], "http://x")
+        self.assertEqual(record["text"], "text")
+
+    def test_image(self) -> None:
+        record = self._inline("An ![alt](i.png) image.\n")[0]
+        self.assertEqual(record["kind"], "image")
+        self.assertEqual(record["destination"], "i.png")
+
+    def test_autolink(self) -> None:
+        record = self._inline("See <http://x> here.\n")[0]
+        self.assertEqual((record["kind"], record["form"]), ("link", "autolink"))
+        self.assertEqual(record["destination"], "http://x")
+
+    def test_reference_and_shortcut_carry_a_label(self) -> None:
+        # Not resolved here: the consumer already has the reference_def
+        # records, and holding the link table in the emitter buys nothing.
+        ref = self._inline("See [text][id].\n")[0]
+        self.assertEqual((ref["form"], ref["label"], ref["text"]),
+                         ("reference", "id", "text"))
+        short = self._inline("See [id] here.\n")[0]
+        self.assertEqual((short["form"], short["label"]), ("shortcut", "id"))
+
+    def test_code_span_is_protected(self) -> None:
+        record = self._inline("Use `code` here.\n")[0]
+        self.assertEqual(record["kind"], "code_span")
+        self.assertEqual(record["text"], "code")
+        self.assertTrue(record["protected"])
+
+    def test_double_backtick_code_span(self) -> None:
+        record = self._inline("Use ``a `b` c`` here.\n")[0]
+        self.assertEqual(record["text"], "a `b` c")
+
+    def test_footnote_reference(self) -> None:
+        records = self._inline("Text[^1].\n\n[^1]: Note.\n")
+        self.assertEqual(records[0]["kind"], "footnote_ref")
+        self.assertEqual(records[0]["label"], "1")
+
+    def test_an_escaped_bracket_opens_nothing(self) -> None:
+        self.assertEqual(self._inline("See \\[not a link](x) here.\n"), [])
+
+    def test_spans_slice_the_source(self) -> None:
+        source = "See [text](http://x) and `code` here.\n"
+        data = source.encode("utf-8")
+        for record in self._inline(source):
+            with self.subTest(kind=record["kind"]):
+                segment = data[record["start"]:record["end"]].decode()
+                self.assertTrue(segment.startswith(("[", "`", "!", "<")))
+
+    def test_inline_in_a_heading(self) -> None:
+        records = self._inline("# See [text](http://x)\n")
+        self.assertEqual(len(records), 1)
+
+    def test_inline_in_a_setext_heading(self) -> None:
+        records = self._inline("See [text](http://x)\n===\n")
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["kind"], "link")
+
+    def test_crlf_multiline_inline_offsets(self) -> None:
+        # Per-line bases: a construct on line 2 must slice the real file
+        # bytes under CRLF, not a synthetic LF-joined chunk.
+        data = b"first line\r\nSee [text](http://x) here.\r\n"
+        records = [r for r in self._ir_raw(data)
+                   if r["kind"] == "link"]
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(data[record["start"]:record["end"]],
+                         b"[text](http://x)")
+        self.assertEqual(record["line"], 2)
+
+    def test_inline_nested_in_a_list_item(self) -> None:
+        records = self._inline("- item with [a link](http://x)\n")
+        self.assertEqual(len(records), 1)
+        self.assertGreaterEqual(records[0]["depth"], 2)
+
+    def test_inline_in_a_table_cell(self) -> None:
+        # mdlinks would miss five of eleven links in this repository's own
+        # architecture doc without this.
+        records = self._inline("| a | [x](http://y) |\n|---|---|\n| 1 | 2 |\n")
+        self.assertEqual(len(records), 1)
+
+    def test_inline_in_a_block_quote(self) -> None:
+        self.assertEqual(len(self._inline("> guarded by `ImportError` here\n")), 1)
+
+    def test_nothing_inside_a_fence(self) -> None:
+        # A fenced block is verbatim; a backtick pair inside it is content.
+        self.assertEqual(self._inline("```\nUse `code` here.\n```\n"), [])
+
+    def test_records_are_nested_not_top_level(self) -> None:
+        # The additive property: totality still holds over depth-0 records.
+        data = b"See [text](http://x) here.\n"
+        top = [r for r in self._ir_raw(data)[1:] if not r.get("depth")]
+        self.assertEqual(b"".join(data[r["start"]:r["end"]] for r in top), data)
+
+
 class ProtectedFlagTests(IRTestCase):
     """
     `protected` makes dialect-policy §7 machine-readable. A consumer reads it
