@@ -5,6 +5,7 @@ Private toolkit for markdown structure and controlled prose variation.
 | Tool | Language | Job |
 |---|---|---|
 | **mdfix** | Ragel → C | Deterministic markdown auto-fixer (lists, headings, Chicago passes, …) |
+| **mdquery** | Python 3 | Structural queries and extraction, via mdfix's IR |
 | **prosevary** | Python 3 | Generate-then-gate lexical variation (freeze terms, embeddings, local LLM) |
 
 These used to be copy-pasted across `slow32-book`, `mush`, `religions`, and others.
@@ -15,7 +16,8 @@ tool. It fixes the input dialects, the single canonical output profile, and the
 rule that Markdown grammar lives in exactly one implementation.
 [docs/ir-schema.md](docs/ir-schema.md) is the interface that rule implies:
 `mdfix --emit-ir` reports block structure with byte spans, so a consumer never
-has to re-derive the grammar.
+has to re-derive the grammar. [docs/mdquery.md](docs/mdquery.md) is the first
+tool built on it.
 
 ## Canonical history (mdfix)
 
@@ -93,6 +95,7 @@ for technical notation pipelines (`C → IR → asm`).
 
 ```text
 mdfix/           # Ragel source, generated C, Makefile
+mdquery/          # Python package (python -m mdquery)
 prosevary/        # Python package (python -m prosevary)
 docs/             # architecture decisions (start with dialect-policy.md)
 scripts/          # install helpers
