@@ -12,6 +12,7 @@ __pycache__/
 # prosevary local DB / caches
 prosevary/data/*.sqlite
 prosevary/data/*.sqlite-*
+.prosevary/
 
 # Editor / OS
 *.swp

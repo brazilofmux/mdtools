@@ -61,6 +61,33 @@ WordNet caveat: many “synonyms” are wrong in technical prose (`run` ≠
 and a `domain` flag (`general` / `forbid-tech`), and let the LLM path do most
 of the variation.
 
+## Where state lives
+
+Synonyms, the embedding cache, and run logs go in one SQLite file, resolved
+in this order:
+
+1. `$PROSEVARY_DB`
+2. `<project>/.prosevary/prosevary.sqlite` — nearest ancestor of the input
+   holding `.git`, `mdtools.toml`, or `glossary_terms.yaml`
+3. `<input's directory>/.prosevary/` when there is no project marker above it
+4. `$XDG_STATE_HOME/prosevary/` else `~/.local/state/prosevary/`
+
+Never inside the installed package. State that lives in the package tree
+breaks on reinstall, is invisible to backups, and needs write access to a
+directory a package manager owns.
+
+`.prosevary/` writes its own `.gitignore` containing `*`, so a state
+directory next to a manuscript stays invisible to git without every consuming
+repo adding a rule — the same trick pytest and ruff use for their caches.
+
+The glossary is found by walking up from the **input file**, then from cwd, so
+`prosevary book/ch/1.md` picks up `book/glossary_terms.yaml` regardless of
+where you invoked it. `--glossary` naming a missing file is a hard error, not
+a silently empty freeze set.
+
+`--report-run` resolves the same default, so run IDs are per-database; the
+not-found message names the database it looked in.
+
 ## What this is not
 
 - Not a silent CI auto-fixer. Human `git diff` before commit.

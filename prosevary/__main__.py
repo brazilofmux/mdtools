@@ -11,10 +11,18 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .embed import make_embedder
-from .freeze import default_glossary_path, load_glossary_terms
-from .llm import OPENAI_URL, make_generator, make_judge, openai_available, probe_judge
+from .embed import make_embedder, ollama_has_model, ollama_available
+from .freeze import load_glossary_terms
+from .llm import (
+    OPENAI_URL,
+    make_generator,
+    make_judge,
+    openai_available,
+    probe_judge,
+    resolve_openai_model,
+)
 from .metrics import compare, format_report
+from .paths import default_db_path, default_glossary_path
 from .pipeline import active_gates, run_pipeline
 from .segment import parse
 from .store import Store
@@ -62,7 +70,13 @@ def report_stored_run(store: Store, run_id: int) -> int:
     """Metrics for a completed run, rebuilt from the decisions log."""
     run = store.get_run(run_id)
     if run is None:
-        print(f"error: no such run_id: {run_id}", file=sys.stderr)
+        # Name the database. The default is resolved from cwd markers, so
+        # running this from a different directory than the original run looks
+        # up a different DB — "no such run_id" without the path is a dead end.
+        print(
+            f"error: no such run_id: {run_id} (in {store.path})",
+            file=sys.stderr,
+        )
         return 2
     rows = store.decisions_for_run(run_id)
     if not rows:
@@ -140,26 +154,39 @@ def main(argv: list[str] | None = None) -> int:
         "Dry-run never needs this. Logged in run metadata when used.",
     )
     p.add_argument("-v", "--verbose", action="store_true", help="Show every decision")
-    p.add_argument("--tau", type=float, default=0.92, help="Min cosine similarity (default 0.92)")
-    p.add_argument("--k", type=int, default=4, help="Candidates per sentence (default 4)")
+    p.add_argument(
+        "--tau",
+        type=float,
+        default=0.92,
+        help="Min cosine similarity in (0, 1] (default 0.92)",
+    )
+    p.add_argument(
+        "--k",
+        type=int,
+        default=4,
+        help="Candidates per sentence, integer >= 1 (default 4)",
+    )
     p.add_argument("--seed", type=int, default=None, help="RNG seed for synonym swaps")
     p.add_argument(
         "--max-sentences",
         type=int,
         default=None,
-        help="Only process first N sentences (scaffold smoke tests)",
+        help="Only process first N sentences, integer >= 1 (scaffold smoke tests)",
     )
     p.add_argument(
         "--db",
         type=Path,
-        default=Path(__file__).resolve().parent / "data" / "prosevary.sqlite",
-        help="SQLite database path",
+        default=None,
+        help="SQLite database path (default: <project>/.prosevary/prosevary.sqlite "
+        "or $XDG_STATE_HOME/prosevary/…; never inside the install tree). "
+        "Override with $PROSEVARY_DB.",
     )
     p.add_argument(
         "--glossary",
         type=Path,
         default=None,
-        help="glossary_terms.yaml (default: book root)",
+        help="glossary_terms.yaml (default: walk up from the input file, then cwd; "
+        "or $PROSEVARY_GLOSSARY). An explicit path that is missing is an error.",
     )
     p.add_argument(
         "--embed",
@@ -235,6 +262,45 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
 
+    # Numeric validation before touching the DB or network.
+    if not (0.0 < args.tau <= 1.0):
+        print(
+            f"error: --tau must be in (0, 1], got {args.tau}",
+            file=sys.stderr,
+        )
+        return 2
+    if args.k < 1:
+        print(f"error: --k must be an integer >= 1, got {args.k}", file=sys.stderr)
+        return 2
+    if args.max_sentences is not None and args.max_sentences < 1:
+        print(
+            f"error: --max-sentences must be an integer >= 1, got {args.max_sentences}",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Validate the input *before* anything resolves a path from it or opens a
+    # store. Store() creates parent directories, and default_db_path() derives
+    # a directory from the input, so a mistyped filename used to create a
+    # directory named after the file — leaving `error: not a file: typo.md`
+    # true only because prosevary had just made it one, and blocking the real
+    # file from ever being created there.
+    if args.input is not None and not args.input.is_file():
+        print(f"error: not a file: {args.input}", file=sys.stderr)
+        return 2
+
+    # DB path: resolve project/XDG default after we know the input (if any).
+    if args.db is None:
+        args.db = default_db_path(args.input)
+
+    # Maintenance / inspection ops that do not need an input file.
+    if args.seed_synonyms:
+        store = Store(args.db)
+        n = store.seed_demo_synonyms()
+        print(f"Seeded {n} synonym rows into {args.db}")
+        store.close()
+        return 0
+
     store = Store(args.db)
     if args.report_run is not None:
         rc = report_stored_run(store, args.report_run)
@@ -244,9 +310,31 @@ def main(argv: list[str] | None = None) -> int:
     # Fail with instructions rather than a urllib traceback deep in the run.
     if "openai" in (args.gen, args.judge):
         url = args.base_url or OPENAI_URL
-        if not openai_available(url):
+        if args.gen == "openai" and not resolve_openai_model(
+            args.gen_model, "PROSEVARY_GEN_MODEL"
+        ):
             print(
-                f"error: no OpenAI-compatible server at {url}\n"
+                "error: --gen openai requires --gen-model or $PROSEVARY_GEN_MODEL",
+                file=sys.stderr,
+            )
+            store.close()
+            return 2
+        if args.judge == "openai" and not resolve_openai_model(
+            args.judge_model, "PROSEVARY_JUDGE_MODEL"
+        ):
+            print(
+                "error: --judge openai requires --judge-model or $PROSEVARY_JUDGE_MODEL",
+                file=sys.stderr,
+            )
+            store.close()
+            return 2
+        if not openai_available(url):
+            key = os.environ.get("PROSEVARY_API_KEY", "")
+            auth_hint = (
+                " (sent $PROSEVARY_API_KEY)" if key else " (no $PROSEVARY_API_KEY set)"
+            )
+            print(
+                f"error: no OpenAI-compatible server at {url}{auth_hint}\n"
                 f"  start one, e.g.:\n"
                 f"    mlx_lm.server --model <hf-repo-or-path> --port "
                 f"{url.rsplit(':', 1)[-1]}",
@@ -256,19 +344,20 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     if args.test_judge:
-        judge = make_judge(args.judge, args.judge_model, args.base_url)
+        try:
+            judge = make_judge(args.judge, args.judge_model, args.base_url)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            store.close()
+            return 2
         rc = run_judge_probes(judge)
         store.close()
         return rc
 
     if args.input is None:
-        p.error("input file required (or use --report-run ID)")
-
-    if args.seed_synonyms:
-        n = store.seed_demo_synonyms()
-        print(f"Seeded {n} synonym rows into {args.db}")
-        store.close()
-        return 0
+        p.error(
+            "input file required (or use --report-run ID / --seed-synonyms / --test-judge)"
+        )
 
     # Unconditional: the seed below runs only on a fresh DB, so a database
     # written by an earlier version would otherwise keep the meaning-changing
@@ -279,25 +368,65 @@ def main(argv: list[str] | None = None) -> int:
     if not store.synonyms_for("however"):
         store.seed_demo_synonyms()
 
-    gloss_path = args.glossary or default_glossary_path()
-    glossary = (
-        load_glossary_terms(gloss_path)
-        if gloss_path is not None and gloss_path.is_file()
-        else set()
-    )
+    # Explicit --glossary that is missing is an error; auto-discovery may miss.
+    if args.glossary is not None:
+        if not args.glossary.is_file():
+            print(
+                f"error: glossary not found: {args.glossary}",
+                file=sys.stderr,
+            )
+            store.close()
+            return 2
+        gloss_path = args.glossary
+    else:
+        gloss_path = default_glossary_path(args.input)
+        if gloss_path is not None and not gloss_path.is_file():
+            # $PROSEVARY_GLOSSARY pointed at a missing file.
+            print(
+                f"error: glossary not found: {gloss_path} "
+                f"($PROSEVARY_GLOSSARY or discovery)",
+                file=sys.stderr,
+            )
+            store.close()
+            return 2
+
+    glossary = load_glossary_terms(gloss_path) if gloss_path is not None else set()
     if glossary:
         store.import_glossary(glossary)
-
-    if not args.input.is_file():
-        print(f"error: not a file: {args.input}", file=sys.stderr)
-        return 2
 
     source = args.input.read_text(encoding="utf-8")
     doc = parse(source)
 
-    embedder = make_embedder(args.embed)
-    generator = make_generator(args.gen, args.gen_model, args.base_url)
-    judge = make_judge(args.judge, args.judge_model, args.base_url)
+    # Explicit Ollama embed: server must list the configured model (auto
+    # already skips Ollama when the model is missing).
+    if args.embed == "ollama":
+        embed_model = os.environ.get("PROSEVARY_EMBED_MODEL", "nomic-embed-text")
+        if not ollama_available():
+            print(
+                "error: --embed ollama requires a running Ollama server "
+                "at http://127.0.0.1:11434",
+                file=sys.stderr,
+            )
+            store.close()
+            return 2
+        if not ollama_has_model(embed_model):
+            print(
+                f"error: Ollama has no embedding model {embed_model!r}\n"
+                f"  pull it: ollama pull {embed_model}\n"
+                f"  or set $PROSEVARY_EMBED_MODEL to a model you have",
+                file=sys.stderr,
+            )
+            store.close()
+            return 2
+
+    try:
+        embedder = make_embedder(args.embed)
+        generator = make_generator(args.gen, args.gen_model, args.base_url)
+        judge = make_judge(args.judge, args.judge_model, args.base_url)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        store.close()
+        return 2
 
     gates = active_gates(embedder, judge)
     inert = [g for g in ("tau", "judge") if g not in gates]

@@ -273,29 +273,13 @@ def sentence_freeze(text: str, glossary: Iterable[str]) -> FreezeSet:
     return fs
 
 
-def default_glossary_path() -> Optional[Path]:
+def default_glossary_path(start: Optional[Path] = None) -> Optional[Path]:
     """
-    Resolve a glossary file if one is obvious.
+    Resolve glossary_terms.yaml from env, then walking up from start / cwd.
 
-    Order:
-      1. PROSEVARY_GLOSSARY env
-      2. ./glossary_terms.yaml (cwd)
-      3. Walk parents of cwd looking for glossary_terms.yaml
-    Returns None if nothing found (caller treats as empty freeze set).
+    Prefer prosevary.paths.default_glossary_path; this wrapper keeps older
+    imports working.
     """
-    import os
-    env = os.environ.get("PROSEVARY_GLOSSARY")
-    if env:
-        return Path(env)
-    cwd = Path.cwd()
-    candidate = cwd / "glossary_terms.yaml"
-    if candidate.is_file():
-        return candidate
-    for parent in cwd.parents:
-        candidate = parent / "glossary_terms.yaml"
-        if candidate.is_file():
-            return candidate
-        # stop at filesystem root-ish
-        if parent == parent.parent:
-            break
-    return None
+    from .paths import default_glossary_path as _resolve
+
+    return _resolve(start)

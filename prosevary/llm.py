@@ -244,13 +244,32 @@ class OpenAIJudge(ChatJudge):
         )
 
 
-def openai_available(base_url: str = OPENAI_URL, timeout: float = 1.5) -> bool:
+def openai_available(
+    base_url: str = OPENAI_URL,
+    timeout: float = 1.5,
+    api_key: Optional[str] = None,
+) -> bool:
+    """
+    Probe GET /v1/models. Sends Bearer auth when an API key is configured so
+    remote endpoints that require it are not reported as "down".
+    """
     try:
-        req = urllib.request.Request(f"{base_url.rstrip('/')}/v1/models", method="GET")
+        headers = {}
+        key = api_key if api_key is not None else os.environ.get("PROSEVARY_API_KEY", "")
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        req = urllib.request.Request(
+            f"{base_url.rstrip('/')}/v1/models", method="GET", headers=headers
+        )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status == 200
     except (urllib.error.URLError, TimeoutError, OSError):
         return False
+
+
+def resolve_openai_model(cli_model: Optional[str], env_name: str) -> str:
+    """CLI flag, then env, then empty (caller must reject empty for openai)."""
+    return (cli_model or os.environ.get(env_name) or "").strip()
 
 
 # Qwen3 and friends emit <think>…</think> before the answer, which is not JSON.
@@ -388,26 +407,39 @@ def make_generator(
     model: Optional[str] = None,
     base_url: Optional[str] = None,
 ) -> Generator:
-    from .embed import ollama_available
+    from .embed import ollama_available, ollama_has_model
 
     kind = (kind or "auto").lower()
     if kind == "null":
         return NullGenerator()
     if kind == "openai":
+        resolved = resolve_openai_model(model, "PROSEVARY_GEN_MODEL")
+        if not resolved:
+            raise ValueError(
+                "OpenAI generator requires --gen-model or $PROSEVARY_GEN_MODEL"
+            )
         return OpenAIGenerator(
-            model=model or os.environ.get("PROSEVARY_GEN_MODEL", ""),
+            model=resolved,
             base_url=base_url or OPENAI_URL,
         )
-    if kind == "ollama" or (kind == "auto" and ollama_available()):
-        return OllamaGenerator(
-            model=model or os.environ.get("PROSEVARY_GEN_MODEL", "llama3.2")
-        )
+    gen_model = model or os.environ.get("PROSEVARY_GEN_MODEL", "llama3.2")
+    if kind == "ollama":
+        return OllamaGenerator(model=gen_model)
+    # auto: require the model to be pulled, not merely the server to be up.
+    # Checking only ollama_available() picked llama3.2 on a host where the
+    # user had pulled nomic-embed-text for embeddings and nothing else, and
+    # the 404 surfaced as an unhandled HTTPError from the first paraphrase —
+    # the very traceback the preflight exists to prevent.
+    if kind == "auto" and ollama_available() and ollama_has_model(gen_model):
+        return OllamaGenerator(model=gen_model)
     # auto: an OpenAI-compatible server is only used if one is actually up.
     if kind == "auto" and openai_available(base_url or OPENAI_URL):
-        return OpenAIGenerator(
-            model=model or os.environ.get("PROSEVARY_GEN_MODEL", ""),
-            base_url=base_url or OPENAI_URL,
-        )
+        resolved = resolve_openai_model(model, "PROSEVARY_GEN_MODEL")
+        if resolved:
+            return OpenAIGenerator(
+                model=resolved,
+                base_url=base_url or OPENAI_URL,
+            )
     return NullGenerator()
 
 
@@ -416,14 +448,19 @@ def make_judge(
     model: Optional[str] = None,
     base_url: Optional[str] = None,
 ) -> Judge:
-    from .embed import ollama_available
+    from .embed import ollama_available, ollama_has_model
 
     kind = (kind or "auto").lower()
     if kind == "null":
         return NullJudge()
     if kind == "openai":
+        resolved = resolve_openai_model(model, "PROSEVARY_JUDGE_MODEL")
+        if not resolved:
+            raise ValueError(
+                "OpenAI judge requires --judge-model or $PROSEVARY_JUDGE_MODEL"
+            )
         return OpenAIJudge(
-            model=model or os.environ.get("PROSEVARY_JUDGE_MODEL", ""),
+            model=resolved,
             base_url=base_url or OPENAI_URL,
         )
     if kind == "null-reject":
@@ -434,15 +471,19 @@ def make_judge(
                 return JudgeResult(accept=False, reason="null-reject")
 
         return _R()
-    if kind == "ollama" or (kind == "auto" and ollama_available()):
-        return OllamaJudge(
-            model=model or os.environ.get("PROSEVARY_JUDGE_MODEL", "llama3.2")
-        )
+    judge_model = model or os.environ.get("PROSEVARY_JUDGE_MODEL", "llama3.2")
+    if kind == "ollama":
+        return OllamaJudge(model=judge_model)
+    # auto: same rule as the generator — the model must actually be pulled.
+    if kind == "auto" and ollama_available() and ollama_has_model(judge_model):
+        return OllamaJudge(model=judge_model)
     if kind == "auto" and openai_available(base_url or OPENAI_URL):
-        return OpenAIJudge(
-            model=model or os.environ.get("PROSEVARY_JUDGE_MODEL", ""),
-            base_url=base_url or OPENAI_URL,
-        )
+        resolved = resolve_openai_model(model, "PROSEVARY_JUDGE_MODEL")
+        if resolved:
+            return OpenAIJudge(
+                model=resolved,
+                base_url=base_url or OPENAI_URL,
+            )
     return NullJudge()
 
 

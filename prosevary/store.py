@@ -23,8 +23,31 @@ UNSAFE_SYNONYMS: Tuple[Tuple[str, str], ...] = (
 )
 
 
+def _self_ignore(state_dir: Path) -> None:
+    """
+    Make a `.prosevary/` state directory invisible to git.
+
+    The DB lands at <project>/.prosevary/ next to the manuscript, so without
+    this every consuming repo — slow32-book, mush — sees `?? .prosevary/` and
+    has to add its own rule. Writing the ignore inside the directory makes it
+    self-contained, the same way pytest and ruff handle their caches.
+    Best-effort: a read-only parent is not a reason to fail a run.
+    """
+    if state_dir.name != ".prosevary":
+        return
+    marker = state_dir / ".gitignore"
+    if marker.exists():
+        return
+    try:
+        marker.write_text("# Created by prosevary; state is not source.\n*\n",
+                          encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
+    _self_ignore(db_path.parent)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
