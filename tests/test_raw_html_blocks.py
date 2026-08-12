@@ -94,6 +94,26 @@ class ProsevaryRawHtmlTests(unittest.TestCase):
             with self.subTest(source=source[:24]):
                 self.assertEqual(parse(source).reconstruct({}), source)
 
+    # --- delimiter rules the C side used to get wrong -----------------------
+
+    def test_prefix_lookalikes_are_not_type1_raw(self) -> None:
+        # <preview>/<scripture> must not open type-1 raw (which runs past
+        # blanks). Generic HTML may freeze until a blank; after that blank,
+        # prose is reachable again.
+        for opener in ("<preview>", "<scripture>"):
+            with self.subTest(opener=opener):
+                source = f"{opener}\ninside\n\nAfter the blank.\n"
+                self.assertIn("After the blank.", _sentences(source))
+
+    def test_incomplete_end_tag_prefix_does_not_close_script(self) -> None:
+        # JS string containing "</script" must not end the raw block early.
+        source = (
+            f'<script>\nvar s = "</script";\nalert("A {ARROW} B");\n'
+            f"</script>\nAfter.\n"
+        )
+        self.assertEqual(_sentences(source), ["After."])
+        self.assertEqual(parse(source).reconstruct({}), source)
+
 
 class MdfixRawHtmlTests(unittest.TestCase):
     """mdfix was rewriting JavaScript and CSS as though it were prose."""
@@ -158,6 +178,27 @@ class MdfixRawHtmlTests(unittest.TestCase):
     def test_div_prose_is_still_fixed(self) -> None:
         source = f"<div>\n\ninner A {ARROW} B\n\n</div>\n"
         self.assertIn("arrow aside", self._report(source))
+
+    def test_prefix_lookalikes_do_not_open_raw_blocks(self) -> None:
+        # Bare prefix matching treated <preview> as <pre> and froze the rest.
+        source = f"<preview>\nprose A {ARROW} B\n\nAfter A {ARROW} B.\n"
+        per_line = re.findall(r"line (\d+): arrow aside", self._report(source))
+        self.assertEqual(per_line, ["2", "4"], msg=self._report(source))
+
+    def test_incomplete_end_tag_does_not_close_script_early(self) -> None:
+        # `"</script"` without '>' must leave later script lines protected.
+        source = (
+            f'<script>\nvar s = "</script";\nalert("A {ARROW} B");\n'
+            f"</script>\n"
+        )
+        self.assertNotIn("arrow aside", self._report(source))
+        self.assertEqual(self._canonical(source), source)
+
+    def test_indented_code_immediately_after_raw_block_is_protected(self) -> None:
+        # Raw HTML is a leaf block; indented code may follow with no blank.
+        source = f"<script>\nx\n</script>\n    A {ARROW} B\n"
+        self.assertNotIn("arrow aside", self._report(source))
+        self.assertEqual(self._canonical(source), source)
 
 
 if __name__ == "__main__":

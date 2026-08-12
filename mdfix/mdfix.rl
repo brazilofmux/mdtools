@@ -87,7 +87,18 @@ enum linetype {
     LT_FMATTER,
     LT_CODEFENCE,
     LT_INDENTCODE,  /* four-column-indented code; emitted verbatim */
+    LT_RAWHTML,     /* raw HTML block; leaf — not paragraph text */
     LT_TEXT         /* everything else: paragraphs, blockquotes, etc. */
+};
+
+/* Kind of open raw HTML block (CommonMark types 1–5). */
+enum raw_html_kind {
+    RAW_HTML_NONE = 0,
+    RAW_HTML_COMMENT,   /* <!-- … --> */
+    RAW_HTML_CDATA,     /* <![CDATA[ … ]]> */
+    RAW_HTML_PI,        /* <? … ?> */
+    RAW_HTML_DECL,      /* <!NAME … > */
+    RAW_HTML_TYPE1      /* <script|pre|style|textarea … </…> */
 };
 
 enum fixcat {
@@ -400,22 +411,8 @@ static enum linetype classify(const char *line)
     return LT_TEXT;
 }
 
-/* Case-insensitive substring search. strcasestr is not standard C, and
- * _POSIX_C_SOURCE hides it on some libcs. */
-static const char *ci_strstr(const char *haystack, const char *needle)
-{
-    size_t n = strlen(needle);
-    if (!n)
-        return haystack;
-    for (const char *p = haystack; *p; p++) {
-        if (strncasecmp(p, needle, n) == 0)
-            return p;
-    }
-    return NULL;
-}
-
 /*
- * Raw HTML blocks and the terminator that ends each kind.
+ * Raw HTML blocks (CommonMark types 1–5) and their kind-specific ends.
  *
  * Pandoc keeps these as a RawBlock running to their own terminator; a blank
  * line does not end them, and the contents are passed through verbatim. mdfix
@@ -427,25 +424,86 @@ static const char *ci_strstr(const char *haystack, const char *needle)
  * those into a Div whose contents are markdown, so prose inside them is
  * ordinary prose and mdfix should keep fixing it.
  *
- * Returns the terminator to search for, or NULL when the line opens nothing.
+ * Openers require a tag-name boundary (`\b` on the Python side) so prefixes
+ * like <preview> or <scripture> do not enter raw mode. Type-1 closers are a
+ * full end tag `</name\s*>` (any of the four names, per CommonMark), not a
+ * bare `</script` prefix that would fire on `"</script"` in JavaScript.
  */
-static const char *raw_html_terminator(const char *line)
+
+/* After a type-1 tag name: space, tab, '>', '/', or end of string. */
+static int is_html_tag_name_end(char c)
+{
+    return c == '\0' || c == ' ' || c == '\t' || c == '>' || c == '/';
+}
+
+/* Case-insensitive `<name` at s, with a tag-name boundary after the name. */
+static int match_html_open_tag(const char *s, const char *name)
+{
+    size_t n = strlen(name);
+    if (s[0] != '<')
+        return 0;
+    if (strncasecmp(s + 1, name, n) != 0)
+        return 0;
+    return is_html_tag_name_end(s[1 + n]);
+}
+
+/* True if s contains a type-1 end tag: </script|pre|style|textarea\s*>. */
+static int has_type1_end_tag(const char *s)
+{
+    static const char *const names[] = {
+        "script", "pre", "style", "textarea"
+    };
+    for (const char *p = s; *p; p++) {
+        if (p[0] != '<' || p[1] != '/')
+            continue;
+        for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
+            size_t n = strlen(names[i]);
+            if (strncasecmp(p + 2, names[i], n) != 0)
+                continue;
+            const char *q = p + 2 + n;
+            while (*q == ' ' || *q == '\t')
+                q++;
+            if (*q == '>')
+                return 1;
+        }
+    }
+    return 0;
+}
+
+static enum raw_html_kind raw_html_open_kind(const char *line)
 {
     int i = 0;
     while (i < 3 && line[i] == ' ')
         i++;
     const char *s = line + i;
 
-    if (strncmp(s, "<!--", 4) == 0)                 return "-->";
-    if (strncmp(s, "<![CDATA[", 9) == 0)            return "]]>";
-    if (s[0] == '<' && s[1] == '?')                 return "?>";
-    if (s[0] == '<' && s[1] == '!'
-        && isalpha((unsigned char)s[2]))            return ">";
-    if (strncasecmp(s, "<script", 7) == 0)          return "</script";
-    if (strncasecmp(s, "<pre", 4) == 0)             return "</pre";
-    if (strncasecmp(s, "<style", 6) == 0)           return "</style";
-    if (strncasecmp(s, "<textarea", 9) == 0)        return "</textarea";
-    return NULL;
+    if (strncmp(s, "<!--", 4) == 0)
+        return RAW_HTML_COMMENT;
+    if (strncmp(s, "<![CDATA[", 9) == 0)
+        return RAW_HTML_CDATA;
+    if (s[0] == '<' && s[1] == '?')
+        return RAW_HTML_PI;
+    if (s[0] == '<' && s[1] == '!' && isalpha((unsigned char)s[2]))
+        return RAW_HTML_DECL;
+    if (match_html_open_tag(s, "script")
+        || match_html_open_tag(s, "pre")
+        || match_html_open_tag(s, "style")
+        || match_html_open_tag(s, "textarea"))
+        return RAW_HTML_TYPE1;
+    return RAW_HTML_NONE;
+}
+
+/* Does this line (or suffix) contain the end for the given open kind? */
+static int raw_html_line_has_end(const char *s, enum raw_html_kind kind)
+{
+    switch (kind) {
+    case RAW_HTML_COMMENT: return strstr(s, "-->") != NULL;
+    case RAW_HTML_CDATA:   return strstr(s, "]]>") != NULL;
+    case RAW_HTML_PI:      return strstr(s, "?>") != NULL;
+    case RAW_HTML_DECL:    return strchr(s, '>') != NULL;
+    case RAW_HTML_TYPE1:   return has_type1_end_tag(s);
+    default:              return 0;
+    }
 }
 
 static int is_list_type(enum linetype t)
@@ -2102,7 +2160,7 @@ static void process(FILE *out)
     int frontmatter_opened = 0;   /* have we seen the opening --- ? */
     int frontmatter_closed = 0;   /* have we seen the closing --- ? */
     struct fence_state fence = {0, 0, 0, 0, 0};
-    const char *raw_html_end = NULL;  /* terminator of an open raw HTML block */
+    enum raw_html_kind raw_html = RAW_HTML_NONE;
 
     enum linetype prev_content_type = LT_BLANK;
     int prev_was_list_ctx = 0;    /* was previous content in a list context? */
@@ -2153,11 +2211,12 @@ static void process(FILE *out)
          * inside is prose. Checked before fences so a ``` inside a <script>
          * cannot open one.
          */
-        if (raw_html_end) {
+        if (raw_html != RAW_HTML_NONE) {
             fprintf(out, "%s\n", line);
-            if (ci_strstr(line, raw_html_end))
-                raw_html_end = NULL;
-            prev_content_type = LT_TEXT;
+            if (raw_html_line_has_end(line, raw_html))
+                raw_html = RAW_HTML_NONE;
+            /* Not LT_TEXT: indented code may follow a raw block with no blank. */
+            prev_content_type = LT_RAWHTML;
             had_blank = 0;
             continue;
         }
@@ -2202,16 +2261,19 @@ static void process(FILE *out)
 
         /* ── Opening raw HTML block ── */
         {
-            const char *terminator = raw_html_terminator(line);
-            if (terminator) {
+            enum raw_html_kind kind = raw_html_open_kind(line);
+            if (kind != RAW_HTML_NONE) {
                 flush_paragraph(out);
                 fprintf(out, "%s\n", line);
                 /* Search past the opening '<' so a one-line block —
                  * `<!-- note -->`, `<script>x()</script>`, `<!DOCTYPE html>` —
                  * closes immediately instead of swallowing the document. */
-                if (!ci_strstr(line + 1, terminator))
-                    raw_html_end = terminator;
-                prev_content_type = LT_TEXT;
+                const char *lt = strchr(line, '<');
+                const char *after = lt ? lt + 1 : line + 1;
+                if (!raw_html_line_has_end(after, kind))
+                    raw_html = kind;
+                /* Not LT_TEXT: indented code may follow with no blank. */
+                prev_content_type = LT_RAWHTML;
                 had_blank = 0;
                 continue;
             }
