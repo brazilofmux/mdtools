@@ -10,7 +10,7 @@ tool is meant to consume instead of re-deriving the grammar.
 ```console
 $ mdfix --emit-ir README.md | head -3
 {"kind":"document","schema":"mdtools-ir-1","source":"README.md","bytes":3184,"lines":118}
-{"kind":"heading","start":0,"end":9,"line":1,"endLine":1,"protected":false,"level":1,"text":"mdtools"}
+{"kind":"heading","start":0,"end":9,"line":1,"endLine":1,"protected":false,"level":1,"text":"mdtools","plain":"mdtools"}
 {"kind":"paragraph","start":11,"end":76,"line":3,"endLine":3,"protected":false}
 ```
 
@@ -54,7 +54,7 @@ closed, the flag flips and the consumer sees it.
 |---|---|---|---|
 | `document` | `schema`, `source`, `bytes`, `lines` | — | header record |
 | `frontmatter` | | `true` | metadata |
-| `heading` | `level`, `text` | `false` | `Header` |
+| `heading` | `level`, `text`, `plain` | `false` | `Header` |
 | `paragraph` | | `false` | `Para` |
 | `list` | | `false` | `BulletList` / `OrderedList` |
 | `block_quote` | | `false` | `BlockQuote` |
@@ -73,6 +73,49 @@ cells (dialect-policy §7 gap 4). `htmlKind` is one of `comment`, `cdata`,
 `heading.text` is the content after the marker with a closing `#` run removed,
 so `## Sub ##` yields `Sub`. A `#` that is part of the text survives: `# C#`
 yields `C#`.
+
+### `heading.plain`
+
+The heading text as Pandoc's identifier pass sees it. A consumer computing an
+anchor must use this and never `text`, which is raw source.
+
+Exactly three constructs are stripped, because they are the only ones whose
+raw form differs from what Pandoc slugs. Pinned with `pandoc -t json`:
+
+| Heading | `text` | `plain` | Pandoc identifier |
+|---|---|---|---|
+| `[inline](http://u)` | raw | `inline` | `inline` |
+| `![img](i.png)` | raw | `img` | `img` |
+| `_under_` | raw | `under` | `under` |
+| `<span>html</span>` | raw | `html` | `html` |
+| `[text][id]` | raw | **unchanged** | `textid` |
+| `` `code` ``, `<http://a>`, `note[^1]`, `a_b_c` | raw | unchanged | already agree |
+
+**Reference links are left raw on purpose.** Pandoc computes header
+identifiers *before* it resolves references, so `## [text][id]` is `textid`
+whether or not the definition exists — verified both ways. Reducing it to
+`text` would be more principled and would not match.
+
+**Also left raw (known under-strips until inline records land):**
+
+- Spaced inline links: `## [link] (http://x)` — pandoc `markdown` does not
+  treat the space form as a link either (id `link-httpx`); CommonMark would.
+- Bracketed spans / attributes: `## [text]{.class}` — `]` is followed by `{`,
+  not `(`, so it is not an inline link; dots are slug-kept, so the id can
+  still diverge from Pandoc's plain `text` until attributes are stripped.
+
+Splitting the work here is deliberate. Stripping markup is Markdown grammar
+and belongs in mdfix; the character filtering and lowercasing that turn
+`plain` into an anchor are Unicode text processing, which the consumer does
+because C is the wrong language for it.
+
+One approximation, and it is one-sided. The intraword-underscore rule asks
+whether the neighbouring character is alphanumeric, and mdfix treats every
+byte above U+007F as alphanumeric rather than carrying Unicode tables. That
+is correct for Greek, Cyrillic, CJK and Hangul prose — `漢字_の_強調` keeps
+its underscores, as Pandoc does — but a *symbol* neighbour such as `∈_x_`
+stays literal where Pandoc emphasises. Erring that way keeps text as written
+instead of deleting a character.
 
 ### Pipe tables and line blocks
 
