@@ -28,6 +28,7 @@ from prosevary.segment import (
     Document,
     _restore_trailing_closers,
     _trailing_closer_run,
+    _unmatched_trailing_closers,
     parse,
     split_sentences,
 )
@@ -154,20 +155,42 @@ class ReconstructProperties(unittest.TestCase):
                     )
                     self.assertEqual(out, source)
 
-    def test_trailing_closers_survive_any_candidate(self) -> None:
-        # A quotation spanning two sentences puts the closer inside the second
-        # span. Whatever the model returns, the delimiter must not vanish.
+    def test_unmatched_trailing_closers_survive_any_candidate(self) -> None:
+        # A quotation spanning two sentences puts its closer inside the second
+        # span, where a rewrite would delete it. That closer must survive.
+        #
+        # Only the *unmatched* part, though. This property originally asserted
+        # the whole trailing run and so encoded a bug: a closer the sentence
+        # opens itself is ordinary content, and restoring it turned a rewrite
+        # of `He said ("Hello.")` into `He replied (Hi.)")`.
         for source in _documents(seed=8, count=1500):
             doc = parse(source)
             for region in doc.regions:
                 for index, sent in enumerate(region.sentences):
-                    run = _trailing_closer_run(sent.text)
-                    if not run:
+                    needed = _unmatched_trailing_closers(sent.text)
+                    if not needed:
                         continue
                     out = parse(source).reconstruct(
                         {(region.region_id, index): "Something else entirely"}
                     )
-                    self.assertIn("Something else entirely" + run, out)
+                    self.assertIn("Something else entirely" + needed, out)
+
+    def test_self_opened_closers_are_not_duplicated(self) -> None:
+        # The other direction: a sentence that opens and closes its own
+        # delimiters must not have them re-appended to a candidate.
+        for source in _documents(seed=9, count=1500):
+            doc = parse(source)
+            for region in doc.regions:
+                for index, sent in enumerate(region.sentences):
+                    run = _trailing_closer_run(sent.text)
+                    needed = _unmatched_trailing_closers(sent.text)
+                    if not run or needed:
+                        continue
+                    out = parse(source).reconstruct(
+                        {(region.region_id, index): "Rewritten."}
+                    )
+                    self.assertIn("Rewritten.", out)
+                    self.assertNotIn("Rewritten." + run, out)
 
 
 class FreezeIdentityProperties(unittest.TestCase):

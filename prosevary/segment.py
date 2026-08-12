@@ -111,6 +111,45 @@ def _trailing_closer_run(text: str) -> str:
     return text[j:]
 
 
+# Closers with a distinct opener. Straight quotes are their own opener, so
+# they are judged by parity instead.
+_CLOSER_OPENERS = {")": "(", "]": "[", "}": "{", "”": "“", "’": "‘"}
+_SYMMETRIC_CLOSERS = frozenset("\"'")
+
+
+def _unmatched_trailing_closers(text: str) -> str:
+    """
+    The part of text's trailing closer run that text does not open itself.
+
+    A trailing closer is only this module's concern when it belongs to a
+    construct *larger* than the sentence — a quotation spanning a sentence
+    boundary, say, where the closer lands inside the second sentence's span
+    and a rewrite would delete it.
+
+    A closer the sentence opens itself is ordinary content. Restoring those
+    duplicates punctuation, which is what turned a rewrite of
+    `He said ("Hello.")` into `He replied (Hi.)")`.
+
+    Parity is a heuristic for straight quotes, since an apostrophe is the same
+    character; it only misreads a sentence that both ends in a quote and
+    contains an odd number of them, where the cost is an append the candidate
+    already satisfies.
+    """
+    run = _trailing_closer_run(text)
+    if not run:
+        return ""
+    unmatched = []
+    for ch in run:
+        if ch in _SYMMETRIC_CLOSERS:
+            if text.count(ch) % 2 == 1:
+                unmatched.append(ch)
+        else:
+            opener = _CLOSER_OPENERS.get(ch)
+            if opener is not None and text.count(opener) < text.count(ch):
+                unmatched.append(ch)
+    return "".join(unmatched)
+
+
 def _is_enumeration_label(prose: str, term_end: int, closer_end: int) -> bool:
     """
     Whether a terminator + bracket run is an enumeration label like `1.)`.
@@ -142,13 +181,20 @@ def _restore_trailing_closers(original: str, candidate: str) -> str:
     silently unbalances the document. That is the worse failure: duplication is
     obvious in a diff, a missing quote is not.
 
-    Only ever appends. A candidate that already ends with the run is untouched,
-    so a well-behaved model sees no interference.
+    Only closers the original does not open itself are restored — see
+    _unmatched_trailing_closers. Restoring the rest duplicated punctuation.
+
+    Only ever appends, and never when the candidate already ends with the
+    final closer of the run: a candidate that kept part of it has dealt with
+    the delimiter, and appending would double it. Under-restoring is the safe
+    direction, since freeze and the judge still inspect the candidate.
     """
-    closers = _trailing_closer_run(original)
-    if not closers or candidate.endswith(closers):
+    needed = _unmatched_trailing_closers(original)
+    if not needed or candidate.endswith(needed):
         return candidate
-    return candidate + closers
+    if candidate.endswith(needed[-1]):
+        return candidate
+    return candidate + needed
 
 
 @dataclass
