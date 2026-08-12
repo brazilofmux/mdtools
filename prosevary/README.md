@@ -129,7 +129,10 @@ refuses to talk to a non-LLM service that happens to hold the port.
 **Reasoning models are handled.** Qwen3-style `<think>…</think>` blocks are
 stripped before JSON parsing, including unclosed blocks from a token-limited
 reply, and the *last* JSON object wins so a model that reconsiders mid-answer
-is read correctly. Unparseable judge output falls back to **reject**.
+is read correctly. Unparseable judge output falls back to **reject**. Only a
+JSON object whose `accept` field is the literal boolean `true` accepts;
+string `"false"`, numbers, missing keys, and free-form prose all reject
+(fail closed — see issue #3).
 
 ### Test the judge before trusting it
 

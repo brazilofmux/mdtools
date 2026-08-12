@@ -267,8 +267,10 @@ def _strip_reasoning(raw: str) -> str:
 
 def _parse_string_list(raw: str, k: int) -> List[str]:
     raw = _strip_reasoning(raw)
-    # strip ```json fences if the model misbehaves
-    raw = re.sub(r"^```(?:json)?\s*", "", raw)
+    # Strip ```json fences if the model misbehaves. Case-insensitive: a ```JSON
+    # fence otherwise left the bare word behind, and the line fallback then fed
+    # the literal string "JSON" into the pipeline as a paraphrase candidate.
+    raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
     raw = re.sub(r"\s*```$", "", raw)
     try:
         data = json.loads(raw)
@@ -281,34 +283,104 @@ def _parse_string_list(raw: str, k: int) -> List[str]:
     return [ln for ln in lines if ln][:k]
 
 
+def _verdict_from_mapping(data: dict) -> Optional[JudgeResult]:
+    """
+    Fail-closed verdict from a JSON object.
+
+    Only the literal boolean true accepts. Literal false rejects. Any other
+    accept type (string "false", 1, null, …) rejects — bool("false") is True
+    in Python and was the original footgun. Returns None when the object has
+    no accept field so the caller can try another blob or reject.
+    """
+    if "accept" not in data:
+        return None
+    reason = data.get("reason")
+    reason_s = "" if reason is None else str(reason)
+    accept = data["accept"]
+    if accept is True:
+        return JudgeResult(accept=True, reason=reason_s)
+    if accept is False:
+        return JudgeResult(accept=False, reason=reason_s)
+    return JudgeResult(
+        accept=False,
+        reason=(
+            f"non-boolean accept ({type(accept).__name__}): {accept!r}"
+            + (f" — {reason_s}" if reason_s else "")
+        )[:200],
+    )
+
+
+def _json_objects(raw: str) -> List[dict]:
+    """
+    Every JSON object embedded in raw, outermost-first, in source order.
+
+    A regex cannot do this. `\\{[^{}]*\\}` fails on an object containing a
+    nested object or a brace inside a string, so a judge answering
+    `Final: {"accept": true, "meta": {"n": 1}}` was read as unparseable and
+    rejected. raw_decode parses from each '{' and reports where the value
+    ended, which handles nesting and quoted braces for free.
+    """
+    decoder = json.JSONDecoder()
+    found: List[dict] = []
+    idx = 0
+    while True:
+        start = raw.find("{", idx)
+        if start < 0:
+            return found
+        try:
+            obj, end = decoder.raw_decode(raw, start)
+        except ValueError:
+            # Not the start of a valid value — step past it and keep looking.
+            idx = start + 1
+            continue
+        if isinstance(obj, dict):
+            found.append(obj)
+            idx = end  # skip its interior; we want outermost objects
+        else:
+            idx = start + 1
+
+
 def _parse_judge(raw: str) -> JudgeResult:
+    """
+    Parse a judge reply. Accept only a JSON object whose accept field is the
+    literal boolean true. Everything else rejects without raising.
+    """
     raw = _strip_reasoning(raw)
-    raw = re.sub(r"^```(?:json)?\s*", "", raw)
+    raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
     raw = re.sub(r"\s*```$", "", raw)
+
     try:
         data = json.loads(raw)
-        return JudgeResult(
-            accept=bool(data.get("accept")),
-            reason=str(data.get("reason") or ""),
-        )
+        parsed_top_level = True
     except json.JSONDecodeError:
-        # A reasoning model often wraps the object in prose; take the last
-        # {...} rather than giving up and defaulting to reject.
-        objs = re.findall(r"\{[^{}]*\}", raw, re.DOTALL)
-        for blob in reversed(objs):
-            try:
-                data = json.loads(blob)
-            except json.JSONDecodeError:
-                continue
-            if "accept" in data:
-                return JudgeResult(
-                    accept=bool(data.get("accept")),
-                    reason=str(data.get("reason") or ""),
-                )
-        low = raw.lower()
-        if "accept" in low and "true" in low and "false" not in low.split("accept", 1)[-1][:20]:
-            return JudgeResult(accept=True, reason=raw[:200])
-        return JudgeResult(accept=False, reason=f"unparseable judge output: {raw[:200]}")
+        data = None
+        parsed_top_level = False
+
+    if parsed_top_level:
+        if isinstance(data, dict):
+            verdict = _verdict_from_mapping(data)
+            if verdict is not None:
+                return verdict
+            return JudgeResult(
+                accept=False,
+                reason=f"judge object missing accept: {raw[:200]}",
+            )
+        # Top-level array, string, null, bool, number — not a judge object.
+        # (null parses as None; do not confuse with "JSON failed to parse".)
+        kind = "null" if data is None else type(data).__name__
+        return JudgeResult(
+            accept=False,
+            reason=f"judge JSON is not an object: {kind}",
+        )
+
+    # Not top-level JSON. A reasoning model often wraps the object in prose;
+    # take the last {...} that carries an accept field, under the same type
+    # rules. Ambiguous prose without a typed object always rejects.
+    for candidate in reversed(_json_objects(raw)):
+        verdict = _verdict_from_mapping(candidate)
+        if verdict is not None:
+            return verdict
+    return JudgeResult(accept=False, reason=f"unparseable judge output: {raw[:200]}")
 
 
 def make_generator(
