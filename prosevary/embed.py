@@ -148,8 +148,19 @@ def ollama_list_models(
             data = json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError):
         return None
+    # Something other than Ollama may answer on this port — a proxy, a dev
+    # server — and return a JSON array, null, or a bare string. This runs on
+    # the default --embed auto path whenever the port responds, so an
+    # unguarded .get() here tracebacks the CLI.
+    if not isinstance(data, dict):
+        return None
     names: List[str] = []
-    for row in data.get("models") or []:
+    rows = data.get("models")
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
         name = row.get("name") or row.get("model")
         if name:
             names.append(str(name))

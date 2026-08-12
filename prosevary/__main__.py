@@ -70,7 +70,13 @@ def report_stored_run(store: Store, run_id: int) -> int:
     """Metrics for a completed run, rebuilt from the decisions log."""
     run = store.get_run(run_id)
     if run is None:
-        print(f"error: no such run_id: {run_id}", file=sys.stderr)
+        # Name the database. The default is resolved from cwd markers, so
+        # running this from a different directory than the original run looks
+        # up a different DB — "no such run_id" without the path is a dead end.
+        print(
+            f"error: no such run_id: {run_id} (in {store.path})",
+            file=sys.stderr,
+        )
         return 2
     rows = store.decisions_for_run(run_id)
     if not rows:
@@ -273,6 +279,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    # Validate the input *before* anything resolves a path from it or opens a
+    # store. Store() creates parent directories, and default_db_path() derives
+    # a directory from the input, so a mistyped filename used to create a
+    # directory named after the file — leaving `error: not a file: typo.md`
+    # true only because prosevary had just made it one, and blocking the real
+    # file from ever being created there.
+    if args.input is not None and not args.input.is_file():
+        print(f"error: not a file: {args.input}", file=sys.stderr)
+        return 2
+
     # DB path: resolve project/XDG default after we know the input (if any).
     if args.db is None:
         args.db = default_db_path(args.input)
@@ -342,11 +358,6 @@ def main(argv: list[str] | None = None) -> int:
         p.error(
             "input file required (or use --report-run ID / --seed-synonyms / --test-judge)"
         )
-
-    if not args.input.is_file():
-        print(f"error: not a file: {args.input}", file=sys.stderr)
-        store.close()
-        return 2
 
     # Unconditional: the seed below runs only on a fresh DB, so a database
     # written by an earlier version would otherwise keep the meaning-changing

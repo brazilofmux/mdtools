@@ -13,8 +13,15 @@ from typing import Iterator, Optional
 
 
 def _walk_up(start: Path) -> Iterator[Path]:
+    """
+    Yield start's directory and each ancestor.
+
+    `is_file()` is False for a path that does not exist, so testing it alone
+    treated a missing file as a directory and walked from inside it. Anything
+    that is not a existing directory is treated as a file path.
+    """
     cur = start.resolve()
-    if cur.is_file():
+    if not cur.is_dir():
         cur = cur.parent
     while True:
         yield cur
@@ -83,8 +90,10 @@ def default_db_path(input_path: Optional[Path] = None) -> Path:
     Order:
       1. $PROSEVARY_DB
       2. <project>/.prosevary/prosevary.sqlite (near input or cwd markers)
-      3. $XDG_STATE_HOME/prosevary/prosevary.sqlite
-      4. ~/.local/state/prosevary/prosevary.sqlite
+      3. <input's directory>/.prosevary/prosevary.sqlite when there is an
+         input but no project marker anywhere above it
+      4. $XDG_STATE_HOME/prosevary/prosevary.sqlite
+      5. ~/.local/state/prosevary/prosevary.sqlite
 
     Never defaults inside the installed package tree.
     """
@@ -98,7 +107,7 @@ def default_db_path(input_path: Optional[Path] = None) -> Path:
 
     if input_path is not None:
         base = input_path.resolve()
-        if base.is_file():
+        if not base.is_dir():
             base = base.parent
         return base / ".prosevary" / "prosevary.sqlite"
 
