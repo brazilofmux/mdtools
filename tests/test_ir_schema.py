@@ -826,6 +826,23 @@ class InlineRecordTests(IRTestCase):
         records = self._inline("# See [text](http://x)\n")
         self.assertEqual(len(records), 1)
 
+    def test_inline_in_a_setext_heading(self) -> None:
+        records = self._inline("See [text](http://x)\n===\n")
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["kind"], "link")
+
+    def test_crlf_multiline_inline_offsets(self) -> None:
+        # Per-line bases: a construct on line 2 must slice the real file
+        # bytes under CRLF, not a synthetic LF-joined chunk.
+        data = b"first line\r\nSee [text](http://x) here.\r\n"
+        records = [r for r in self._ir_raw(data)
+                   if r["kind"] == "link"]
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(data[record["start"]:record["end"]],
+                         b"[text](http://x)")
+        self.assertEqual(record["line"], 2)
+
     def test_inline_nested_in_a_list_item(self) -> None:
         records = self._inline("- item with [a link](http://x)\n")
         self.assertEqual(len(records), 1)

@@ -272,10 +272,12 @@ name, which the header record makes detectable.
 
 ## Not yet in schema 3
 
-- **Inline structure.** Links, images, footnote references, citations, emphasis
-  and inline code are not represented. A consumer that needs them today must
-  slice the span and scan it, which is exactly the grammar leak the boundary
-  exists to prevent — so this is the next thing to add, not a permanent shape.
+- **Remaining inline structure.** Links, images, code spans, footnote
+  references and raw inline HTML are emitted (see [Inline records](#inline-records)).
+  Still missing: emphasis/strong, citations, a full recursive inline tree
+  (nested markup inside link text), cell-level table structure, and title
+  attributes on destinations. Inline `endLine` is the construct's start line;
+  multi-line code spans are not joined across line boundaries.
 - **Partial nesting only.** Schema 3 emits plain list-item prose as nested
   `paragraph` records (`depth` / `parent`). A list is still one parent record,
   not a full tree of items; fence, table, raw HTML, indented code, heading, and
