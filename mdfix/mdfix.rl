@@ -958,7 +958,10 @@ static int inline_html_tag_len(const char *s)
  * Span of an inline link or image starting at `s`, or 0.
  *
  * Fills text_off/text_len with the bracketed text. Only the inline form
- * counts: a '(' must follow the ']' immediately.
+ * counts: '(' must follow ']' with no intervening characters. Optional
+ * whitespace before '(' is accepted by CommonMark, but pandoc's default
+ * `markdown` reader treats `] (` as ordinary text (identifier `link-httpx`
+ * for `## [link] (http://x)`), so we require the tight form for parity.
  */
 static int inline_link_len(const char *s, int *text_off, int *text_len)
 {
@@ -983,7 +986,7 @@ static int inline_link_len(const char *s, int *text_off, int *text_len)
         return 0;
     int close = i;
     if (s[i + 1] != '(')
-        return 0;               /* reference or shortcut form: leave raw */
+        return 0;               /* reference, shortcut, or spaced form: leave raw */
     i += 2;
     depth = 1;
     for (; s[i]; i++) {
@@ -1006,18 +1009,11 @@ static int inline_link_len(const char *s, int *text_off, int *text_len)
 /*
  * Word-ish for the intraword-underscore rule, UTF-8 aware.
  *
- * `isalnum` is byte-based, so every multibyte letter looked like punctuation
- * and `漢字_の_強調` came out as `漢字の強調` where Pandoc keeps the underscores
- * literal. Pandoc applies the rule to Unicode alphanumerics, so any
- * continuation or lead byte counts as word-ish here.
- *
- * The approximation is deliberate and one-sided: a *symbol* above U+007F —
- * `∈_x_`, say — is alphanumeric to this test and is not to Pandoc, so mdfix
- * leaves the underscores literal where Pandoc would emphasise. Erring that way
- * keeps text as written rather than silently deleting a character, and it is
- * the direction that serves Greek, Cyrillic, CJK and Hangul prose, where an
- * underscore against a letter is the case that actually occurs. Classifying
- * properly needs Unicode character tables, which do not belong in this file.
+ * Byte-based isalnum treats every multibyte letter as punctuation, so
+ * `漢字_の_強調` lost its underscores. Any lead/continuation byte counts as
+ * word-ish here so CJK/Greek/Cyrillic keep intraword underscores like Pandoc.
+ * Symbols above U+007F are over-accepted (one-sided: keep text rather than
+ * delete); proper classification needs Unicode tables, not mdfix.rl.
  */
 static int is_wordish_byte(unsigned char c)
 {
@@ -1048,13 +1044,9 @@ static int emphasis_can_close(char marker, unsigned char before, unsigned char a
 #define IR_EMPH_STACK 32
 
 /*
- * Link text is processed in place rather than copied, and nesting is capped.
- *
- * The first version recursed with two MAX_LINE buffers per frame, so a heading
- * of nested link text — `[[[[x](u)](u)](u)](u)` and so on — overflowed the
- * stack and segfaulted at around 1200 levels. Passing a range removes the
- * per-frame buffers; the cap removes the unbounded recursion. Past the cap the
- * remaining text is copied verbatim, which under-reports rather than crashing.
+ * Link text is scanned in place (range, not a fresh buffer). Depth is capped
+ * so nested `[…](…)` cannot blow the stack; past the cap, remaining text is
+ * copied verbatim (under-report rather than crash).
  */
 #define IR_INLINE_MAX_DEPTH 24
 
@@ -1143,14 +1135,30 @@ static size_t inline_plain_range(const char *src, int from, int to,
                 }
             }
             if (matched >= 0) {
-                /* Splice the opener back out; anything pushed after it was
-                 * never matched and stays literal. */
+                /*
+                 * Consume min(opener, closer) from each side. Residual closer
+                 * bytes are left for the next iteration; residual opener
+                 * stays on the stack. Full-run consumption made `_a__` drop
+                 * every underscore (plain "a") where a trailing `_` is
+                 * slug-significant.
+                 */
                 int pos = stack[matched].pos;
-                int len = stack[matched].len;
-                memmove(out + pos, out + pos + len, n - (size_t)(pos + len));
-                n -= (size_t)len;
-                open_count = matched;
-                i += run;
+                int opener_len = stack[matched].len;
+                int use = opener_len < run ? opener_len : run;
+                memmove(out + pos, out + pos + use, n - (size_t)(pos + use));
+                n -= (size_t)use;
+                for (int k = matched + 1; k < open_count; k++) {
+                    if (stack[k].pos > pos)
+                        stack[k].pos -= use;
+                }
+                /* Drop unmatched openers after this one (already literal). */
+                if (opener_len > use) {
+                    stack[matched].len = opener_len - use;
+                    open_count = matched + 1;
+                } else {
+                    open_count = matched;
+                }
+                i += use;
                 continue;
             }
             /* Unmatched openers stay in the output until something closes

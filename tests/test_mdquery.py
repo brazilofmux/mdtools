@@ -282,6 +282,14 @@ class SlugOracleTests(MdqueryTestCase):
                 self.assertEqual([b.slug for b in outline(document)], ["textid"])
                 self.assertEqual(self._pandoc_ids(path), ["textid"])
 
+    def test_spaced_inline_link_matches_pandoc_markdown(self) -> None:
+        # Tight `](` is a link; space before `(` is ordinary text under
+        # pandoc's default markdown (not CommonMark's optional whitespace).
+        path = self.dir / "s.md"
+        path.write_text("## [link] (http://x)\n", encoding="utf-8")
+        document = annotate(load([path])[0])
+        self.assertEqual([b.slug for b in outline(document)],
+                         self._pandoc_ids(path))
     def test_slugs_match_pandoc_across_scripts(self) -> None:
         # Greek, Cyrillic, CJK, Hangul and mathematics, because manuscripts
         # here use them. Python does the character filtering and lowercasing,

@@ -966,7 +966,10 @@ static int inline_html_tag_len(const char *s)
  * Span of an inline link or image starting at `s`, or 0.
  *
  * Fills text_off/text_len with the bracketed text. Only the inline form
- * counts: a '(' must follow the ']' immediately.
+ * counts: '(' must follow ']' with no intervening characters. Optional
+ * whitespace before '(' is accepted by CommonMark, but pandoc's default
+ * `markdown` reader treats `] (` as ordinary text (identifier `link-httpx`
+ * for `## [link] (http://x)`), so we require the tight form for parity.
  */
 static int inline_link_len(const char *s, int *text_off, int *text_len)
 {
@@ -991,7 +994,7 @@ static int inline_link_len(const char *s, int *text_off, int *text_len)
         return 0;
     int close = i;
     if (s[i + 1] != '(')
-        return 0;               /* reference or shortcut form: leave raw */
+        return 0;               /* reference, shortcut, or spaced form: leave raw */
     i += 2;
     depth = 1;
     for (; s[i]; i++) {
@@ -1014,18 +1017,11 @@ static int inline_link_len(const char *s, int *text_off, int *text_len)
 /*
  * Word-ish for the intraword-underscore rule, UTF-8 aware.
  *
- * `isalnum` is byte-based, so every multibyte letter looked like punctuation
- * and `漢字_の_強調` came out as `漢字の強調` where Pandoc keeps the underscores
- * literal. Pandoc applies the rule to Unicode alphanumerics, so any
- * continuation or lead byte counts as word-ish here.
- *
- * The approximation is deliberate and one-sided: a *symbol* above U+007F —
- * `∈_x_`, say — is alphanumeric to this test and is not to Pandoc, so mdfix
- * leaves the underscores literal where Pandoc would emphasise. Erring that way
- * keeps text as written rather than silently deleting a character, and it is
- * the direction that serves Greek, Cyrillic, CJK and Hangul prose, where an
- * underscore against a letter is the case that actually occurs. Classifying
- * properly needs Unicode character tables, which do not belong in this file.
+ * Byte-based isalnum treats every multibyte letter as punctuation, so
+ * `漢字_の_強調` lost its underscores. Any lead/continuation byte counts as
+ * word-ish here so CJK/Greek/Cyrillic keep intraword underscores like Pandoc.
+ * Symbols above U+007F are over-accepted (one-sided: keep text rather than
+ * delete); proper classification needs Unicode tables, not mdfix.rl.
  */
 static int is_wordish_byte(unsigned char c)
 {
@@ -1056,13 +1052,9 @@ static int emphasis_can_close(char marker, unsigned char before, unsigned char a
 #define IR_EMPH_STACK 32
 
 /*
- * Link text is processed in place rather than copied, and nesting is capped.
- *
- * The first version recursed with two MAX_LINE buffers per frame, so a heading
- * of nested link text — `[[[[x](u)](u)](u)](u)` and so on — overflowed the
- * stack and segfaulted at around 1200 levels. Passing a range removes the
- * per-frame buffers; the cap removes the unbounded recursion. Past the cap the
- * remaining text is copied verbatim, which under-reports rather than crashing.
+ * Link text is scanned in place (range, not a fresh buffer). Depth is capped
+ * so nested `[…](…)` cannot blow the stack; past the cap, remaining text is
+ * copied verbatim (under-report rather than crash).
  */
 #define IR_INLINE_MAX_DEPTH 24
 
@@ -1151,14 +1143,30 @@ static size_t inline_plain_range(const char *src, int from, int to,
                 }
             }
             if (matched >= 0) {
-                /* Splice the opener back out; anything pushed after it was
-                 * never matched and stays literal. */
+                /*
+                 * Consume min(opener, closer) from each side. Residual closer
+                 * bytes are left for the next iteration; residual opener
+                 * stays on the stack. Full-run consumption made `_a__` drop
+                 * every underscore (plain "a") where a trailing `_` is
+                 * slug-significant.
+                 */
                 int pos = stack[matched].pos;
-                int len = stack[matched].len;
-                memmove(out + pos, out + pos + len, n - (size_t)(pos + len));
-                n -= (size_t)len;
-                open_count = matched;
-                i += run;
+                int opener_len = stack[matched].len;
+                int use = opener_len < run ? opener_len : run;
+                memmove(out + pos, out + pos + use, n - (size_t)(pos + use));
+                n -= (size_t)use;
+                for (int k = matched + 1; k < open_count; k++) {
+                    if (stack[k].pos > pos)
+                        stack[k].pos -= use;
+                }
+                /* Drop unmatched openers after this one (already literal). */
+                if (opener_len > use) {
+                    stack[matched].len = opener_len - use;
+                    open_count = matched + 1;
+                } else {
+                    open_count = matched;
+                }
+                i += use;
                 continue;
             }
             /* Unmatched openers stay in the output until something closes
@@ -2608,7 +2616,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 2612 "mdfix.c"
+#line 2620 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -2616,20 +2624,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 2620 "mdfix.c"
+#line 2628 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 2989 "mdfix.rl"
+#line 2997 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 2740 "mdfix.rl"
+#line 2748 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -2669,7 +2677,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 2632 "mdfix.rl"
+#line 2640 "mdfix.rl"
 	{te = p+1;{
                 if (ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -2706,19 +2714,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 2625 "mdfix.rl"
+#line 2633 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 2625 "mdfix.rl"
+#line 2633 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 2924 "mdfix.rl"
+#line 2932 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -2742,7 +2750,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 2969 "mdfix.rl"
+#line 2977 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -2763,7 +2771,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 2947 "mdfix.rl"
+#line 2955 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -2786,13 +2794,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 2989 "mdfix.rl"
+#line 2997 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 2869 "mdfix.rl"
+#line 2877 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -2815,7 +2823,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 2782 "mdfix.rl"
+#line 2790 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_CHAR('.');
@@ -2866,13 +2874,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 2989 "mdfix.rl"
+#line 2997 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 2832 "mdfix.rl"
+#line 2840 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -2910,7 +2918,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 2891 "mdfix.rl"
+#line 2899 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -2944,7 +2952,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 2686 "mdfix.rl"
+#line 2694 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -2953,7 +2961,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 2668 "mdfix.rl"
+#line 2676 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -2963,7 +2971,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 2694 "mdfix.rl"
+#line 2702 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -2972,7 +2980,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 2677 "mdfix.rl"
+#line 2685 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -2982,7 +2990,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 2702 "mdfix.rl"
+#line 2710 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -3021,7 +3029,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 2625 "mdfix.rl"
+#line 2633 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -3034,7 +3042,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 3038 "mdfix.c"
+#line 3046 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -3060,7 +3068,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 3064 "mdfix.c"
+#line 3072 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -3104,7 +3112,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 3108 "mdfix.c"
+#line 3116 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -3153,7 +3161,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 3157 "mdfix.c"
+#line 3165 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -3172,7 +3180,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 3176 "mdfix.c"
+#line 3184 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -3198,7 +3206,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 3202 "mdfix.c"
+#line 3210 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -3247,7 +3255,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 3251 "mdfix.c"
+#line 3259 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -3327,7 +3335,7 @@ case 13:
 
 	}
 
-#line 2996 "mdfix.rl"
+#line 3004 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';

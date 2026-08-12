@@ -287,6 +287,9 @@ class BlockKindTests(IRTestCase):
             "**strong**": "strong",
             "<span>html</span>": "html",
             "mix *a* and _b_": "mix a and b",
+            # Residual closer: consume min(opener, closer), leave the rest.
+            "_a___": "a__",
+            "___a_": "__a",
         }
         for text, expected in cases.items():
             with self.subTest(heading=text):
@@ -295,9 +298,12 @@ class BlockKindTests(IRTestCase):
     def test_heading_plain_leaves_the_rest_alone(self) -> None:
         # Under-report rather than mis-report. Reference links especially:
         # Pandoc computes identifiers before resolving them, so raw is right.
+        # Spaced `] (` is not a tight inline link under pandoc markdown.
+        # Bracketed spans use `{`, not `(`, after `]`.
         for text in ("[text][id]", "[shortcut]", "note[^1]", "<http://auto>",
                      "`code` span", "a * b", "a_b_c", "_unclosed",
-                     "*unclosed", "trailing_", "intra_word_score"):
+                     "*unclosed", "trailing_", "intra_word_score",
+                     "[link] (http://x)", "[text]{.class}"):
             with self.subTest(heading=text):
                 self.assertEqual(self._ir(f"# {text}\n")[1]["plain"], text)
 

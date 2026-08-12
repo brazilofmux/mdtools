@@ -14,19 +14,16 @@ anchors follow Pandoc's rules and not GitHub's. Every rule below was read off
     'Emoji 🎉 here'                  -> 'emoji-here'
     duplicates                      -> '-1', '-2', …
 
-Slugs are computed from the IR's raw heading text, which still contains inline
-markup. That is deliberate: stripping `[link](url)` or `_emphasis_` here would
-mean teaching a consumer Markdown, which is precisely the leak dialect-policy
-§2 forbids. Markers that are not slug characters fall out for free (`*`, `` ` ``,
-`#`), so star-emphasis and code-spanned headings agree with Pandoc. Underscore
-emphasis and links do not — `_` is a kept character and link syntax survives
-as raw text until the IR carries inlines. See docs/mdquery.md Limits.
+`slugify` receives already-stripped plain text from mdfix (`heading.plain`
+via `query.annotate`). It must not parse Markdown — that is dialect-policy §2.
+Character filtering and Unicode lowercasing stay here because C is the wrong
+language for them. Star/code markers that somehow remain fall out of the
+filter as a secondary safety net; see docs/mdquery.md.
 """
 
 from __future__ import annotations
 
 # Kept as-is by Pandoc: letters, digits, underscore, hyphen, period, space.
-# Underscore is why "_emphasis_" does not fall out the way "*emphasis*" does.
 _KEEP_PUNCT = frozenset("_-. ")
 
 # `+smart` is pinned by dialect-policy §3, so Pandoc folds these before the

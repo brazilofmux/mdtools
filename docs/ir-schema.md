@@ -10,7 +10,7 @@ tool is meant to consume instead of re-deriving the grammar.
 ```console
 $ mdfix --emit-ir README.md | head -3
 {"kind":"document","schema":"mdtools-ir-1","source":"README.md","bytes":3184,"lines":118}
-{"kind":"heading","start":0,"end":9,"line":1,"endLine":1,"protected":false,"level":1,"text":"mdtools"}
+{"kind":"heading","start":0,"end":9,"line":1,"endLine":1,"protected":false,"level":1,"text":"mdtools","plain":"mdtools"}
 {"kind":"paragraph","start":11,"end":76,"line":3,"endLine":3,"protected":false}
 ```
 
@@ -95,6 +95,14 @@ raw form differs from what Pandoc slugs. Pinned with `pandoc -t json`:
 identifiers *before* it resolves references, so `## [text][id]` is `textid`
 whether or not the definition exists — verified both ways. Reducing it to
 `text` would be more principled and would not match.
+
+**Also left raw (known under-strips until inline records land):**
+
+- Spaced inline links: `## [link] (http://x)` — pandoc `markdown` does not
+  treat the space form as a link either (id `link-httpx`); CommonMark would.
+- Bracketed spans / attributes: `## [text]{.class}` — `]` is followed by `{`,
+  not `(`, so it is not an inline link; dots are slug-kept, so the id can
+  still diverge from Pandoc's plain `text` until attributes are stripped.
 
 Splitting the work here is deliberate. Stripping markup is Markdown grammar
 and belongs in mdfix; the character filtering and lowercasing that turn
