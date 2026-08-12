@@ -289,18 +289,44 @@ struct fence_state {
  *   side: a deeper-indented delimiter *inside* the block is content, and
  *   treating it as a closer would truncate the block.
  */
+/*
+ * Markdown indentation, measured in columns rather than characters.
+ *
+ * CommonMark uses a tab stop of four, so a leading tab is four columns of
+ * indentation even though it is one byte. Counting bytes let a tab-indented
+ * delimiter pass a three-space limit and close a fence the dialect still
+ * considers open — mdfix then applied prose fixes to the remaining code.
+ *
+ * out_chars receives the byte length of that whitespace, which callers still
+ * need when copying the original indentation verbatim.
+ */
+#define MD_TAB_STOP 4
+
+static int indent_columns(const char *line, int *out_chars)
+{
+    int col = 0;
+    int i = 0;
+    while (line[i] == ' ' || line[i] == '\t') {
+        col += (line[i] == '\t') ? (MD_TAB_STOP - (col % MD_TAB_STOP)) : 1;
+        i++;
+    }
+    if (out_chars)
+        *out_chars = i;
+    return col;
+}
+
 static int fence_prefix(
     const char *line,
-    int max_indent,
-    int *indent,
+    int max_indent_cols,
+    int *indent_chars,
+    int *indent_cols,
     char *marker,
     int *run_length,
     const char **rest)
 {
     int i = 0;
-    while (line[i] == ' ' || line[i] == '\t')
-        i++;
-    if (max_indent >= 0 && i > max_indent)
+    int cols = indent_columns(line, &i);
+    if (max_indent_cols >= 0 && cols > max_indent_cols)
         return 0;
 
     char c = line[i];
@@ -312,7 +338,8 @@ static int fence_prefix(
     if (i - start < 3)
         return 0;
 
-    *indent = start;
+    *indent_chars = start;
+    *indent_cols = cols;
     *marker = c;
     *run_length = i - start;
     *rest = line + i;
@@ -323,9 +350,10 @@ static int fence_prefix(
 static int parse_fence_opener(const char *line, struct fence_state *fence)
 {
     const char *rest;
-    int indent, run_length;
+    int indent_chars, indent_cols, run_length;
     char marker;
-    if (!fence_prefix(line, -1, &indent, &marker, &run_length, &rest))
+    if (!fence_prefix(line, -1, &indent_chars, &indent_cols,
+                      &marker, &run_length, &rest))
         return 0;
     if (marker == '`' && strchr(rest, '`') != NULL)
         return 0;
@@ -333,16 +361,18 @@ static int parse_fence_opener(const char *line, struct fence_state *fence)
     fence->active = 1;
     fence->marker = marker;
     fence->length = run_length;
-    fence->indent = indent;
+    /* Columns: the closer's allowance is measured relative to this. */
+    fence->indent = indent_cols;
     return 1;
 }
 
 static int is_fence_closer(const char *line, const struct fence_state *fence)
 {
     const char *rest;
-    int indent, run_length;
+    int indent_chars, indent_cols, run_length;
     char marker;
-    if (!fence_prefix(line, fence->indent + 3, &indent, &marker, &run_length, &rest))
+    if (!fence_prefix(line, fence->indent + 3, &indent_chars, &indent_cols,
+                      &marker, &run_length, &rest))
         return 0;
     if (marker != fence->marker || run_length < fence->length)
         return 0;
@@ -736,14 +766,16 @@ static int fix_fence_canonical(char *line, int linenum, int is_opening)
         return 0;
 
     const char *rest;
-    int indent, run_length;
+    int indent_chars, indent_cols, run_length;
     char marker;
-    if (!fence_prefix(line, -1, &indent, &marker, &run_length, &rest))
+    if (!fence_prefix(line, -1, &indent_chars, &indent_cols,
+                      &marker, &run_length, &rest))
         return 0;
 
     char buf[MAX_LINE];
     int bi = 0;
-    for (int k = 0; k < indent && bi < MAX_LINE - 1; k++)
+    /* Bytes, not columns: the original indentation is copied verbatim. */
+    for (int k = 0; k < indent_chars && bi < MAX_LINE - 1; k++)
         buf[bi++] = line[k];
     for (int k = 0; k < run_length && bi < MAX_LINE - 1; k++)
         buf[bi++] = marker;
@@ -1545,7 +1577,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 1549 "mdfix.c"
+#line 1581 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -1553,20 +1585,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 1557 "mdfix.c"
+#line 1589 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 1926 "mdfix.rl"
+#line 1958 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 1677 "mdfix.rl"
+#line 1709 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -1606,7 +1638,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 1569 "mdfix.rl"
+#line 1601 "mdfix.rl"
 	{te = p+1;{
                 if (ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -1643,19 +1675,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 1562 "mdfix.rl"
+#line 1594 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 1562 "mdfix.rl"
+#line 1594 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 1861 "mdfix.rl"
+#line 1893 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -1679,7 +1711,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 1906 "mdfix.rl"
+#line 1938 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -1700,7 +1732,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 1884 "mdfix.rl"
+#line 1916 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -1723,13 +1755,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 1926 "mdfix.rl"
+#line 1958 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 1806 "mdfix.rl"
+#line 1838 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -1752,7 +1784,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 1719 "mdfix.rl"
+#line 1751 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_CHAR('.');
@@ -1803,13 +1835,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 1926 "mdfix.rl"
+#line 1958 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 1769 "mdfix.rl"
+#line 1801 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -1847,7 +1879,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 1828 "mdfix.rl"
+#line 1860 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -1881,7 +1913,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 1623 "mdfix.rl"
+#line 1655 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -1890,7 +1922,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 1605 "mdfix.rl"
+#line 1637 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -1900,7 +1932,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 1631 "mdfix.rl"
+#line 1663 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -1909,7 +1941,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 1614 "mdfix.rl"
+#line 1646 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -1919,7 +1951,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 1639 "mdfix.rl"
+#line 1671 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -1958,7 +1990,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 1562 "mdfix.rl"
+#line 1594 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -1971,7 +2003,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 1975 "mdfix.c"
+#line 2007 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -1997,7 +2029,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 2001 "mdfix.c"
+#line 2033 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -2041,7 +2073,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 2045 "mdfix.c"
+#line 2077 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -2090,7 +2122,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 2094 "mdfix.c"
+#line 2126 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -2109,7 +2141,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 2113 "mdfix.c"
+#line 2145 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -2135,7 +2167,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 2139 "mdfix.c"
+#line 2171 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -2184,7 +2216,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 2188 "mdfix.c"
+#line 2220 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -2264,7 +2296,7 @@ case 13:
 
 	}
 
-#line 1933 "mdfix.rl"
+#line 1965 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';

@@ -281,6 +281,34 @@ class Document:
         return "".join(out)
 
 
+# CommonMark measures block indentation in columns with a tab stop of four,
+# not in characters.
+_TAB_STOP = 4
+
+
+def indent_columns(text: str) -> Tuple[int, int]:
+    """
+    (columns, characters) spanned by text's leading whitespace.
+
+    A tab advances to the next multiple of four, so a leading tab is four
+    columns of indentation even though it is one character. Counting
+    characters let a tab-indented delimiter pass a three-space limit and close
+    a fence that CommonMark and GFM still consider open — everything after it,
+    including the real closer, then reached generation as prose.
+    """
+    col = 0
+    chars = 0
+    for ch in text:
+        if ch == " ":
+            col += 1
+        elif ch == "\t":
+            col += _TAB_STOP - (col % _TAB_STOP)
+        else:
+            break
+        chars += 1
+    return col, chars
+
+
 def _fence_opener(text: str) -> Optional[FenceState]:
     """Return a CommonMark/Pandoc fence descriptor, or None."""
     line = text.rstrip("\r\n")
@@ -295,7 +323,8 @@ def _fence_opener(text: str) -> Optional[FenceState]:
     return FenceState(
         marker=run[0],
         length=len(run),
-        indent=len(m.group("indent")),
+        # Columns, not characters: the closer's limit is relative to this.
+        indent=indent_columns(m.group("indent"))[0],
     )
 
 
@@ -303,17 +332,18 @@ def _is_fence_closer(text: str, fence: FenceState) -> bool:
     """
     Whether text is a valid closer for fence.
 
-    Indentation may exceed the opener's by at most 3, the CommonMark rule
-    relative to the container. Unlike the opener this must stay strict: a
+    Indentation may exceed the opener's by at most 3 *columns*, the CommonMark
+    rule relative to the container. Unlike the opener this must stay strict: a
     more deeply indented delimiter inside the block is content, and accepting
     it as a closer would truncate the block.
+
+    Columns matter here: one tab is a single character but four columns, so a
+    tab-indented delimiter is content, not a closer.
     """
     line = text.rstrip("\r\n")
     limit = fence.indent + 3
-    i = 0
-    while i < len(line) and line[i] in " \t":
-        i += 1
-    if i > limit:
+    cols, i = indent_columns(line)
+    if cols > limit:
         return False
     start = i
     while i < len(line) and line[i] == fence.marker:
