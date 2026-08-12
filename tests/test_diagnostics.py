@@ -36,8 +36,9 @@ EXPECTED_RULES = {
     "chicago.etal-period", "footnote.ref-format", "footnote.def-format",
     "heading.atx-space", "heading.canonical", "fence.canonical",
     "link.autolink-bare", "heading.scrivener-split",
-    # lint-only, not fix categories
+    # lint-only / structural warnings, not fix categories
     "chicago.number-style", "chicago.serial-comma",
+    "fence.unterminated",
 }
 
 
@@ -113,6 +114,22 @@ class StreamTests(DiagnosticsTestCase):
         )
         self.assertEqual(result.stdout, "# T\n\nThe quick fox.\n")
 
+    def test_apply_edits_dirt_check_does_not_emit(self) -> None:
+        # count_required_repairs runs process() on temp buffers; it must not
+        # leak JSONL for those buffers when --diagnostics is on.
+        path = self._file("# Title\n\nThe quick brown fox.\n")
+        data = path.read_bytes()
+        i = data.index(b"quick")
+        result = subprocess.run(
+            [str(MDFIX), "-q", "--diagnostics", "--apply-edits", str(path)],
+            input=json.dumps({"start": i, "end": i + 5,
+                              "replacement": "slow"}) + "\n",
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(result.stderr.strip(), "",
+                         msg=f"leaked diagnostics: {result.stderr!r}")
+
 
 class LocatedTests(DiagnosticsTestCase):
     """ID.1."""
@@ -166,6 +183,25 @@ class IdentifiedTests(DiagnosticsTestCase):
         rows, _ = self._diagnose(text, "--canonical")
         headings = [r for r in rows if r["rule"].startswith("heading.")]
         self.assertEqual(len(headings), 1)
+
+    def test_single_digit_number_style_emits_once(self) -> None:
+        rows, _ = self._diagnose(
+            "There were 3 apples on the table.\n", "--chicago-number-lint")
+        nums = [r for r in rows if r["rule"] == "chicago.number-style"]
+        self.assertEqual(len(nums), 1)
+        self.assertEqual(nums[0]["severity"], "warning")
+
+    def test_mixed_number_style_emits_under_diagnostics(self) -> None:
+        rows, _ = self._diagnose(
+            "There were three apples and 12 oranges.\n",
+            "--chicago-number-lint")
+        nums = [r for r in rows if r["rule"] == "chicago.number-style"]
+        self.assertEqual(len(nums), 1)
+
+    def test_unterminated_fence_is_visible(self) -> None:
+        rows, _ = self._diagnose("```\ncode\n", "--canonical")
+        rules = [r["rule"] for r in rows]
+        self.assertIn("fence.unterminated", rules)
 
 
 class SourceConsistencyTests(unittest.TestCase):

@@ -61,10 +61,12 @@ change the file and always carry `severity: "warning"`.
 ## Gating in CI
 
 ```bash
-# fail if anything but the required repairs would fire
+# fail if anything but the three required repairs would fire
 mdfix -n --diagnostics --canonical *.md 2>&1 >/dev/null \
   | jq -e 'select(.severity == "fix"
-                  and (.rule | startswith("heading.atx-space") | not))' \
+                  and .rule != "heading.atx-space"
+                  and .rule != "list.blank-before"
+                  and .rule != "list.blank-after")' \
   && exit 1 || exit 0
 ```
 
@@ -83,6 +85,9 @@ applier requires one.
 **One diagnostic per rule per line.** The scanner merges its hits per line
 before reporting, so two ellipses on one line report once.
 
-**Not yet emitted:** the L1 encoding errors from #53 and the
-under-report warnings mdquery prints. Both are diagnostics in everything but
-format, and should move to this stream.
+`fence.unterminated` is a warning when a fence closer never matches (the rest
+of the file was left unchecked).
+
+**Not yet emitted:** the L1 encoding errors from #53 and the under-report
+warnings mdquery prints. Both are diagnostics in everything but format, and
+should move to this stream.

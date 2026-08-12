@@ -2791,8 +2791,6 @@ static void lint_chicago_numbers(const char *line, int linenum)
 
             if (!skip_number && val >= 1 && val <= 9 && num_len == 1) {
                 number_style_warnings++;
-        emit_diagnostic("chicago.number-style", "warning", linenum,
-                        "likely Chicago number-style issue");
                 emit_diagnostic("chicago.number-style", "warning", linenum,
                                 "likely Chicago number-style issue");
                 if (!opt_quiet) {
@@ -2822,6 +2820,8 @@ static void lint_chicago_numbers(const char *line, int linenum)
 
     if (saw_word_small && saw_numeric_large && strstr(line, " and ") != NULL) {
         number_style_warnings++;
+        emit_diagnostic("chicago.number-style", "warning", linenum,
+                        "likely Chicago number-style issue");
         if (!opt_quiet) {
             fprintf(stderr,
                 "  line %d: possible mixed number style (spelled-out + numeral)\n",
@@ -4207,6 +4207,8 @@ static void process(FILE *out)
      */
     if (fence.active) {
         unterminated_fence_warnings++;
+        emit_diagnostic("fence.unterminated", "warning", fence.open_line,
+                        "unterminated code fence");
         if (!opt_quiet) {
             fprintf(stderr,
                 "  warning: unterminated code fence opened at line %d "
@@ -4647,7 +4649,7 @@ static int count_required_repairs(const char *text, long long len)
     int saved_required = opt_required;
     int saved_editorial = opt_editorial, saved_ws = opt_trail_ws;
     int saved_wrap = opt_wrap_width, saved_quiet = opt_quiet;
-    int saved_verbose = opt_verbose;
+    int saved_verbose = opt_verbose, saved_diagnostics = opt_diagnostics;
     int saved_chi = opt_chicago_punct, saved_chi2 = opt_chicago_punct2;
     int saved_abbrev = opt_chicago_abbrev;
     int saved_fn = opt_footnote_canonical, saved_head = opt_heading_canonical;
@@ -4674,6 +4676,8 @@ static int count_required_repairs(const char *text, long long len)
     opt_no_arrow_aside = 1;
     opt_quiet = 1;
     opt_verbose = 0;
+    /* Internal dirt check must not leak JSONL for temp buffers. */
+    opt_diagnostics = 0;
     memset(fix_counts, 0, sizeof fix_counts);
 
     int dirty = -1;
@@ -4708,6 +4712,7 @@ static int count_required_repairs(const char *text, long long len)
     opt_no_arrow_aside = saved_no_arrow;
     opt_quiet = saved_quiet;
     opt_verbose = saved_verbose;
+    opt_diagnostics = saved_diagnostics;
     memset(fix_counts, 0, sizeof fix_counts);
     return dirty;
 }
