@@ -79,6 +79,11 @@ CORPUS = {
     "ellipsis": "He paused . . . then spoke.\n",
     "links": "See [a link](http://x) and ![img](i.png).\n",
     "table": "| a | b |\n|---|---|\n| 1 | 2 |\n",
+    # A headerless pipe table wide enough that --wrap would reflow it;
+    # before #65 that joined the header to the delimiter row.
+    "headerless table": ("Column name here | Another column name | A third\n"
+                         "--- | --- | ---\n"
+                         "value one here | value two here | value three\n"),
     "footnote": "Text[^1].\n\n[^1]: Note.\n",
     "nested": "- item\n\n  ```\n  code\n  ```\n\n- next\n",
     "longpara": "word " * 40 + "\n",

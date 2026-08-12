@@ -942,8 +942,37 @@ static int is_thematic_break(const char *line)
     return count >= 3;
 }
 
-static int is_wrappable(const char *line, enum linetype type)
+static int is_pipe_delim_row(const char *line);
+
+/*
+ * Lines belonging to a pipe table, marked once per file.
+ *
+ * is_wrappable sees one line at a time, and a pipe table without a leading
+ * '|' cannot be recognized from one line — so --wrap joined its header to its
+ * delimiter row and rewrapped the result, destroying the table while pandoc
+ * still called the block a Table. The rule here is the one emit_ir uses: a
+ * line containing '|' whose successor is a delimiter row starts a table that
+ * runs to the first line with no '|'.
+ */
+static unsigned char pipe_table_line[MAX_LINES];
+
+static void mark_pipe_tables(void)
 {
+    memset(pipe_table_line, 0, (size_t)nlines);
+    for (int i = 0; i + 1 < nlines; i++) {
+        if (!strchr(lines[i], '|') || !is_pipe_delim_row(lines[i + 1]))
+            continue;
+        int j = i;
+        while (j < nlines && strchr(lines[j], '|'))
+            pipe_table_line[j++] = 1;
+        i = j - 1;
+    }
+}
+
+static int is_wrappable_at(const char *line, enum linetype type, int index)
+{
+    if (index >= 0 && index < nlines && pipe_table_line[index])
+        return 0;
     if (type != LT_TEXT)
         return 0;
     if (is_table_line(line))
@@ -954,6 +983,7 @@ static int is_wrappable(const char *line, enum linetype type)
         return 0;
     return 1;
 }
+
 
 /* ═══════════════════════════════════════════════════════════════════
  * Structural IR — see docs/ir-schema.md
@@ -1564,16 +1594,38 @@ static void emit_ir(FILE *out, const char *source)
             continue;
         }
 
-        /* ── Pipe table, or the line block it would otherwise be mistaken for ──
+        /*
+         * ── Pipe table, or the line block it would otherwise be mistaken for ──
+         *
          * The delimiter row is the discriminator; see is_pipe_delim_row.
-         * Neither is byte-protected by mdfix today (dialect-policy §7 gaps
-         * 1 and 4), which is what "protected": false records. */
-        if (is_table_line(line)) {
+         * A leading '|' is *not* required — `a | b` over `--|--` is a Table to
+         * pandoc, and reporting it as a paragraph handed table rows to any
+         * consumer editing prose (#65).
+         *
+         * The header must start a block, which is automatic here: this branch
+         * is only reached at a block boundary, and a header line following
+         * prose with no blank between is absorbed by the paragraph branch —
+         * which is what pandoc does with it.
+         *
+         * Both forms run to the first line with no '|'. Neither is
+         * byte-protected by mdfix today (dialect-policy §7 gaps 1 and 4),
+         * which is what "protected": false records.
+         */
+        int leading_pipe = is_table_line(line);
+        int headerless = !leading_pipe && strchr(line, '|') != NULL
+                         && i + 1 < nlines && is_pipe_delim_row(lines[i + 1]);
+        if (leading_pipe || headerless) {
+            int is_table = headerless
+                || (i + 1 < nlines && is_pipe_delim_row(lines[i + 1]));
             int j = i;
-            while (j < nlines && is_table_line(lines[j]))
-                j++;
+            if (is_table)
+                while (j < nlines && strchr(lines[j], '|') != NULL)
+                    j++;
+            else
+                while (j < nlines && is_table_line(lines[j]))
+                    j++;
             int end = j - 1;
-            if (end > i && is_pipe_delim_row(lines[i + 1])) {
+            if (is_table && end > i) {
                 ir_open(out, "table", i, end, 0);
                 fputs(",\"form\":\"pipe\"}\n", out);
             } else {
@@ -3510,6 +3562,8 @@ static void process(FILE *out)
      */
     const int fmatter_close = frontmatter_close_line();
     int in_frontmatter     = 0;
+
+    mark_pipe_tables();
     struct fence_state fence = {0, 0, 0, 0, 0};
     enum raw_html_kind raw_html = RAW_HTML_NONE;
 
@@ -3868,7 +3922,7 @@ static void process(FILE *out)
         }
 
         /* Write the (possibly modified) line */
-        if (opt_wrap_width > 0 && is_wrappable(line, type)) {
+        if (opt_wrap_width > 0 && is_wrappable_at(line, type, i)) {
             para_lines_buf[npara++] = line;
         } else {
             flush_paragraph(out);
