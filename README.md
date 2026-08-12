@@ -11,6 +11,10 @@ Private toolkit for markdown structure and controlled prose variation.
 These used to be copy-pasted across `slow32-book`, `mush`, `religions`, and others.
 This repo is the source of truth.
 
+Writing a manuscript rather than a pass? [docs/writing.md](docs/writing.md) is
+the dialect from the author's side — what you can write, and what the tools
+will do with it.
+
 Read [docs/architecture.md](docs/architecture.md) for the layering and the
 invariants each stage guarantees,
 [docs/transforms.md](docs/transforms.md) for which fixes run by default, then
