@@ -156,13 +156,15 @@ static int  opt_wrap_width = 0;       /* 0 = disabled */
 
 static int  serial_comma_warnings = 0;
 static int  number_style_warnings = 0;
+static int  unterminated_fence_warnings = 0;
 
 static char *lines[MAX_LINES];
 static int   nlines = 0;
 
 static int total_issues(void)
 {
-    int total = serial_comma_warnings + number_style_warnings;
+    int total = serial_comma_warnings + number_style_warnings
+              + unterminated_fence_warnings;
     for (int i = 0; i < NUM_FIXES; i++)
         total += fix_counts[i];
     return total;
@@ -248,21 +250,38 @@ struct fence_state {
     char marker;
     int  length;
     int  indent;
+    int  open_line;   /* 1-based, for the unterminated-fence diagnostic */
 };
 
-/* Parse the indentation and marker run shared by openers and closers. */
+/*
+ * Parse the indentation and marker run shared by openers and closers.
+ *
+ * max_indent is the deepest indentation accepted, or -1 for any. Openers and
+ * closers differ here on purpose:
+ *
+ *   Openers pass -1. A fence inside an ordered list item sits at content
+ *   column 4+, which is a real fence in CommonMark/GFM. mdfix does not track
+ *   list-content indentation, so it cannot tell that from an indented code
+ *   block — and capping the indent drops real fences, handing shell commands
+ *   to the prose pipeline to be reflowed. Being permissive is the safe side.
+ *
+ *   Closers pass the opening fence's indent + 3, which is the CommonMark rule
+ *   relative to the container. Being permissive here would be the unsafe
+ *   side: a deeper-indented delimiter *inside* the block is content, and
+ *   treating it as a closer would truncate the block.
+ */
 static int fence_prefix(
     const char *line,
+    int max_indent,
     int *indent,
     char *marker,
     int *run_length,
     const char **rest)
 {
     int i = 0;
-    while (i < 3 && line[i] == ' ')
+    while (line[i] == ' ' || line[i] == '\t')
         i++;
-    /* Four-space and tab-indented lines are code, not fenced openers. */
-    if (line[i] == ' ' || line[i] == '\t')
+    if (max_indent >= 0 && i > max_indent)
         return 0;
 
     char c = line[i];
@@ -287,7 +306,7 @@ static int parse_fence_opener(const char *line, struct fence_state *fence)
     const char *rest;
     int indent, run_length;
     char marker;
-    if (!fence_prefix(line, &indent, &marker, &run_length, &rest))
+    if (!fence_prefix(line, -1, &indent, &marker, &run_length, &rest))
         return 0;
     if (marker == '`' && strchr(rest, '`') != NULL)
         return 0;
@@ -304,7 +323,7 @@ static int is_fence_closer(const char *line, const struct fence_state *fence)
     const char *rest;
     int indent, run_length;
     char marker;
-    if (!fence_prefix(line, &indent, &marker, &run_length, &rest))
+    if (!fence_prefix(line, fence->indent + 3, &indent, &marker, &run_length, &rest))
         return 0;
     if (marker != fence->marker || run_length < fence->length)
         return 0;
@@ -700,7 +719,7 @@ static int fix_fence_canonical(char *line, int linenum, int is_opening)
     const char *rest;
     int indent, run_length;
     char marker;
-    if (!fence_prefix(line, &indent, &marker, &run_length, &rest))
+    if (!fence_prefix(line, -1, &indent, &marker, &run_length, &rest))
         return 0;
 
     char buf[MAX_LINE];
@@ -1894,7 +1913,7 @@ static void process(FILE *out)
     int in_frontmatter     = 0;
     int frontmatter_opened = 0;   /* have we seen the opening --- ? */
     int frontmatter_closed = 0;   /* have we seen the closing --- ? */
-    struct fence_state fence = {0, 0, 0, 0};
+    struct fence_state fence = {0, 0, 0, 0, 0};
 
     enum linetype prev_content_type = LT_BLANK;
     int prev_was_list_ctx = 0;    /* was previous content in a list context? */
@@ -1954,6 +1973,7 @@ static void process(FILE *out)
         if (parse_fence_opener(line, &opener)) {
             flush_paragraph(out);
             fix_fence_canonical(line, i + 1, 1);
+            opener.open_line = i + 1;
             fence = opener;
             fix_trailing_ws(line, i + 1);
             fprintf(out, "%s\n", line);
@@ -2067,6 +2087,23 @@ static void process(FILE *out)
         had_blank = 0;
     }
 
+    /*
+     * A fence whose closer never matched swallows the rest of the file: every
+     * later line is emitted verbatim and no pass ever sees it. Silence here
+     * made --canonical-lint report a clean exit 0 on a file it had largely
+     * skipped, so a CI gate stopped covering anything past the first
+     * mismatched delimiter. Count it as an issue so the gate fails.
+     */
+    if (fence.active) {
+        unterminated_fence_warnings++;
+        if (!opt_quiet) {
+            fprintf(stderr,
+                "  warning: unterminated code fence opened at line %d "
+                "(%d '%c'); rest of file left unchecked\n",
+                fence.open_line, fence.length, fence.marker);
+        }
+    }
+
     flush_paragraph(out);
 }
 
@@ -2080,7 +2117,8 @@ static void print_summary(const char *path)
     for (int i = 0; i < NUM_FIXES; i++)
         total += fix_counts[i];
 
-    if (total == 0 && serial_comma_warnings == 0 && number_style_warnings == 0) {
+    if (total == 0 && serial_comma_warnings == 0 && number_style_warnings == 0
+        && unterminated_fence_warnings == 0) {
         printf("%s: clean. Nothing to fix.\n", path);
         return;
     }
@@ -2101,6 +2139,11 @@ static void print_summary(const char *path)
         printf("  %-40s %d\n",
             "number style warnings (lint-only)",
             number_style_warnings);
+    }
+    if (unterminated_fence_warnings > 0) {
+        printf("  %-40s %d\n",
+            "unterminated code fence",
+            unterminated_fence_warnings);
     }
 }
 

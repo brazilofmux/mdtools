@@ -30,6 +30,28 @@ class FenceGrammarTests(unittest.TestCase):
         self.assertIsNone(_fence_opener("```bad`info"))
         self.assertIsNotNone(_fence_opener("~~~bad`info"))
 
+    def test_opener_accepts_list_item_indentation(self) -> None:
+        # A fence inside an ordered list item sits at content column 4+.
+        # Capping opener indent classified the block as prose and fed shell
+        # code to the wrapper/paraphraser.
+        fence = _fence_opener("    ```sh")
+        self.assertIsNotNone(fence)
+        assert fence is not None
+        self.assertEqual(fence.indent, 4)
+
+    def test_closer_indent_is_relative_to_its_opener(self) -> None:
+        # Closers stay strict, but strict *relative to the opener* — else an
+        # indented block could never be closed.
+        indented = _fence_opener("    ```sh")
+        assert indented is not None
+        self.assertTrue(_is_fence_closer("    ```", indented))
+        self.assertTrue(_is_fence_closer("       ```", indented))
+        self.assertFalse(_is_fence_closer("        ```", indented))
+
+        flush = _fence_opener("```sh")
+        assert flush is not None
+        self.assertFalse(_is_fence_closer("    ```", flush))
+
 
 class SharedFenceFixtureTests(unittest.TestCase):
     def test_prosevary_exposes_only_prose_outside_fences(self) -> None:
@@ -79,6 +101,58 @@ class SharedFenceFixtureTests(unittest.TestCase):
 
         self.assertLess(output.index("This paragraph"), output.index("````text"))
         self.assertIn("````text\ncode stays after prose\n````\n", output)
+
+
+class IndentedFenceTests(unittest.TestCase):
+    LIST_FENCE = (
+        "1. Item:\n"
+        "\n"
+        "    ```sh\n"
+        '    git log --pretty=format:"%h %an" --since=2024-01-01 --author=x --all\n'
+        "    ```\n"
+        "\n"
+        "2. Next.\n"
+    )
+
+    def test_mdfix_does_not_reflow_fence_inside_list_item(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "in.md"
+            dst = Path(tmp) / "out.md"
+            src.write_text(self.LIST_FENCE, encoding="utf-8")
+            subprocess.run(
+                [str(MDFIX), "-q", "--technical", str(src), str(dst)],
+                check=True, capture_output=True, text=True,
+            )
+            # --technical enables --wrap=78; the long command must survive whole.
+            self.assertEqual(dst.read_text(encoding="utf-8"), self.LIST_FENCE)
+
+    def test_prosevary_does_not_expose_fence_inside_list_item(self) -> None:
+        doc = parse(self.LIST_FENCE)
+        sentences = [s.text for r in doc.regions for s in r.sentences]
+        self.assertFalse([s for s in sentences if "git log" in s or "```" in s])
+        self.assertEqual(doc.reconstruct({}), self.LIST_FENCE)
+
+
+class UnterminatedFenceTests(unittest.TestCase):
+    def test_canonical_lint_fails_on_mismatched_closer(self) -> None:
+        # Opened with backticks, "closed" with tildes: the old toggle balanced
+        # these, so the gate reported clean while skipping the rest of the file.
+        source = (
+            "```sh\n"
+            "code here\n"
+            "~~~\n"
+            "\n"
+            "More -- prose that canonical would fix.\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "in.md"
+            src.write_text(source, encoding="utf-8")
+            result = subprocess.run(
+                [str(MDFIX), "--canonical-lint", str(src)],
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("unterminated code fence", result.stderr)
 
 
 if __name__ == "__main__":

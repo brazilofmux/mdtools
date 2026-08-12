@@ -29,7 +29,11 @@ class LineKind(Enum):
 
 
 _HEADING = re.compile(r"^#{1,6}\s")
-_FENCE_OPEN = re.compile(r"^(?P<indent> {0,3})(?P<marker>`{3,}|~{3,})(?P<rest>.*)$")
+# Openers accept any indentation: a fence inside an ordered list item sits at
+# content column 4+ and is a real fence. Capping it here classified the block
+# as TEXT and handed shell code to the paraphraser. Closers are stricter —
+# see _is_fence_closer.
+_FENCE_OPEN = re.compile(r"^(?P<indent>[ \t]*)(?P<marker>`{3,}|~{3,})(?P<rest>.*)$")
 _TABLE = re.compile(r"^\|")
 _BLOCKQUOTE = re.compile(r"^>\s?")
 _LIST = re.compile(r"^(\s*)([-*+]|\d+\.)\s+")
@@ -143,12 +147,20 @@ def _fence_opener(text: str) -> Optional[FenceState]:
 
 
 def _is_fence_closer(text: str, fence: FenceState) -> bool:
-    """Whether text is a valid closer for fence."""
+    """
+    Whether text is a valid closer for fence.
+
+    Indentation may exceed the opener's by at most 3, the CommonMark rule
+    relative to the container. Unlike the opener this must stay strict: a
+    more deeply indented delimiter inside the block is content, and accepting
+    it as a closer would truncate the block.
+    """
     line = text.rstrip("\r\n")
+    limit = fence.indent + 3
     i = 0
-    while i < len(line) and i < 3 and line[i] == " ":
+    while i < len(line) and line[i] in " \t":
         i += 1
-    if i < len(line) and line[i] == " ":
+    if i > limit:
         return False
     start = i
     while i < len(line) and line[i] == fence.marker:
