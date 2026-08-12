@@ -14,6 +14,27 @@ ROOT = Path(__file__).resolve().parents[1]
 MDFIX = ROOT / "mdfix" / "mdfix"
 
 
+def _require_fresh_binary() -> None:
+    """
+    Fail loudly if mdfix is older than its source.
+
+    These tests shell out to whatever binary sits at that path. `make test`
+    rebuilds first, but running unittest directly does not — and switching
+    branches in this repo leaves a stale binary, since mdfix.c is generated
+    and committed. A stale binary gives false greens *and* false reds; the
+    latter cost real time chasing a phantom bug during review.
+    """
+    if not MDFIX.is_file():
+        raise unittest.SkipTest(f"{MDFIX} not built; run `make -C mdfix`")
+    source = ROOT / "mdfix" / "mdfix.c"
+    if source.is_file() and source.stat().st_mtime > MDFIX.stat().st_mtime:
+        raise AssertionError(
+            f"{MDFIX} is older than {source} — rebuild with `make -C mdfix` "
+            "before running these tests; results against a stale binary are "
+            "meaningless in both directions."
+        )
+
+
 def _run(args: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [str(MDFIX), *args],
@@ -25,6 +46,7 @@ def _run(args: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
 
 class AtomicInplaceTests(unittest.TestCase):
     def setUp(self) -> None:
+        _require_fresh_binary()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.dir = Path(self.tmp.name)
@@ -65,21 +87,53 @@ class AtomicInplaceTests(unittest.TestCase):
         self.assertTrue(bak.is_file())
         self.assertEqual(bak.read_text(encoding="utf-8"), original)
 
-    def test_existing_bak_is_not_clobbered(self) -> None:
+    def test_bak_is_always_the_previous_version(self) -> None:
+        # `-i` documents "creates .bak backup", and the undo everyone reaches
+        # for is `mv doc.md.bak doc.md`. Hunting for a free name (.bak.1,
+        # .bak.2, …) kept .bak as the *oldest* preimage, so that undo silently
+        # restored a version several edits stale. A backup that is not the
+        # previous version is worse than none, because it looks like one.
+        path = self.dir / "doc.md"
+        bak = Path(str(path) + ".bak")
+
+        for i in range(1, 5):
+            path.write_text(f"* item {i}\n", encoding="utf-8")
+            result = _run(["-i", "-q", str(path)])
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertEqual(path.read_text(encoding="utf-8"), f"- item {i}\n")
+            # .bak always holds the immediately preceding content.
+            self.assertEqual(bak.read_text(encoding="utf-8"), f"* item {i}\n")
+
+        # No numbered ladder accumulating in the tree.
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()),
+                         ["doc.md", "doc.md.bak"])
+
+    def test_dangling_symlink_backup_is_replaced_not_followed(self) -> None:
+        # lstat, not stat: a dangling symlink reports ENOENT under stat, so the
+        # name looked free and the link was destroyed by the rename.
         path = self.dir / "doc.md"
         bak = Path(str(path) + ".bak")
         path.write_text("* one\n", encoding="utf-8")
-        bak.write_text("PREEXISTING BACKUP\n", encoding="utf-8")
+        bak.symlink_to("/nonexistent/target")
 
         result = _run(["-i", "-q", str(path)])
         self.assertEqual(result.returncode, 0, msg=result.stderr)
-        # Old .bak untouched.
-        self.assertEqual(bak.read_text(encoding="utf-8"), "PREEXISTING BACKUP\n")
-        # New backup under a free name.
-        bak1 = Path(str(path) + ".bak.1")
-        self.assertTrue(bak1.is_file())
-        self.assertEqual(bak1.read_text(encoding="utf-8"), "* one\n")
+        self.assertFalse(bak.is_symlink())
+        self.assertEqual(bak.read_text(encoding="utf-8"), "* one\n")
+
+    def test_input_path_never_disappears_during_install(self) -> None:
+        # The backup is hard-linked aside, not renamed, so the original inode
+        # is reachable by both names until a single atomic rename swaps in the
+        # new content. Rename-aside leaves a window with no file at the path.
+        path = self.dir / "doc.md"
+        path.write_text("* one\n", encoding="utf-8")
+        result = _run(["-i", "-q", str(path)])
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertTrue(path.is_file())
         self.assertEqual(path.read_text(encoding="utf-8"), "- one\n")
+        self.assertEqual(
+            Path(str(path) + ".bak").read_text(encoding="utf-8"), "* one\n"
+        )
 
     def test_original_survives_when_directory_not_writable(self) -> None:
         # mkstemp cannot create a temp beside the file → fail before touching

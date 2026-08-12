@@ -56,6 +56,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -2294,32 +2295,50 @@ static int files_identical(const char *path_a, const char *path_b)
 }
 
 /*
- * Pick a backup path that does not clobber an existing file.
- * Prefer input.bak; if that exists, input.bak.1, .2, … .
- * Returns 0 on success, -1 if no free name or buffer too small.
+ * Build the backup path: always "<input>.bak", always the immediately
+ * preceding version.
+ *
+ * An earlier revision hunted for a free name (.bak, then .bak.1, .bak.2, …)
+ * so it would never clobber anything. That inverted the contract -i
+ * documents: after four edits, .bak held the *oldest* preimage, so the
+ * conventional undo `mv doc.md.bak doc.md` silently restored a version four
+ * edits stale. It also littered a tree on any repeat run and refused to fix
+ * the file at all once 10000 names were taken.
+ *
+ * A backup that is not the previous version is worse than no backup, because
+ * it looks like one. Overwriting the previous .bak is what a backup is for.
  */
-static int choose_backup_path(const char *input_path, char *bak, size_t bak_sz)
+static int build_backup_path(const char *input_path, char *bak, size_t bak_sz)
 {
-    struct stat st;
-    int n;
+    int n = snprintf(bak, bak_sz, "%s.bak", input_path);
+    return (n < 0 || (size_t)n >= bak_sz) ? -1 : 0;
+}
 
-    n = snprintf(bak, bak_sz, "%s.bak", input_path);
-    if (n < 0 || (size_t)n >= bak_sz)
-        return -1;
-    if (stat(bak, &st) != 0)
-        return (errno == ENOENT) ? 0 : -1;
+/*
+ * fsync the directory containing path, so a completed rename survives power
+ * loss. Best-effort: a filesystem that refuses to open or sync a directory is
+ * not a reason to fail an edit that already succeeded.
+ */
+static void fsync_parent_dir(const char *path)
+{
+    char dir[PATH_MAX];
+    int n = snprintf(dir, sizeof(dir), "%s", path);
+    if (n < 0 || (size_t)n >= sizeof(dir))
+        return;
 
-    for (int i = 1; i < 10000; i++) {
-        n = snprintf(bak, bak_sz, "%s.bak.%d", input_path, i);
-        if (n < 0 || (size_t)n >= bak_sz)
-            return -1;
-        if (stat(bak, &st) != 0) {
-            if (errno == ENOENT)
-                return 0;
-            return -1;
-        }
-    }
-    return -1;
+    char *slash = strrchr(dir, '/');
+    if (slash == dir)
+        dir[1] = '\0';          /* "/file" -> "/" */
+    else if (slash)
+        *slash = '\0';
+    else
+        snprintf(dir, sizeof(dir), ".");
+
+    int dfd = open(dir, O_RDONLY);
+    if (dfd < 0)
+        return;
+    (void)fsync(dfd);
+    close(dfd);
 }
 
 /*
@@ -2407,14 +2426,15 @@ static int write_inplace(const char *input_path)
         unlink(tmp_path);
         return 1;
     }
-    /* Best-effort ownership; ignore EPERM when not root. */
-    if (fchown(fd, st.st_uid, st.st_gid) != 0 && errno != EPERM) {
-        fprintf(stderr, "Can't set owner on temp file: ");
-        perror(NULL);
-        close(fd);
-        unlink(tmp_path);
-        return 1;
-    }
+    /*
+     * Best-effort ownership, and best-effort means ignore every failure.
+     * Treating anything but EPERM as fatal made mdfix refuse to edit *any*
+     * file on mounts that simply do not implement ownership — vfat/exfat,
+     * some CIFS/9p/virtiofs and FUSE mounts return ENOTSUP, EINVAL or EROFS.
+     * The old code never touched ownership at all, so failing here would be a
+     * hard regression for a cosmetic gain.
+     */
+    (void)fchown(fd, st.st_uid, st.st_gid);
 
     out = fdopen(fd, "w");
     if (!out) {
@@ -2435,23 +2455,50 @@ static int write_inplace(const char *input_path)
         return 0;
     }
 
-    if (choose_backup_path(input_path, bak_path, sizeof(bak_path)) != 0) {
-        fprintf(stderr, "Can't choose a free backup path for '%s'\n", input_path);
+    if (build_backup_path(input_path, bak_path, sizeof(bak_path)) != 0) {
+        fprintf(stderr, "Path too long for backup file: %s\n", input_path);
         unlink(tmp_path);
         return 1;
     }
 
-    if (rename(input_path, bak_path) != 0) {
-        fprintf(stderr, "Can't create backup '%s': ", bak_path);
-        perror(NULL);
-        unlink(tmp_path);
-        return 1;
+    /*
+     * Hard-link the original aside rather than renaming it, so input_path
+     * names a valid file at every instant. Rename-aside-then-rename-in leaves
+     * a window where the path does not exist: a concurrent reader gets
+     * ENOENT, and a crash inside it leaves no file at all.
+     *
+     * lstat, not stat: a dangling symlink at the backup path reports ENOENT
+     * under stat, and we would then destroy the link we meant to notice.
+     */
+    {
+        struct stat bst;
+        if (lstat(bak_path, &bst) == 0 && unlink(bak_path) != 0) {
+            fprintf(stderr, "Can't replace old backup '%s': ", bak_path);
+            perror(NULL);
+            unlink(tmp_path);
+            return 1;
+        }
     }
+
+    int linked = (link(input_path, bak_path) == 0);
+    if (!linked) {
+        /* Filesystems without hard links (some FUSE/SMB mounts) fall back to
+         * the rename-aside sequence, losing atomicity but not the backup. */
+        if (rename(input_path, bak_path) != 0) {
+            fprintf(stderr, "Can't create backup '%s': ", bak_path);
+            perror(NULL);
+            unlink(tmp_path);
+            return 1;
+        }
+    }
+
     if (rename(tmp_path, input_path) != 0) {
         fprintf(stderr, "Can't install new file over '%s': ", input_path);
         perror(NULL);
-        /* Original content is in bak_path — put it back. */
-        if (rename(bak_path, input_path) != 0) {
+        if (linked) {
+            /* input_path was never moved; just drop our extra link. */
+            unlink(bak_path);
+        } else if (rename(bak_path, input_path) != 0) {
             fprintf(stderr,
                 "CRITICAL: failed to restore '%s' from '%s': ",
                 input_path, bak_path);
@@ -2460,6 +2507,13 @@ static int write_inplace(const char *input_path)
         unlink(tmp_path);
         return 1;
     }
+
+    /*
+     * fsync the directory. The file's bytes are already durable, but the
+     * rename that made them reachable is a directory operation: without this,
+     * a power loss can leave the entry still naming the old inode.
+     */
+    fsync_parent_dir(input_path);
 
     if (!opt_quiet)
         printf("Backup: %s\n", bak_path);
@@ -2515,7 +2569,13 @@ static int process_file(const char *input_path, const char *output_path)
             return 1;
         }
         process(out);
-        if (finalize_output(&out, NULL) != 0) {
+        /*
+         * Pass the output path so a flush/fsync/close failure removes the
+         * partial file. Leaving it behind was doubly bad: main refuses to
+         * overwrite an existing output, so the retry also failed and the user
+         * was stuck with a silently truncated file until deleting it by hand.
+         */
+        if (finalize_output(&out, output_path) != 0) {
             free_lines();
             return 1;
         }
