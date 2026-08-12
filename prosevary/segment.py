@@ -87,11 +87,19 @@ _REF_DEF = re.compile(r"^ {0,3}\[[^\]\n]+\]:\s+\S")
 _FOOTNOTE_DEF = re.compile(r"^ {0,3}\[\^[^\]\n]+\]:")
 # Continuation line carrying a reference definition's optional title.
 _REF_TITLE_CONT = re.compile(r"""^\s+(["'(]).*$""")
-# Sentence end: .!? optional close-quote, whitespace, next sentence-ish token.
+# Sentence end: .!? then optional closing quotes, then whitespace, then the
+# next sentence-ish token. Closing quotes are matched so the split can fire,
+# but they belong to the *preceding* sentence (see split_sentences) — leaving
+# them in the separator produced `He said "Hello.` / gap `"` / `Next…` and a
+# balanced rewrite reconstructed as `He replied "Hi."" Next…`.
 # Conservative; abbrev false splits (e.g. "Dr. Smith") are acceptable for v0.
 _SENT_SPLIT = re.compile(
-    r'(?<=[.!?])["\'”’]?\s+(?=["\'“‘]?[A-Z0-9])'
+    r'(?<=[.!?])["\'”’)\]}]*\s+(?=["\'“‘]?[A-Z0-9])'
 )
+# Closers that trail a terminator and must stay inside the sentence span when
+# the splitter matches them as part of the separator. Quotes are the common
+# case; )]} cover "…)." / "…]." / "…}." before the next sentence.
+_SENT_TRAILING_CLOSERS = frozenset("\"'”’)]}")
 
 
 @dataclass
@@ -511,12 +519,12 @@ def split_sentences(prose: str) -> List[Tuple[int, int, str]]:
     spans: List[Tuple[int, int]] = []
     last = 0
     for m in _SENT_SPLIT.finditer(prose):
+        # m.start() is the first character after the terminator — often a
+        # closing quote that the regex consumed as part of the separator.
+        # Those closers belong to this sentence, not the inter-sentence gap.
         end = m.start()
-        # include trailing close-quotes already in lookbehind area — m.start()
-        # is at the whitespace after punct. Sentence ends at first whitespace.
-        # Actually finditer position is start of whitespace after punct.
-        # We want end after the punctuation/quote.
-        end = m.start()
+        while end < m.end() and prose[end] in _SENT_TRAILING_CLOSERS:
+            end += 1
         if end > last:
             spans.append((last, end))
         last = m.end()  # skip the whitespace between sentences
