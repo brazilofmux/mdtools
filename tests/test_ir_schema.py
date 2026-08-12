@@ -454,6 +454,20 @@ class BlockKindTests(IRTestCase):
         self.assertEqual(self._kinds("Intro.\na | b\n--|--\n1 | 2\n"),
                          ["paragraph"])
 
+    def test_block_openers_are_not_headerless_table_headers(self) -> None:
+        # Headerless recognition must not invent a Table over lines our
+        # classifier takes as other openers (heading, list, quote, ref-def).
+        # Inventing structure is the unsafe direction for the IR.
+        for name, source in (
+            ("heading", "# Name | Role\n---|---\nAlice | Eng\n"),
+            ("bullet", "- a | b\n--|--\n1 | 2\n"),
+            ("blockquote", "> a | b\n--|--\n1 | 2\n"),
+            ("ref_def", "[a | b]: http://example.com\n--|--\n"),
+        ):
+            with self.subTest(opener=name):
+                self.assertNotIn("table", self._kinds(source),
+                                 msg=f"IR kinds: {self._kinds(source)}")
+
     def test_a_pipe_table_ends_at_the_first_line_without_a_pipe(self) -> None:
         self.assertEqual(self._kinds("a | b\n--|--\n1 | 2\nProse.\n"),
                          ["table", "paragraph"])

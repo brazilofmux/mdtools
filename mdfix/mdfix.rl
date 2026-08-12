@@ -943,16 +943,14 @@ static int is_thematic_break(const char *line)
 }
 
 static int is_pipe_delim_row(const char *line);
+static int is_headerless_table_header(const char *line);
 
 /*
  * Lines belonging to a pipe table, marked once per file.
  *
- * is_wrappable sees one line at a time, and a pipe table without a leading
- * '|' cannot be recognized from one line — so --wrap joined its header to its
- * delimiter row and rewrapped the result, destroying the table while pandoc
- * still called the block a Table. The rule here is the one emit_ir uses: a
- * line containing '|' whose successor is a delimiter row starts a table that
- * runs to the first line with no '|'.
+ * is_wrappable sees one line at a time; a headerless table needs the next-line
+ * delim to be recognized, so --wrap must use the same multi-line rule as
+ * emit_ir or it will join header to delimiter.
  */
 static unsigned char pipe_table_line[MAX_LINES];
 
@@ -960,7 +958,12 @@ static void mark_pipe_tables(void)
 {
     memset(pipe_table_line, 0, (size_t)nlines);
     for (int i = 0; i + 1 < nlines; i++) {
-        if (!strchr(lines[i], '|') || !is_pipe_delim_row(lines[i + 1]))
+        int start = 0;
+        if (is_pipe_delim_row(lines[i + 1])) {
+            if (is_table_line(lines[i]) || is_headerless_table_header(lines[i]))
+                start = 1;
+        }
+        if (!start)
             continue;
         int j = i;
         while (j < nlines && strchr(lines[j], '|'))
@@ -1031,6 +1034,32 @@ static int is_pipe_delim_row(const char *line)
         }
     }
     return dash && bar;
+}
+
+/*
+ * Header of a pipe table without a leading '|'. Must be prose: not a block
+ * opener Pandoc would take instead (heading, list, quote, ref-def, fence).
+ * Shared by emit_ir and mark_pipe_tables so wrap and IR agree.
+ */
+static int is_headerless_table_header(const char *line)
+{
+    if (strchr(line, '|') == NULL)
+        return 0;
+    if (is_table_line(line))
+        return 0;
+    if (is_blank(line))
+        return 0;
+    if (is_heading(line))
+        return 0;
+    if (find_bullet(line) >= 0 || is_ordered(line))
+        return 0;
+    if (is_blockquote_line(line))
+        return 0;
+    if (ref_def_kind(line))
+        return 0;
+    if (is_code_fence(line))
+        return 0;
+    return 1;
 }
 
 static void ir_json_string(FILE *out, const char *s)
@@ -1597,22 +1626,16 @@ static void emit_ir(FILE *out, const char *source)
         /*
          * ── Pipe table, or the line block it would otherwise be mistaken for ──
          *
-         * The delimiter row is the discriminator; see is_pipe_delim_row.
-         * A leading '|' is *not* required — `a | b` over `--|--` is a Table to
-         * pandoc, and reporting it as a paragraph handed table rows to any
-         * consumer editing prose (#65).
-         *
-         * The header must start a block, which is automatic here: this branch
-         * is only reached at a block boundary, and a header line following
-         * prose with no blank between is absorbed by the paragraph branch —
-         * which is what pandoc does with it.
-         *
+         * The delimiter row is the discriminator (is_pipe_delim_row). A leading
+         * '|' is not required: `a | b` over `--|--` is a Table (#65). Headerless
+         * headers must be prose only (is_headerless_table_header) — heading,
+         * list, quote, and ref-def openers still win. A header continuing a
+         * paragraph is absorbed earlier (lazy continuation), as in pandoc.
          * Both forms run to the first line with no '|'. Neither is
-         * byte-protected by mdfix today (dialect-policy §7 gaps 1 and 4),
-         * which is what "protected": false records.
+         * byte-protected today (dialect-policy §7 gaps 1 and 4).
          */
         int leading_pipe = is_table_line(line);
-        int headerless = !leading_pipe && strchr(line, '|') != NULL
+        int headerless = is_headerless_table_header(line)
                          && i + 1 < nlines && is_pipe_delim_row(lines[i + 1]);
         if (leading_pipe || headerless) {
             int is_table = headerless

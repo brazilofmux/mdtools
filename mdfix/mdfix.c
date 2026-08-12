@@ -951,16 +951,14 @@ static int is_thematic_break(const char *line)
 }
 
 static int is_pipe_delim_row(const char *line);
+static int is_headerless_table_header(const char *line);
 
 /*
  * Lines belonging to a pipe table, marked once per file.
  *
- * is_wrappable sees one line at a time, and a pipe table without a leading
- * '|' cannot be recognized from one line — so --wrap joined its header to its
- * delimiter row and rewrapped the result, destroying the table while pandoc
- * still called the block a Table. The rule here is the one emit_ir uses: a
- * line containing '|' whose successor is a delimiter row starts a table that
- * runs to the first line with no '|'.
+ * is_wrappable sees one line at a time; a headerless table needs the next-line
+ * delim to be recognized, so --wrap must use the same multi-line rule as
+ * emit_ir or it will join header to delimiter.
  */
 static unsigned char pipe_table_line[MAX_LINES];
 
@@ -968,7 +966,12 @@ static void mark_pipe_tables(void)
 {
     memset(pipe_table_line, 0, (size_t)nlines);
     for (int i = 0; i + 1 < nlines; i++) {
-        if (!strchr(lines[i], '|') || !is_pipe_delim_row(lines[i + 1]))
+        int start = 0;
+        if (is_pipe_delim_row(lines[i + 1])) {
+            if (is_table_line(lines[i]) || is_headerless_table_header(lines[i]))
+                start = 1;
+        }
+        if (!start)
             continue;
         int j = i;
         while (j < nlines && strchr(lines[j], '|'))
@@ -1039,6 +1042,32 @@ static int is_pipe_delim_row(const char *line)
         }
     }
     return dash && bar;
+}
+
+/*
+ * Header of a pipe table without a leading '|'. Must be prose: not a block
+ * opener Pandoc would take instead (heading, list, quote, ref-def, fence).
+ * Shared by emit_ir and mark_pipe_tables so wrap and IR agree.
+ */
+static int is_headerless_table_header(const char *line)
+{
+    if (strchr(line, '|') == NULL)
+        return 0;
+    if (is_table_line(line))
+        return 0;
+    if (is_blank(line))
+        return 0;
+    if (is_heading(line))
+        return 0;
+    if (find_bullet(line) >= 0 || is_ordered(line))
+        return 0;
+    if (is_blockquote_line(line))
+        return 0;
+    if (ref_def_kind(line))
+        return 0;
+    if (is_code_fence(line))
+        return 0;
+    return 1;
 }
 
 static void ir_json_string(FILE *out, const char *s)
@@ -1605,22 +1634,16 @@ static void emit_ir(FILE *out, const char *source)
         /*
          * ── Pipe table, or the line block it would otherwise be mistaken for ──
          *
-         * The delimiter row is the discriminator; see is_pipe_delim_row.
-         * A leading '|' is *not* required — `a | b` over `--|--` is a Table to
-         * pandoc, and reporting it as a paragraph handed table rows to any
-         * consumer editing prose (#65).
-         *
-         * The header must start a block, which is automatic here: this branch
-         * is only reached at a block boundary, and a header line following
-         * prose with no blank between is absorbed by the paragraph branch —
-         * which is what pandoc does with it.
-         *
+         * The delimiter row is the discriminator (is_pipe_delim_row). A leading
+         * '|' is not required: `a | b` over `--|--` is a Table (#65). Headerless
+         * headers must be prose only (is_headerless_table_header) — heading,
+         * list, quote, and ref-def openers still win. A header continuing a
+         * paragraph is absorbed earlier (lazy continuation), as in pandoc.
          * Both forms run to the first line with no '|'. Neither is
-         * byte-protected by mdfix today (dialect-policy §7 gaps 1 and 4),
-         * which is what "protected": false records.
+         * byte-protected today (dialect-policy §7 gaps 1 and 4).
          */
         int leading_pipe = is_table_line(line);
-        int headerless = !leading_pipe && strchr(line, '|') != NULL
+        int headerless = is_headerless_table_header(line)
                          && i + 1 < nlines && is_pipe_delim_row(lines[i + 1]);
         if (leading_pipe || headerless) {
             int is_table = headerless
@@ -3108,7 +3131,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 3112 "mdfix.c"
+#line 3135 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -3116,20 +3139,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 3120 "mdfix.c"
+#line 3143 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 3505 "mdfix.rl"
+#line 3528 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 3256 "mdfix.rl"
+#line 3279 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -3169,7 +3192,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 3132 "mdfix.rl"
+#line 3155 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial || ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -3206,19 +3229,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 3125 "mdfix.rl"
+#line 3148 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 3125 "mdfix.rl"
+#line 3148 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 3440 "mdfix.rl"
+#line 3463 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -3242,7 +3265,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 3485 "mdfix.rl"
+#line 3508 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -3263,7 +3286,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 3463 "mdfix.rl"
+#line 3486 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -3286,13 +3309,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 3505 "mdfix.rl"
+#line 3528 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 3385 "mdfix.rl"
+#line 3408 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -3315,7 +3338,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 3298 "mdfix.rl"
+#line 3321 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_CHAR('.');
@@ -3366,13 +3389,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 3505 "mdfix.rl"
+#line 3528 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 3348 "mdfix.rl"
+#line 3371 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -3410,7 +3433,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 3407 "mdfix.rl"
+#line 3430 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -3444,7 +3467,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 3194 "mdfix.rl"
+#line 3217 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -3457,7 +3480,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 3168 "mdfix.rl"
+#line 3191 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -3471,7 +3494,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 3206 "mdfix.rl"
+#line 3229 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -3484,7 +3507,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 3181 "mdfix.rl"
+#line 3204 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -3498,7 +3521,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 3218 "mdfix.rl"
+#line 3241 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -3537,7 +3560,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 3125 "mdfix.rl"
+#line 3148 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -3550,7 +3573,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 3554 "mdfix.c"
+#line 3577 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -3576,7 +3599,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 3580 "mdfix.c"
+#line 3603 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -3620,7 +3643,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 3624 "mdfix.c"
+#line 3647 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -3669,7 +3692,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 3673 "mdfix.c"
+#line 3696 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -3688,7 +3711,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 3692 "mdfix.c"
+#line 3715 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -3714,7 +3737,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 3718 "mdfix.c"
+#line 3741 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -3763,7 +3786,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 3767 "mdfix.c"
+#line 3790 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -3843,7 +3866,7 @@ case 13:
 
 	}
 
-#line 3512 "mdfix.rl"
+#line 3535 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';
