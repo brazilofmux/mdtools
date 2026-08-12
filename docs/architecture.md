@@ -50,8 +50,8 @@ true of mdquery; prosevary still re-derives blocks in `segment.py` until
 | Layer | Owns |
 |---|---|
 | **L1 Input** | Encoding validation, normalization policy, block and inline parsing, IR production |
-| **L2 Required** | Transforms without which output is not reliably Pandoc-readable |
-| **L3 Optional** | Transforms the caller asks for, which may never break L2 |
+| **L2 Required** | Transforms without which output is not reliably Pandoc-readable — [transforms.md](transforms.md) |
+| **L3 Optional** | Transforms the caller asks for, which may never break L2 — [transforms.md](transforms.md) |
 | **L4 Interface** | Emitting IR, accepting IR and edits, validating both |
 | **L5 Output** | Turning IR plus edits back into bytes |
 | **D Diagnostics** | Located, rule-identified warnings and errors from any layer |
@@ -88,9 +88,11 @@ Each has an identifier so issues and tests can cite it.
   author ASCII shorthand. *(Chicago/`--canonical` live in L3 and must still
   satisfy this when they run — see I3.1.)*
 - **I2.3 Required is the default.** Producing Pandoc-friendly output is not
-  opt-in. *(Today: always-on structural fixes exist — blank lines around lists,
-  bullets, arrow aside, … — but no profile is designated L2/required; I2.2 and
-  the rest of `--canonical` remain opt-in, so I2.3 is false.)*
+  opt-in. *(Issue #55: the required set is classified in
+  [transforms.md](transforms.md) and runs by default — three repairs, each one
+  a construct Pandoc otherwise misreads. `--no-required` disables them for
+  inspection. The converse, I3.3, is not yet true: five editorial transforms
+  are still always-on, tracked in #60.)*
 
 ### L3 — Optional transforms
 
@@ -174,7 +176,7 @@ lands.
 | Layer | State |
 |---|---|
 | L1 | Block parsing broad and Pandoc-verified. Inline parsing partial (identifiers only). **No UTF-8 validation, no NFC detection.** Whole-file only; `MAX_LINES` 200000, `MAX_LINE` 8192. |
-| L2 | **Not separated from L3.** No flag or profile is designated required, and I2.3 is false. |
+| L2 | Required set classified in [transforms.md](transforms.md) and on by default (`--no-required` for inspection). I2.3 holds for those three repairs; I3.3 is still open (five editorial transforms always-on, #60). |
 | L3 | ~20 transforms exist. I3.1 is enforced by `tests/test_transform_matrix.py` and currently false in the pinned §7 cases (hard breaks; Chicago ellipsis). |
 | L4 | Emits IR (`--emit-ir`, schema `mdtools-ir-2`, total). **Cannot accept IR**; no validator; no `--apply-edits`. |
 | L5 | **Absent.** Output is line-based passthrough. Nothing writes from the IR. I5.1–I5.2 untestable without the applier; I5.3 groundwork (reader totality) is in place. |

@@ -39,7 +39,7 @@
  *   --footnote-canonical
  *       Normalize footnote refs/defs to canonical Pandoc-friendly style
  *   --heading-canonical
- *       Normalize ATX heading spacing/trailing hashes
+ *       Remove trailing ATX heading hashes (spacing is required, R3)
  *   --fence-canonical
  *       Normalize code fence delimiter lines
  *   --pandoc-safe-links
@@ -122,6 +122,7 @@ enum fixcat {
     FIX_CHI_ETAL_PERIOD,
     FIX_FOOTNOTE_REF_FMT,
     FIX_FOOTNOTE_DEF_FMT,
+    FIX_HEADING_SPACE,
     FIX_HEADING_CANONICAL,
     FIX_FENCE_CANONICAL,
     FIX_PANDOC_SAFE_LINKS,
@@ -148,7 +149,8 @@ static const char *fix_labels[] = {
     "Chicago abbreviations: enforce et al. period",
     "footnotes: reference token normalized",
     "footnotes: definition format normalized",
-    "headings: canonical ATX spacing/closing",
+    "headings: space after ATX marker",
+    "headings: trailing closing hashes removed",
     "fences: canonical delimiter formatting",
     "links: bare URLs wrapped for Pandoc",
     "scrivener: split heading emphasis repaired",
@@ -178,6 +180,7 @@ static int  opt_fence_canonical = 0;
 static int  opt_pandoc_safe_links = 0;
 static int  opt_scrivener_repair = 0;
 static int  opt_spaced_emdash = 0;
+static int  opt_required   = 1;       /* L2: on unless --no-required */
 static int  opt_wrap_width = 0;       /* 0 = disabled */
 static int  opt_emit_ir   = 0;        /* structural IR to stdout; never writes */
 
@@ -1940,11 +1943,50 @@ static int fix_footnote_def(char *line, int linenum)
     return 0;
 }
 
-/*
- * Heading canonicalization:
- * - Ensure single space after ATX hashes.
- * - Remove trailing closing hashes ("## Title ##" -> "## Title").
- */
+/* `#Title` is a Para to Pandoc; space after the marker is L2 (I2.1).
+ * Multi-space collapse is AST-neutral and kept here to avoid a second pass. */
+static int fix_heading_space(char *line, int linenum)
+{
+    if (!opt_required)
+        return 0;
+
+    int len = (int)strlen(line);
+    int i = 0;
+    while (i < 3 && line[i] == ' ')
+        i++;
+    int hstart = i;
+    while (line[i] == '#')
+        i++;
+    int hend = i;
+    if (hend == hstart || hend - hstart > 6)
+        return 0;
+
+    int changed = 0;
+    if (line[i] != ' ' && line[i] != '\0') {
+        if (len + 1 < MAX_LINE) {
+            memmove(line + i + 1, line + i, (size_t)(len - i + 1));
+            line[i] = ' ';
+            changed = 1;
+        }
+    } else if (line[i] == ' ') {
+        int j = i;
+        while (line[j] == ' ')
+            j++;
+        if (j > i + 1) {
+            memmove(line + i + 1, line + j, (size_t)(len - j + 1));
+            changed = 1;
+        }
+    }
+
+    if (changed) {
+        if (opt_verbose)
+            fprintf(stderr, "  line %d: ATX heading spacing\n", linenum);
+        fix_counts[FIX_HEADING_SPACE]++;
+    }
+    return changed;
+}
+
+/* Trailing '#' run is AST-neutral under Pandoc, so opt-in only. */
 static int fix_heading_canonical(char *line, int linenum)
 {
     if (!opt_heading_canonical)
@@ -1963,24 +2005,6 @@ static int fix_heading_canonical(char *line, int linenum)
         return 0;
     if (hend - hstart > 6)
         return 0;
-
-    if (line[i] != ' ' && line[i] != '\0') {
-        if (len + 1 < MAX_LINE) {
-            memmove(line + i + 1, line + i, len - i + 1);
-            line[i] = ' ';
-            len++;
-            changed = 1;
-        }
-    } else if (line[i] == ' ') {
-        int j = i;
-        while (line[j] == ' ')
-            j++;
-        if (j > i + 1) {
-            memmove(line + i + 1, line + j, len - j + 1);
-            len -= (j - (i + 1));
-            changed = 1;
-        }
-    }
 
     int end = len - 1;
     while (end >= 0 && line[end] == ' ')
@@ -3714,7 +3738,8 @@ static void process(FILE *out)
          * intervening blank line, pandoc will choke — especially
          * when the preceding line ends with a colon.
          */
-        if (!had_blank
+        if (opt_required
+            && !had_blank
             && is_list_type(type)
             && !in_list_context
             && prev_content_type != LT_BLANK)
@@ -3733,7 +3758,8 @@ static void process(FILE *out)
          * intervening blank line, the markdown structure is ambiguous.
          * Exception: indented continuation lines are part of the list item.
          */
-        if (!had_blank
+        if (opt_required
+            && !had_blank
             && !is_list_type(type)
             && in_list_context
             && !is_list_continuation(line))
@@ -3759,6 +3785,7 @@ static void process(FILE *out)
         fix_trailing_ws(line, i + 1);
         fix_bullet(line, i + 1);
         fix_heading_fmt(line, i + 1);
+        fix_heading_space(line, i + 1);
         fix_heading_canonical(line, i + 1);
         if (type == LT_TEXT) {
             lint_serial_comma(line, i + 1);
@@ -3891,13 +3918,16 @@ static void usage(const char *prog)
         "        Enable full canonical Markdown profile (safe passes)\n"
         "  --canonical-lint\n"
         "        Canonical gate mode: fail if file is not canonical\n"
+        "  --no-required\n"
+        "        Disable the required (L2) repairs. Output is then not\n"
+        "        guaranteed Pandoc-readable; for inspection, not for writing\n"
         "  --emit-ir\n"
         "        Emit the structural IR as JSONL on stdout and write nothing.\n"
         "        Byte spans slice the input exactly; see docs/ir-schema.md\n"
         "  --footnote-canonical\n"
         "        Normalize footnote refs/defs to canonical style\n"
         "  --heading-canonical\n"
-        "        Normalize ATX heading spacing/trailing hashes\n"
+        "        Remove trailing heading hashes (spacing is required, R3)\n"
         "  --fence-canonical\n"
         "        Normalize code fence delimiter lines\n"
         "  --pandoc-safe-links\n"
@@ -3912,61 +3942,68 @@ static void usage(const char *prog)
         "        Technical docs profile: --canonical + --spaced-emdash + --wrap=78\n"
         "  -h    This help\n"
         "\n"
-        "Fixes (always on):\n"
+        "Required repairs (on by default; --no-required disables).\n"
+        "Without these Pandoc reads the document as something else —\n"
+        "see docs/transforms.md:\n"
+        "  R1. Blank line before lists        (else the list is swallowed\n"
+        "                                      into the paragraph)\n"
+        "  R2. Blank line after lists         (else the next paragraph is\n"
+        "                                      swallowed into the item)\n"
+        "  R3. Space after the ATX marker     (#Title is a paragraph,\n"
+        "                                      not a heading)\n"
+        "\n"
+        "Fixes (always on; editorial, see issue #60):\n"
         "  1. Bullet markers normalized to -  (linter: list_bullet_style)\n"
-        "  2. Blank line before lists         (linter: pandoc_list_error,\n"
-        "                                      list_spacing_before)\n"
-        "  3. Blank line after lists          (linter: list_spacing)\n"
-        "  4. Bold/italic stripped from heads  (linter: header_formatting)\n"
-        "  5. Bold colons moved inside tags   (**Term**: → **Term:**)\n"
-        "  6. Arrow asides converted to em-dash (→ → —)\n"
-        "  7. Space added after blockquote    (>Text → > Text)\n"
+        "  2. Bold/italic stripped from heads  (linter: header_formatting)\n"
+        "  3. Bold colons moved inside tags   (**Term**: → **Term:**)\n"
+        "  4. Arrow asides converted to em-dash (→ → —)\n"
+        "  5. Space added after blockquote    (>Text → > Text)\n"
         "\n"
         "Fix (opt-in with -w):\n"
-        "  8. Trailing whitespace normalized  (collapse multiple spaces to one)\n"
+        "  6. Trailing whitespace normalized  (collapse multiple spaces to one)\n"
         "\n"
         "Fixes (opt-in with --chicago-punct):\n"
-        "  9. Em-dash spacing normalized      (word -- word → word—word)\n"
-        " 10. Ellipsis normalized             (. . . or .... → ...)\n"
-        " 11. Sentence double-space collapsed (\"End.  Next\" → \"End. Next\")\n"
+        "  7. Em-dash spacing normalized      (word -- word → word—word)\n"
+        "  8. Ellipsis normalized             (. . . or .... → ...)\n"
+        "  9. Sentence double-space collapsed (\"End.  Next\" → \"End. Next\")\n"
         "\n"
         "Fixes (opt-in with --chicago-punct-2):\n"
-        " 12. Remove space before punctuation (word , -> word,)\n"
-        " 13. Normalize space after ,;:?!     (\"Hi,there\" -> \"Hi, there\")\n"
-        " 14. Move . and , inside quotes      (\"word\". -> \"word.\")\n"
+        " 10. Remove space before punctuation (word , -> word,)\n"
+        " 11. Normalize space after ,;:?!     (\"Hi,there\" -> \"Hi, there\")\n"
+        " 12. Move . and , inside quotes      (\"word\". -> \"word.\")\n"
         "\n"
         "Lint (opt-in with --serial-comma-lint):\n"
         "  Warn on likely missing serial commas in simple lists\n"
         "\n"
         "Fixes (opt-in with --chicago-abbrev):\n"
-        "  15. Normalize comma after e.g./i.e. (e.g. text -> e.g., text)\n"
-        "  16. Enforce period in et al.       (et al -> et al.)\n"
+        " 13. Normalize comma after e.g./i.e. (e.g. text -> e.g., text)\n"
+        " 14. Enforce period in et al.       (et al -> et al.)\n"
         "\n"
         "Fixes (opt-in with --footnote-canonical):\n"
-        "  17. Normalize footnote refs        ([^ 1 ] -> [^1])\n"
-        "  18. Normalize footnote defs        ([^1]: text)\n"
+        " 15. Normalize footnote refs        ([^ 1 ] -> [^1])\n"
+        " 16. Normalize footnote defs        ([^1]: text)\n"
         "\n"
         "Fixes (opt-in with --heading-canonical):\n"
-        "  19. Normalize heading spacing      (##Title -> ## Title)\n"
-        "  20. Remove trailing heading hashes (## Title ## -> ## Title)\n"
+        " 17. Remove trailing heading hashes (## Title ## -> ## Title)\n"
+        "      (heading spacing is now a required repair, R3)\n"
         "\n"
         "Fixes (opt-in with --fence-canonical):\n"
-        "  21. Normalize fence delimiters     (opening/closing fence lines)\n"
+        " 18. Normalize fence delimiters     (opening/closing fence lines)\n"
         "\n"
         "Fixes (opt-in with --pandoc-safe-links):\n"
-        "  22. Wrap bare URLs as autolinks    (https://x -> <https://x>)\n"
+        " 19. Wrap bare URLs as autolinks    (https://x -> <https://x>)\n"
         "\n"
         "Fixes (opt-in with --scrivener-repair):\n"
-        "  23. Repair split heading emphasis  (# *Head ... tail* -> # Head ... tail)\n"
+        " 20. Repair split heading emphasis  (# *Head ... tail* -> # Head ... tail)\n"
         "\n"
         "Lint (opt-in with --chicago-number-lint):\n"
         "  Warn on likely Chicago number-style issues in prose\n"
         "\n"
         "Fixes (opt-in with --spaced-emdash):\n"
-        " 24. Em-dashes keep surrounding spaces (word — word, not word—word)\n"
+        " 21. Em-dashes keep surrounding spaces (word — word, not word—word)\n"
         "\n"
         "Fixes (opt-in with --wrap[=N]):\n"
-        " 25. Hard-wrap paragraph text at N columns (default 78)\n"
+        " 22. Hard-wrap paragraph text at N columns (default 78)\n"
         "     Skips headings, lists, tables, code blocks, blockquotes\n"
         "\n"
         "Profile:\n"
@@ -4461,6 +4498,11 @@ int main(int argc, char *argv[])
         }
         if (strcmp(argv[argi], "--canonical-lint") == 0) {
             opt_canonical_lint = 1;
+            argi++;
+            continue;
+        }
+        if (strcmp(argv[argi], "--no-required") == 0) {
+            opt_required = 0;
             argi++;
             continue;
         }

@@ -41,7 +41,7 @@
  *   --footnote-canonical
  *       Normalize footnote refs/defs to canonical Pandoc-friendly style
  *   --heading-canonical
- *       Normalize ATX heading spacing/trailing hashes
+ *       Remove trailing ATX heading hashes (spacing is required, R3)
  *   --fence-canonical
  *       Normalize code fence delimiter lines
  *   --pandoc-safe-links
@@ -130,6 +130,7 @@ enum fixcat {
     FIX_CHI_ETAL_PERIOD,
     FIX_FOOTNOTE_REF_FMT,
     FIX_FOOTNOTE_DEF_FMT,
+    FIX_HEADING_SPACE,
     FIX_HEADING_CANONICAL,
     FIX_FENCE_CANONICAL,
     FIX_PANDOC_SAFE_LINKS,
@@ -156,7 +157,8 @@ static const char *fix_labels[] = {
     "Chicago abbreviations: enforce et al. period",
     "footnotes: reference token normalized",
     "footnotes: definition format normalized",
-    "headings: canonical ATX spacing/closing",
+    "headings: space after ATX marker",
+    "headings: trailing closing hashes removed",
     "fences: canonical delimiter formatting",
     "links: bare URLs wrapped for Pandoc",
     "scrivener: split heading emphasis repaired",
@@ -186,6 +188,7 @@ static int  opt_fence_canonical = 0;
 static int  opt_pandoc_safe_links = 0;
 static int  opt_scrivener_repair = 0;
 static int  opt_spaced_emdash = 0;
+static int  opt_required   = 1;       /* L2: on unless --no-required */
 static int  opt_wrap_width = 0;       /* 0 = disabled */
 static int  opt_emit_ir   = 0;        /* structural IR to stdout; never writes */
 
@@ -1948,11 +1951,50 @@ static int fix_footnote_def(char *line, int linenum)
     return 0;
 }
 
-/*
- * Heading canonicalization:
- * - Ensure single space after ATX hashes.
- * - Remove trailing closing hashes ("## Title ##" -> "## Title").
- */
+/* `#Title` is a Para to Pandoc; space after the marker is L2 (I2.1).
+ * Multi-space collapse is AST-neutral and kept here to avoid a second pass. */
+static int fix_heading_space(char *line, int linenum)
+{
+    if (!opt_required)
+        return 0;
+
+    int len = (int)strlen(line);
+    int i = 0;
+    while (i < 3 && line[i] == ' ')
+        i++;
+    int hstart = i;
+    while (line[i] == '#')
+        i++;
+    int hend = i;
+    if (hend == hstart || hend - hstart > 6)
+        return 0;
+
+    int changed = 0;
+    if (line[i] != ' ' && line[i] != '\0') {
+        if (len + 1 < MAX_LINE) {
+            memmove(line + i + 1, line + i, (size_t)(len - i + 1));
+            line[i] = ' ';
+            changed = 1;
+        }
+    } else if (line[i] == ' ') {
+        int j = i;
+        while (line[j] == ' ')
+            j++;
+        if (j > i + 1) {
+            memmove(line + i + 1, line + j, (size_t)(len - j + 1));
+            changed = 1;
+        }
+    }
+
+    if (changed) {
+        if (opt_verbose)
+            fprintf(stderr, "  line %d: ATX heading spacing\n", linenum);
+        fix_counts[FIX_HEADING_SPACE]++;
+    }
+    return changed;
+}
+
+/* Trailing '#' run is AST-neutral under Pandoc, so opt-in only. */
 static int fix_heading_canonical(char *line, int linenum)
 {
     if (!opt_heading_canonical)
@@ -1971,24 +2013,6 @@ static int fix_heading_canonical(char *line, int linenum)
         return 0;
     if (hend - hstart > 6)
         return 0;
-
-    if (line[i] != ' ' && line[i] != '\0') {
-        if (len + 1 < MAX_LINE) {
-            memmove(line + i + 1, line + i, len - i + 1);
-            line[i] = ' ';
-            len++;
-            changed = 1;
-        }
-    } else if (line[i] == ' ') {
-        int j = i;
-        while (line[j] == ' ')
-            j++;
-        if (j > i + 1) {
-            memmove(line + i + 1, line + j, len - j + 1);
-            len -= (j - (i + 1));
-            changed = 1;
-        }
-    }
 
     int end = len - 1;
     while (end >= 0 && line[end] == ' ')
@@ -2976,7 +3000,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 2980 "mdfix.c"
+#line 3004 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -2984,20 +3008,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 2988 "mdfix.c"
+#line 3012 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 3357 "mdfix.rl"
+#line 3381 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 3108 "mdfix.rl"
+#line 3132 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -3037,7 +3061,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 3000 "mdfix.rl"
+#line 3024 "mdfix.rl"
 	{te = p+1;{
                 if (ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -3074,19 +3098,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 2993 "mdfix.rl"
+#line 3017 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 2993 "mdfix.rl"
+#line 3017 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 3292 "mdfix.rl"
+#line 3316 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -3110,7 +3134,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 3337 "mdfix.rl"
+#line 3361 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -3131,7 +3155,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 3315 "mdfix.rl"
+#line 3339 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -3154,13 +3178,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 3357 "mdfix.rl"
+#line 3381 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 3237 "mdfix.rl"
+#line 3261 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -3183,7 +3207,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 3150 "mdfix.rl"
+#line 3174 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_CHAR('.');
@@ -3234,13 +3258,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 3357 "mdfix.rl"
+#line 3381 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 3200 "mdfix.rl"
+#line 3224 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -3278,7 +3302,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 3259 "mdfix.rl"
+#line 3283 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -3312,7 +3336,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 3054 "mdfix.rl"
+#line 3078 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -3321,7 +3345,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 3036 "mdfix.rl"
+#line 3060 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -3331,7 +3355,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 3062 "mdfix.rl"
+#line 3086 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -3340,7 +3364,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 3045 "mdfix.rl"
+#line 3069 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -3350,7 +3374,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 3070 "mdfix.rl"
+#line 3094 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -3389,7 +3413,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 2993 "mdfix.rl"
+#line 3017 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -3402,7 +3426,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 3406 "mdfix.c"
+#line 3430 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -3428,7 +3452,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 3432 "mdfix.c"
+#line 3456 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -3472,7 +3496,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 3476 "mdfix.c"
+#line 3500 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -3521,7 +3545,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 3525 "mdfix.c"
+#line 3549 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -3540,7 +3564,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 3544 "mdfix.c"
+#line 3568 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -3566,7 +3590,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 3570 "mdfix.c"
+#line 3594 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -3615,7 +3639,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 3619 "mdfix.c"
+#line 3643 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -3695,7 +3719,7 @@ case 13:
 
 	}
 
-#line 3364 "mdfix.rl"
+#line 3388 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';
@@ -4049,7 +4073,8 @@ static void process(FILE *out)
          * intervening blank line, pandoc will choke — especially
          * when the preceding line ends with a colon.
          */
-        if (!had_blank
+        if (opt_required
+            && !had_blank
             && is_list_type(type)
             && !in_list_context
             && prev_content_type != LT_BLANK)
@@ -4068,7 +4093,8 @@ static void process(FILE *out)
          * intervening blank line, the markdown structure is ambiguous.
          * Exception: indented continuation lines are part of the list item.
          */
-        if (!had_blank
+        if (opt_required
+            && !had_blank
             && !is_list_type(type)
             && in_list_context
             && !is_list_continuation(line))
@@ -4094,6 +4120,7 @@ static void process(FILE *out)
         fix_trailing_ws(line, i + 1);
         fix_bullet(line, i + 1);
         fix_heading_fmt(line, i + 1);
+        fix_heading_space(line, i + 1);
         fix_heading_canonical(line, i + 1);
         if (type == LT_TEXT) {
             lint_serial_comma(line, i + 1);
@@ -4226,13 +4253,16 @@ static void usage(const char *prog)
         "        Enable full canonical Markdown profile (safe passes)\n"
         "  --canonical-lint\n"
         "        Canonical gate mode: fail if file is not canonical\n"
+        "  --no-required\n"
+        "        Disable the required (L2) repairs. Output is then not\n"
+        "        guaranteed Pandoc-readable; for inspection, not for writing\n"
         "  --emit-ir\n"
         "        Emit the structural IR as JSONL on stdout and write nothing.\n"
         "        Byte spans slice the input exactly; see docs/ir-schema.md\n"
         "  --footnote-canonical\n"
         "        Normalize footnote refs/defs to canonical style\n"
         "  --heading-canonical\n"
-        "        Normalize ATX heading spacing/trailing hashes\n"
+        "        Remove trailing heading hashes (spacing is required, R3)\n"
         "  --fence-canonical\n"
         "        Normalize code fence delimiter lines\n"
         "  --pandoc-safe-links\n"
@@ -4247,61 +4277,68 @@ static void usage(const char *prog)
         "        Technical docs profile: --canonical + --spaced-emdash + --wrap=78\n"
         "  -h    This help\n"
         "\n"
-        "Fixes (always on):\n"
+        "Required repairs (on by default; --no-required disables).\n"
+        "Without these Pandoc reads the document as something else —\n"
+        "see docs/transforms.md:\n"
+        "  R1. Blank line before lists        (else the list is swallowed\n"
+        "                                      into the paragraph)\n"
+        "  R2. Blank line after lists         (else the next paragraph is\n"
+        "                                      swallowed into the item)\n"
+        "  R3. Space after the ATX marker     (#Title is a paragraph,\n"
+        "                                      not a heading)\n"
+        "\n"
+        "Fixes (always on; editorial, see issue #60):\n"
         "  1. Bullet markers normalized to -  (linter: list_bullet_style)\n"
-        "  2. Blank line before lists         (linter: pandoc_list_error,\n"
-        "                                      list_spacing_before)\n"
-        "  3. Blank line after lists          (linter: list_spacing)\n"
-        "  4. Bold/italic stripped from heads  (linter: header_formatting)\n"
-        "  5. Bold colons moved inside tags   (**Term**: → **Term:**)\n"
-        "  6. Arrow asides converted to em-dash (→ → —)\n"
-        "  7. Space added after blockquote    (>Text → > Text)\n"
+        "  2. Bold/italic stripped from heads  (linter: header_formatting)\n"
+        "  3. Bold colons moved inside tags   (**Term**: → **Term:**)\n"
+        "  4. Arrow asides converted to em-dash (→ → —)\n"
+        "  5. Space added after blockquote    (>Text → > Text)\n"
         "\n"
         "Fix (opt-in with -w):\n"
-        "  8. Trailing whitespace normalized  (collapse multiple spaces to one)\n"
+        "  6. Trailing whitespace normalized  (collapse multiple spaces to one)\n"
         "\n"
         "Fixes (opt-in with --chicago-punct):\n"
-        "  9. Em-dash spacing normalized      (word -- word → word—word)\n"
-        " 10. Ellipsis normalized             (. . . or .... → ...)\n"
-        " 11. Sentence double-space collapsed (\"End.  Next\" → \"End. Next\")\n"
+        "  7. Em-dash spacing normalized      (word -- word → word—word)\n"
+        "  8. Ellipsis normalized             (. . . or .... → ...)\n"
+        "  9. Sentence double-space collapsed (\"End.  Next\" → \"End. Next\")\n"
         "\n"
         "Fixes (opt-in with --chicago-punct-2):\n"
-        " 12. Remove space before punctuation (word , -> word,)\n"
-        " 13. Normalize space after ,;:?!     (\"Hi,there\" -> \"Hi, there\")\n"
-        " 14. Move . and , inside quotes      (\"word\". -> \"word.\")\n"
+        " 10. Remove space before punctuation (word , -> word,)\n"
+        " 11. Normalize space after ,;:?!     (\"Hi,there\" -> \"Hi, there\")\n"
+        " 12. Move . and , inside quotes      (\"word\". -> \"word.\")\n"
         "\n"
         "Lint (opt-in with --serial-comma-lint):\n"
         "  Warn on likely missing serial commas in simple lists\n"
         "\n"
         "Fixes (opt-in with --chicago-abbrev):\n"
-        "  15. Normalize comma after e.g./i.e. (e.g. text -> e.g., text)\n"
-        "  16. Enforce period in et al.       (et al -> et al.)\n"
+        " 13. Normalize comma after e.g./i.e. (e.g. text -> e.g., text)\n"
+        " 14. Enforce period in et al.       (et al -> et al.)\n"
         "\n"
         "Fixes (opt-in with --footnote-canonical):\n"
-        "  17. Normalize footnote refs        ([^ 1 ] -> [^1])\n"
-        "  18. Normalize footnote defs        ([^1]: text)\n"
+        " 15. Normalize footnote refs        ([^ 1 ] -> [^1])\n"
+        " 16. Normalize footnote defs        ([^1]: text)\n"
         "\n"
         "Fixes (opt-in with --heading-canonical):\n"
-        "  19. Normalize heading spacing      (##Title -> ## Title)\n"
-        "  20. Remove trailing heading hashes (## Title ## -> ## Title)\n"
+        " 17. Remove trailing heading hashes (## Title ## -> ## Title)\n"
+        "      (heading spacing is now a required repair, R3)\n"
         "\n"
         "Fixes (opt-in with --fence-canonical):\n"
-        "  21. Normalize fence delimiters     (opening/closing fence lines)\n"
+        " 18. Normalize fence delimiters     (opening/closing fence lines)\n"
         "\n"
         "Fixes (opt-in with --pandoc-safe-links):\n"
-        "  22. Wrap bare URLs as autolinks    (https://x -> <https://x>)\n"
+        " 19. Wrap bare URLs as autolinks    (https://x -> <https://x>)\n"
         "\n"
         "Fixes (opt-in with --scrivener-repair):\n"
-        "  23. Repair split heading emphasis  (# *Head ... tail* -> # Head ... tail)\n"
+        " 20. Repair split heading emphasis  (# *Head ... tail* -> # Head ... tail)\n"
         "\n"
         "Lint (opt-in with --chicago-number-lint):\n"
         "  Warn on likely Chicago number-style issues in prose\n"
         "\n"
         "Fixes (opt-in with --spaced-emdash):\n"
-        " 24. Em-dashes keep surrounding spaces (word — word, not word—word)\n"
+        " 21. Em-dashes keep surrounding spaces (word — word, not word—word)\n"
         "\n"
         "Fixes (opt-in with --wrap[=N]):\n"
-        " 25. Hard-wrap paragraph text at N columns (default 78)\n"
+        " 22. Hard-wrap paragraph text at N columns (default 78)\n"
         "     Skips headings, lists, tables, code blocks, blockquotes\n"
         "\n"
         "Profile:\n"
@@ -4796,6 +4833,11 @@ int main(int argc, char *argv[])
         }
         if (strcmp(argv[argi], "--canonical-lint") == 0) {
             opt_canonical_lint = 1;
+            argi++;
+            continue;
+        }
+        if (strcmp(argv[argi], "--no-required") == 0) {
+            opt_required = 0;
             argi++;
             continue;
         }

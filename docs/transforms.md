@@ -1,0 +1,87 @@
+# Transform classification
+
+Status: adopted, 2026-08-12. Answers issue #55 for the required set.
+Referenced by [architecture.md](architecture.md) L2 and L3.
+
+Every mdfix transform is **required** or **optional**. The distinction is not a
+matter of taste, and the test is executable:
+
+> A transform is **required** when omitting it leaves Pandoc reading the
+> document as something other than what the author wrote — that is, when its
+> absence violates **I2.1** or **I2.2**.
+
+Everything else is optional, however desirable. "This makes the file tidier"
+is not a reason to run by default; "without this the document means something
+else" is.
+
+## Required (L2) — run by default
+
+Each was verified by giving Pandoc the unfixed construct and reading the block
+list it produced.
+
+| Transform | Unfixed | Fixed | Why required |
+|---|---|---|---|
+| Blank line **before** a list | `Intro:` then `- one` reads as `Para` | `Para`, `BulletList` | The list is swallowed into the paragraph and stops being a list |
+| Blank line **after** a list | `- one` then `After.` reads as `BulletList` | `BulletList`, `Para` | The following paragraph is swallowed into the last item |
+| Space after the ATX marker | `#Title` reads as `Para` | `Header` | A heading stops being a heading |
+
+That is the whole set. Three repairs, each of which changes the document's
+meaning by its absence.
+
+`--no-required` disables them. Output is then not guaranteed Pandoc-readable,
+so it exists for inspection — seeing what a file looks like untouched — and
+not for writing manuscripts.
+
+### On the ATX fix in particular
+
+This one is why **I2.3** was false. It ran only under `--heading-canonical`,
+so a bare `mdfix` run left `#Title` as a paragraph and called the file fixed.
+It now runs by default, split out from the optional half of that flag.
+
+`--heading-canonical` keeps the *cosmetic* remainder: removing a trailing `#`
+run. Pandoc reads `# Title ###` and `# Title` as the same `Header`, so that
+half changes nothing a reader sees and stays opt-in.
+
+## Optional (L3) — opt-in, and may never break L2
+
+Verified as **not** required: Pandoc reads each construct the same way with or
+without the transform, so applying one is an editorial choice.
+
+| Transform | What it does | Why optional |
+|---|---|---|
+| `--chicago-punct`, `--chicago-punct-2` | Em-dash spacing, ellipsis, sentence spacing | Editorial house style |
+| `--chicago-abbrev` | `e.g.`/`i.e.` commas, `et al.` | Editorial house style |
+| `--serial-comma-lint`, `--chicago-number-lint` | Warn only | Never modify |
+| `--footnote-canonical` | Footnote ref/def style | Spaced and unspaced refs both parse |
+| `--heading-canonical` | Trailing `#` removal | Same `Header` either way |
+| `--fence-canonical` | Fence delimiter style | Same `CodeBlock` either way |
+| `--pandoc-safe-links` | Wrap bare URLs in `<…>` | Bare URLs are `Para` text either way; wrapping *adds* a `Link`, so it changes the AST rather than repairing it |
+| `--scrivener-repair` | Rejoin emphasis split across blocks | A repair, but of an authoring accident, not of a dialect misread |
+| `--spaced-emdash` | Preserve `word — word` | Typographic preference |
+| `-w` | Collapse trailing whitespace | **Breaks I2.1** — see §7 gap 5 |
+| `--wrap[=N]` | Hard-wrap paragraphs | Presentation; **breaks I2.1** via `-w`, and miscounts non-ASCII width (#49) |
+| `--canonical` | Profile: the above minus wrap | Convenience bundle |
+| `--technical` | Profile: `--canonical` + spaced em-dash + wrap 78 | Convenience bundle |
+
+`tests/test_transform_matrix.py` asserts **I3.1** across this table: every
+optional transform, alone and in each profile, must still satisfy I2.1 and
+I2.2. The violations it finds are pinned there and in dialect-policy §7.
+
+## Still on by default, and shouldn't be
+
+**I3.3** says no optional transform runs unless requested. These predate the
+classification and violate it — they are editorial, not repairs, and Pandoc
+reads the document identically without them:
+
+| Transform | Pandoc without it |
+|---|---|
+| Bullet markers normalized to `-` | `* one` is already a `BulletList` |
+| Bold/italic stripped from headings | `# **Bold** Title` is already a `Header` |
+| Bold colon moved inside tags | Same `Strong` either way |
+| Arrow aside converted to an em dash | A **content** change, applied by default |
+| Space after `>` in a block quote | `>Text` is already a `BlockQuote` |
+
+Turning these off changes the output of every bare `mdfix` invocation
+downstream, and the arrow rule changes prose rather than markup. That is a
+separable decision with its own review — issue #60 — rather than something to
+fold into the required-set change.
