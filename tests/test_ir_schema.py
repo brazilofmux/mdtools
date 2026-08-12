@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MDFIX = ROOT / "mdfix" / "mdfix"
 SCHEMA_DOC = ROOT / "docs" / "ir-schema.md"
 PANDOC = shutil.which("pandoc")
-SCHEMA = "mdtools-ir-2"
+SCHEMA = "mdtools-ir-3"
 
 SAMPLE = """\
 ---
@@ -101,9 +101,19 @@ class IRTestCase(unittest.TestCase):
         return [json.loads(line) for line in result.stdout.splitlines()]
 
     def _ir(self, data: bytes | str, name: str = "t.md") -> list[dict]:
-        """Header plus content records. `gap` records carry the runs between
-        blocks (schema 2) and are structure rather than content."""
-        return [r for r in self._ir_raw(data, name) if r["kind"] != "gap"]
+        """
+        Header plus top-level content records.
+
+        `gap` records carry the runs between blocks and are structure rather
+        than content. Nested records (schema 3, `depth > 0`) live inside their
+        parent's span, so including them here would double-count bytes and
+        break every span and totality assertion below.
+        """
+        return [r for r in self._ir_raw(data, name)
+                if r["kind"] != "gap" and not r.get("depth")]
+
+    def _nested(self, data: bytes | str, name: str = "t.md") -> list[dict]:
+        return [r for r in self._ir_raw(data, name) if r.get("depth")]
 
     def _kinds(self, data: bytes | str) -> list[str]:
         return [r["kind"] for r in self._ir(data)[1:]]
@@ -233,7 +243,8 @@ class TotalityTests(IRTestCase):
     def test_records_reproduce_the_file(self) -> None:
         for name, data in self.CASES.items():
             with self.subTest(case=name):
-                records = self._ir_raw(data)[1:]
+                records = [r for r in self._ir_raw(data)[1:]
+                           if not r.get("depth")]
                 joined = b"".join(data[r["start"]:r["end"]] for r in records)
                 self.assertEqual(joined, data)
 
@@ -243,6 +254,8 @@ class TotalityTests(IRTestCase):
             with self.subTest(case=name):
                 cursor = 0
                 for record in self._ir_raw(data)[1:]:
+                    if record.get("depth"):
+                        continue
                     self.assertEqual(record["start"], cursor, record)
                     cursor = record["end"]
                 self.assertEqual(cursor, len(data))
@@ -251,7 +264,7 @@ class TotalityTests(IRTestCase):
         # dialect-policy §7 gap 5: two trailing spaces are a hard break, and
         # a serializer must be able to see them to preserve them.
         data = b"line one  \nline two\n"
-        records = self._ir_raw(data)[1:]
+        records = [r for r in self._ir_raw(data)[1:] if not r.get("depth")]
         joined = b"".join(data[r["start"]:r["end"]] for r in records)
         self.assertIn(b"  \n", joined)
 
@@ -260,7 +273,8 @@ class TotalityTests(IRTestCase):
         for blanks in (1, 2, 5):
             with self.subTest(blanks=blanks):
                 data = b"# A\n" + b"\n" * blanks + b"para\n"
-                records = self._ir_raw(data)[1:]
+                records = [r for r in self._ir_raw(data)[1:]
+                           if not r.get("depth")]
                 joined = b"".join(data[r["start"]:r["end"]] for r in records)
                 self.assertEqual(joined, data)
 

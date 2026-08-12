@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, List, Optional
 
-SCHEMA = "mdtools-ir-2"
+SCHEMA = "mdtools-ir-3"
 
 # Flat parents that can hide nested blocks (no nesting yet). Used by
 # under-report warnings; an unknown kind is still opaque-but-located.
@@ -177,6 +177,12 @@ def load(paths: Iterable[Path], mdfix: Optional[str] = None) -> List[Document]:
         if current is None:
             raise IRError("IR began with a block record, before any document")
         if kind in STRUCTURAL_KINDS:
+            continue
+        if record.get("depth"):
+            # Schema 3 emits prose nested inside list items. mdquery's model
+            # is the flat block list — a nested paragraph would double-count
+            # its parent's bytes and break `stats` and the span guarantees.
+            # A consumer that wants nesting reads raw_records().
             continue
         current.blocks.append(Block(
             kind=kind or "unknown",

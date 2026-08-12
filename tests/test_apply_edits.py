@@ -436,7 +436,8 @@ class RoundTripTests(ApplyTestCase):
             [str(MDFIX), "--emit-ir", str(path)],
             capture_output=True, text=True, check=True)
         records = [json.loads(line) for line in ir.stdout.splitlines()]
-        paras = [r for r in records if r["kind"] == "paragraph"]
+        paras = [r for r in records
+                 if r["kind"] == "paragraph" and not r.get("depth")]
         self.assertEqual(len(paras), 3)
 
         data = text.encode("utf-8")
@@ -450,6 +451,31 @@ class RoundTripTests(ApplyTestCase):
         # Everything the IR called protected is untouched.
         self.assertIn("```\ncode\n```", result.stdout)
         self.assertIn("- item", result.stdout)
+
+    def test_prose_nested_in_a_list_item_can_be_edited(self) -> None:
+        # The capability schema 3 exists for: a consumer rewriting prose can
+        # reach inside a list item without learning what a list marker is.
+        text = "# T\n\n- first item prose\n- second item\n\nAfter.\n"
+        path = self._file(text)
+        ir = subprocess.run(
+            [str(MDFIX), "--emit-ir", str(path)],
+            capture_output=True, text=True, check=True)
+        nested = [json.loads(x) for x in ir.stdout.splitlines()
+                  if json.loads(x).get("depth")]
+        self.assertEqual(len(nested), 2)
+        data = text.encode("utf-8")
+        self.assertEqual(data[nested[0]["start"]:nested[0]["end"]],
+                         b"first item prose")
+
+        result = self._apply(path, [
+            {"start": nested[0]["start"], "end": nested[0]["end"],
+             "replacement": "rewritten prose", "expect": "first item prose"},
+        ])
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("- rewritten prose\n", result.stdout)
+        # The marker and every other byte are untouched.
+        self.assertEqual(result.stdout,
+                         text.replace("first item prose", "rewritten prose"))
 
     def test_protected_spans_can_be_replaced_verbatim(self) -> None:
         # Replacing a span with exactly what was there is a no-op, which is
