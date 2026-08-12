@@ -52,6 +52,12 @@
  * Compile: ragel -G2 mdfix.rl -o mdfix.c && cc -O2 -o mdfix mdfix.c
  */
 
+/* getline, fdopen, fsync: POSIX.1-2008. Must precede every include, or a
+ * packaging build that overrides CFLAGS with -std=c11 loses the declarations
+ * on glibc — a hard error on GCC 14+/Clang 16+, an implicit int-returning
+ * call on anything older. */
+#define _POSIX_C_SOURCE 200809L
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -63,14 +69,14 @@
 #include <unistd.h>
 
 
-#line 67 "mdfix.c"
+#line 73 "mdfix.c"
 static const int mdfix_scanner_start = 14;
 static const int mdfix_scanner_error = -1;
 
 static const int mdfix_scanner_en_main = 14;
 
 
-#line 66 "mdfix.rl"
+#line 72 "mdfix.rl"
 
 
 #define MAX_LINE  8192
@@ -1391,31 +1397,85 @@ static void flush_paragraph(FILE *out)
  * I/O
  * ═══════════════════════════════════════════════════════════════════ */
 
-static void read_all(FILE *fp)
+static void free_lines(void);
+
+/*
+ * Read every physical line with getline. Never silently split a long line the
+ * way fgets(MAX_LINE) did (a 9000-byte line became two "lines" and a longer
+ * file while reporting clean).
+ *
+ * Processing still uses MAX_LINE-sized work buffers, so a line that would not
+ * fit is a hard error rather than a silent truncate. Returns 0 on success,
+ * 1 on I/O or capacity failure (caller free_lines).
+ */
+static int read_all(FILE *fp)
 {
-    char buf[MAX_LINE];
+    char *buf = NULL;
+    size_t cap = 0;
+    ssize_t nread;
     nlines = 0;
 
-    while (fgets(buf, sizeof(buf), fp)) {
-        /* Strip line endings — we add our own on output */
-        size_t len = strlen(buf);
-        while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r'))
-            buf[--len] = '\0';
+    while ((nread = getline(&buf, &cap, fp)) != -1) {
+        /* Strip line endings — we add our own on output (normalizes CRLF). */
+        while (nread > 0 && (buf[nread - 1] == '\n' || buf[nread - 1] == '\r'))
+            buf[--nread] = '\0';
+
+        /*
+         * ">" not ">=": a line of exactly MAX_LINE-1 content bytes plus its
+         * NUL fills the buffer exactly. The old guard rejected that length
+         * while the message named it as the limit, so a user at the boundary
+         * was told 8191 was both too long and the maximum.
+         */
+        if (nread > MAX_LINE - 1) {
+            fprintf(stderr,
+                "error: line %d is %zd bytes (limit %d). "
+                "mdfix refuses to silently split or truncate long lines.\n",
+                nlines + 1, (ssize_t)nread, MAX_LINE - 1);
+            free(buf);
+            free_lines();
+            return 1;
+        }
 
         if (nlines >= MAX_LINES) {
             fprintf(stderr,
                 "Holy shit, %d lines? Write a shorter book.\n", MAX_LINES);
-            exit(1);
+            free(buf);
+            free_lines();
+            return 1;
         }
+        /*
+         * MAX_LINE, not nread + 1. Every fixer mutates lines[i] in place and
+         * several of them lengthen it — heading `#Title` -> `# Title`,
+         * blockquote `>q` -> `> q`, footnote defs, abbreviation commas,
+         * autolink brackets. They bound themselves by MAX_LINE because that
+         * is how large this allocation has always been.
+         *
+         * Right-sizing here left those guards checking the wrong number, so
+         * any expanding fix wrote past the end of the heap block. ASan
+         * confirmed overflows on inputs as small as "#Title\n", on this
+         * repo's own README under --technical, and on the -i write path —
+         * corrupting the heap while writing the user's file. The test suite
+         * passed throughout, because a few bytes past a small malloc rarely
+         * shows without a sanitizer.
+         */
         lines[nlines] = malloc(MAX_LINE);
         if (!lines[nlines]) {
             perror("malloc failed, out of memory");
-            exit(1);
+            free(buf);
+            free_lines();
+            return 1;
         }
-        strncpy(lines[nlines], buf, MAX_LINE - 1);
-        lines[nlines][MAX_LINE - 1] = '\0';
+        memcpy(lines[nlines], buf, (size_t)nread + 1);
         nlines++;
     }
+    free(buf);
+    if (ferror(fp)) {
+        fprintf(stderr, "error reading input: ");
+        perror(NULL);
+        free_lines();
+        return 1;
+    }
+    return 0;
 }
 
 static void free_lines(void)
@@ -1485,7 +1545,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 1489 "mdfix.c"
+#line 1549 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -1493,20 +1553,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 1497 "mdfix.c"
+#line 1557 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 1866 "mdfix.rl"
+#line 1926 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 1617 "mdfix.rl"
+#line 1677 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -1546,7 +1606,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 1509 "mdfix.rl"
+#line 1569 "mdfix.rl"
 	{te = p+1;{
                 if (ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -1583,19 +1643,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 1502 "mdfix.rl"
+#line 1562 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 1502 "mdfix.rl"
+#line 1562 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 1801 "mdfix.rl"
+#line 1861 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -1619,7 +1679,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 1846 "mdfix.rl"
+#line 1906 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -1640,7 +1700,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 1824 "mdfix.rl"
+#line 1884 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -1663,13 +1723,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 1866 "mdfix.rl"
+#line 1926 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 1746 "mdfix.rl"
+#line 1806 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -1692,7 +1752,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 1659 "mdfix.rl"
+#line 1719 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_CHAR('.');
@@ -1743,13 +1803,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 1866 "mdfix.rl"
+#line 1926 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 1709 "mdfix.rl"
+#line 1769 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -1787,7 +1847,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 1768 "mdfix.rl"
+#line 1828 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -1821,7 +1881,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 1563 "mdfix.rl"
+#line 1623 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -1830,7 +1890,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 1545 "mdfix.rl"
+#line 1605 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -1840,7 +1900,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 1571 "mdfix.rl"
+#line 1631 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -1849,7 +1909,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 1554 "mdfix.rl"
+#line 1614 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -1859,7 +1919,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 1579 "mdfix.rl"
+#line 1639 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -1898,7 +1958,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 1502 "mdfix.rl"
+#line 1562 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -1911,7 +1971,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 1915 "mdfix.c"
+#line 1975 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -1937,7 +1997,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 1941 "mdfix.c"
+#line 2001 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -1981,7 +2041,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 1985 "mdfix.c"
+#line 2045 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -2030,7 +2090,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 2034 "mdfix.c"
+#line 2094 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -2049,7 +2109,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 2053 "mdfix.c"
+#line 2113 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -2075,7 +2135,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 2079 "mdfix.c"
+#line 2139 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -2124,7 +2184,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 2128 "mdfix.c"
+#line 2188 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -2204,7 +2264,7 @@ case 13:
 
 	}
 
-#line 1873 "mdfix.rl"
+#line 1933 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';
@@ -2855,6 +2915,74 @@ static int write_inplace(const char *input_path)
     return 0;
 }
 
+/*
+ * --canonical-lint: produce the real canonical bytes and compare them to the
+ * input. Relying on fix_counts alone missed silent normalizations (CRLF→LF,
+ * final newline) that change the file while reporting "clean".
+ *
+ * Returns 0 clean, 2 not canonical, 1 hard error.
+ */
+static int run_canonical_lint(const char *input_path)
+{
+    /*
+     * Honour TMPDIR. Lint must not need write access to the tree it inspects
+     * (a read-only checkout is a normal thing to lint), so the temp lives
+     * outside it — but hardcoding /tmp fails in sandboxes where /tmp is
+     * absent or read-only and TMPDIR points somewhere usable.
+     */
+    const char *tmpdir = getenv("TMPDIR");
+    if (!tmpdir || !*tmpdir)
+        tmpdir = "/tmp";
+    char tmp_path[PATH_MAX];
+    int n = snprintf(tmp_path, sizeof(tmp_path),
+                     "%s%smdfix-lint.XXXXXX",
+                     tmpdir, (tmpdir[strlen(tmpdir) - 1] == '/') ? "" : "/");
+    if (n < 0 || (size_t)n >= sizeof(tmp_path)) {
+        fprintf(stderr, "canonical-lint: temp path too long\n");
+        return 1;
+    }
+    int fd = mkstemp(tmp_path);
+    if (fd < 0) {
+        fprintf(stderr, "canonical-lint: can't create temp file: ");
+        perror(NULL);
+        return 1;
+    }
+    FILE *out = fdopen(fd, "w");
+    if (!out) {
+        fprintf(stderr, "canonical-lint: can't fdopen temp file: ");
+        perror(NULL);
+        close(fd);
+        unlink(tmp_path);
+        return 1;
+    }
+
+    process(out);
+    if (finalize_output(&out, tmp_path) != 0)
+        return 1;
+
+    int same = files_identical(tmp_path, input_path);
+    unlink(tmp_path);
+
+    int issues = total_issues();
+    if (!same || issues > 0) {
+        if (!opt_quiet) {
+            if (!same && issues == 0) {
+                fprintf(stderr,
+                    "canonical-lint: output differs from input "
+                    "(normalization not reflected in fix counts).\n");
+            }
+            int report = issues > 0 ? issues : 1;
+            fprintf(stderr,
+                "canonical-lint: failed with %d issue%s.\n",
+                report, report == 1 ? "" : "s");
+        }
+        return 2;
+    }
+    if (!opt_quiet)
+        fprintf(stderr, "canonical-lint: clean.\n");
+    return 0;
+}
+
 static int process_file(const char *input_path, const char *output_path)
 {
     /* Reset per-file state */
@@ -2871,14 +2999,28 @@ static int process_file(const char *input_path, const char *output_path)
         perror(NULL);
         return 1;
     }
-    read_all(in);
+    if (read_all(in) != 0) {
+        fclose(in);
+        return 1;
+    }
     fclose(in);
 
     if (opt_verbose)
         fprintf(stderr, "Read %d lines from %s\n", nlines, input_path);
 
-    /* ── Write ── */
+    /* ── Write / lint ── */
     int write_rc = 0;
+    if (opt_canonical_lint) {
+        write_rc = run_canonical_lint(input_path);
+        /* Print the fix/warning summary when there is something to count, or
+         * when the gate is clean. Skip it for pure content-diff failures
+         * (CRLF / final newline) so we do not print "clean" after a fail. */
+        if (!opt_quiet && (write_rc == 0 || total_issues() > 0))
+            print_summary(input_path);
+        free_lines();
+        return write_rc;
+    }
+
     if (opt_dryrun) {
         FILE *out = fopen("/dev/null", "w");
         if (!out) {
@@ -2920,23 +3062,8 @@ static int process_file(const char *input_path, const char *output_path)
     if (!opt_quiet)
         print_summary(input_path);
 
-    if (opt_dryrun && !opt_canonical_lint)
+    if (opt_dryrun)
         printf("(dry run — no files were harmed)\n");
-
-    if (opt_canonical_lint) {
-        int issues = total_issues();
-        if (issues > 0) {
-            if (!opt_quiet) {
-                fprintf(stderr,
-                    "canonical-lint: failed with %d issue%s.\n",
-                    issues, issues == 1 ? "" : "s");
-            }
-            free_lines();
-            return 2;
-        }
-        if (!opt_quiet)
-            fprintf(stderr, "canonical-lint: clean.\n");
-    }
 
     free_lines();
     return 0;
@@ -3106,7 +3233,15 @@ int main(int argc, char *argv[])
         int exit_code = 0;
         for (int i = 0; i < npos; i++) {
             int rc = process_file(pos[i], NULL);
-            if (rc != 0)
+            /*
+             * A hard error (1: unreadable, overlong line, I/O failure) must
+             * outrank a lint failure (2). Last-writer-wins let a later
+             * non-canonical file overwrite an earlier 1, so CI reported "not
+             * canonical" and nobody learned a file had been skipped entirely.
+             */
+            if (rc == 1)
+                exit_code = 1;
+            else if (rc != 0 && exit_code == 0)
                 exit_code = rc;
         }
         return exit_code;
