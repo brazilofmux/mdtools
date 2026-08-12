@@ -105,8 +105,8 @@ Each has an identifier so issues and tests can cite it.
 ### L4 — External IR interface
 
 - **I4.1 Valid IR out.** Emitted IR is well-formed JSONL, valid UTF-8, with a
-  schema header, non-overlapping block records in source order, and spans
-  within bounds.
+  schema header, **total contiguous** block records in source order (every
+  input byte belongs to exactly one record), and spans within bounds.
 - **I4.2 Validated IR in.** Accepted IR and edit lists are checked, not
   trusted: schema version, UTF-8, span bounds, ordering, and non-overlap.
   A violation is refused with a diagnostic.
@@ -172,8 +172,8 @@ lands.
 | L1 | Block parsing broad and Pandoc-verified. Inline parsing partial (identifiers only). **No UTF-8 validation, no NFC detection.** Whole-file only; `MAX_LINES` 200000, `MAX_LINE` 8192. |
 | L2 | **Not separated from L3.** No flag or profile is designated required, and I2.3 is false. |
 | L3 | ~20 transforms exist. I3.1 is untested and currently false in three known cases. |
-| L4 | Emits IR (`--emit-ir`, schema `mdtools-ir-1`). **Cannot accept IR**; no validator; no `--apply-edits`. |
-| L5 | **Absent.** Output is line-based passthrough. Nothing writes from the IR. I5.1–I5.3 are untestable because the path does not exist. |
+| L4 | Emits IR (`--emit-ir`, schema `mdtools-ir-2`, total). **Cannot accept IR**; no validator; no `--apply-edits`. |
+| L5 | **Absent.** Output is line-based passthrough. Nothing writes from the IR. I5.1–I5.2 untestable without the applier; I5.3 groundwork (reader totality) is in place. |
 | D | English prose on stderr. No IDs, no spans, no machine format. |
 
 Known dialect gaps are tracked in dialect-policy §7 and ir-schema's divergence
@@ -191,11 +191,11 @@ which a manuscript under review cannot absorb. Splicing gives I5.1 and I5.2 for
 free.
 
 Serialization is still worth having — `--wrap` and `--canonical` are reformat
-requests, where rewriting the file *is* the ask. But it requires the IR to
-become **lossless**, and today it is not: the gaps between records — blank-line
-runs, trailing whitespace, line-ending style — are recorded nowhere. Deciding
-this before building L5 is the difference between adding a field and reshaping
-the schema.
+requests, where rewriting the file *is* the ask. Schema 2 already records
+every byte (content plus `gap` records for terminators, blank runs, BOM, and
+trailing bytes), so a serializer no longer has to invent blank-line or
+line-ending policy. Remaining L5 work is the serializer / splice path itself,
+not another schema reshape for those gaps.
 
 ### Q2. Does L1 normalize to NFC?
 

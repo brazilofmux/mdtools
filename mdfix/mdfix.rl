@@ -1016,11 +1016,14 @@ static void ir_gap(FILE *out, long long from, long long to, int line, int end_li
 static void ir_open(FILE *out, const char *kind, int i0, int i1, int protectd)
 {
     /*
-     * Everything between the previous record and this one. The first gap byte
-     * is the terminator of the previous record's last line; the last is the
-     * terminator of the line before this record starts.
+     * Everything between the previous record and this one. First gap byte is
+     * the terminator of the previous record's last line (1-based line
+     * ir_prev_last+1); last gap byte sits on the line before this record
+     * (1-based endLine = i0, since next content is 0-based i0).
      */
-    ir_gap(out, ir_cursor, line_off[i0], ir_prev_last + 2, i0);
+    int gap_start_line = ir_prev_last + 1;  /* -1 → 0, clamped in ir_gap */
+    int gap_end_line = i0 > 0 ? i0 : 1;
+    ir_gap(out, ir_cursor, line_off[i0], gap_start_line, gap_end_line);
     fprintf(out,
         "{\"kind\":\"%s\",\"start\":%lld,\"end\":%lld,"
         "\"line\":%d,\"endLine\":%d,\"protected\":%s",
@@ -1712,7 +1715,8 @@ static void emit_ir(FILE *out, const char *source)
 
     /* Whatever is left: the final terminator, trailing blank lines, or the
      * whole file when it contains no blocks at all. */
-    ir_gap(out, ir_cursor, src_bytes, ir_prev_last + 2, nlines);
+    ir_gap(out, ir_cursor, src_bytes,
+           ir_prev_last + 1, nlines > 0 ? nlines : 1);
 }
 
 /* ═══════════════════════════════════════════════════════════════════

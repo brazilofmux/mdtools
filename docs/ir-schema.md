@@ -8,9 +8,10 @@ JSONL on stdout and touches nothing on disk. It is the interface every other
 tool is meant to consume instead of re-deriving the grammar.
 
 ```console
-$ mdfix --emit-ir README.md | head -3
+$ mdfix --emit-ir README.md | head -4
 {"kind":"document","schema":"mdtools-ir-2","source":"README.md","bytes":3184,"lines":118}
 {"kind":"heading","start":0,"end":9,"line":1,"endLine":1,"protected":false,"level":1,"text":"mdtools","plain":"mdtools"}
+{"kind":"gap","start":9,"end":11,"line":1,"endLine":2,"protected":false}
 {"kind":"paragraph","start":11,"end":76,"line":3,"endLine":3,"protected":false}
 ```
 
@@ -194,7 +195,7 @@ treat an unknown `kind` as opaque-but-located. Removing a field, changing a
 field's meaning, or changing what `start`/`end` measure requires a new schema
 name, which the header record makes detectable.
 
-## Not in schema 1
+## Not in schema 2
 
 - **Inline structure.** Links, images, footnote references, citations, emphasis
   and inline code are not represented. A consumer that needs them today must

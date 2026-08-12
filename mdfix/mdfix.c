@@ -1024,11 +1024,14 @@ static void ir_gap(FILE *out, long long from, long long to, int line, int end_li
 static void ir_open(FILE *out, const char *kind, int i0, int i1, int protectd)
 {
     /*
-     * Everything between the previous record and this one. The first gap byte
-     * is the terminator of the previous record's last line; the last is the
-     * terminator of the line before this record starts.
+     * Everything between the previous record and this one. First gap byte is
+     * the terminator of the previous record's last line (1-based line
+     * ir_prev_last+1); last gap byte sits on the line before this record
+     * (1-based endLine = i0, since next content is 0-based i0).
      */
-    ir_gap(out, ir_cursor, line_off[i0], ir_prev_last + 2, i0);
+    int gap_start_line = ir_prev_last + 1;  /* -1 → 0, clamped in ir_gap */
+    int gap_end_line = i0 > 0 ? i0 : 1;
+    ir_gap(out, ir_cursor, line_off[i0], gap_start_line, gap_end_line);
     fprintf(out,
         "{\"kind\":\"%s\",\"start\":%lld,\"end\":%lld,"
         "\"line\":%d,\"endLine\":%d,\"protected\":%s",
@@ -1720,7 +1723,8 @@ static void emit_ir(FILE *out, const char *source)
 
     /* Whatever is left: the final terminator, trailing blank lines, or the
      * whole file when it contains no blocks at all. */
-    ir_gap(out, ir_cursor, src_bytes, ir_prev_last + 2, nlines);
+    ir_gap(out, ir_cursor, src_bytes,
+           ir_prev_last + 1, nlines > 0 ? nlines : 1);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -2972,7 +2976,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 2976 "mdfix.c"
+#line 2980 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -2980,20 +2984,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 2984 "mdfix.c"
+#line 2988 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 3353 "mdfix.rl"
+#line 3357 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 3104 "mdfix.rl"
+#line 3108 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -3033,7 +3037,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 2996 "mdfix.rl"
+#line 3000 "mdfix.rl"
 	{te = p+1;{
                 if (ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -3070,19 +3074,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 2989 "mdfix.rl"
+#line 2993 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 2989 "mdfix.rl"
+#line 2993 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 3288 "mdfix.rl"
+#line 3292 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -3106,7 +3110,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 3333 "mdfix.rl"
+#line 3337 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -3127,7 +3131,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 3311 "mdfix.rl"
+#line 3315 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -3150,13 +3154,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 3353 "mdfix.rl"
+#line 3357 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 3233 "mdfix.rl"
+#line 3237 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -3179,7 +3183,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 3146 "mdfix.rl"
+#line 3150 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_CHAR('.');
@@ -3230,13 +3234,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 3353 "mdfix.rl"
+#line 3357 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 3196 "mdfix.rl"
+#line 3200 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -3274,7 +3278,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 3255 "mdfix.rl"
+#line 3259 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -3308,7 +3312,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 3050 "mdfix.rl"
+#line 3054 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -3317,7 +3321,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 3032 "mdfix.rl"
+#line 3036 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -3327,7 +3331,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 3058 "mdfix.rl"
+#line 3062 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -3336,7 +3340,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 3041 "mdfix.rl"
+#line 3045 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -3346,7 +3350,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 3066 "mdfix.rl"
+#line 3070 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -3385,7 +3389,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 2989 "mdfix.rl"
+#line 2993 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -3398,7 +3402,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 3402 "mdfix.c"
+#line 3406 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -3424,7 +3428,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 3428 "mdfix.c"
+#line 3432 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -3468,7 +3472,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 3472 "mdfix.c"
+#line 3476 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -3517,7 +3521,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 3521 "mdfix.c"
+#line 3525 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -3536,7 +3540,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 3540 "mdfix.c"
+#line 3544 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -3562,7 +3566,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 3566 "mdfix.c"
+#line 3570 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -3611,7 +3615,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 3615 "mdfix.c"
+#line 3619 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -3691,7 +3695,7 @@ case 13:
 
 	}
 
-#line 3360 "mdfix.rl"
+#line 3364 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';

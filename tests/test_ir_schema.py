@@ -1,5 +1,5 @@
 """
-The structural IR emitted by `mdfix --emit-ir` (issue #15, schema mdtools-ir-1).
+The structural IR emitted by `mdfix --emit-ir` (issue #15, schema mdtools-ir-2).
 
 This is the reader half of the boundary in docs/dialect-policy.md §2: consumers
 locate and edit Markdown through these spans instead of re-deriving the
@@ -270,6 +270,17 @@ class TotalityTests(IRTestCase):
         gaps = [r for r in self._ir_raw(b"# A\n\npara\n") if r["kind"] == "gap"]
         self.assertTrue(gaps)
         self.assertFalse(any(g["protected"] for g in gaps))
+
+    def test_gap_line_numbers_stay_in_document_range(self) -> None:
+        # Terminator-only gaps used to report line nlines+1.
+        for data in (b"# A\npara\n", b"# A\n\npara\n", b"# A\n", b"\xef\xbb\xbf# A\n"):
+            with self.subTest(data=data):
+                records = self._ir_raw(data)
+                nlines = records[0]["lines"]
+                for r in records[1:]:
+                    self.assertGreaterEqual(r["line"], 1)
+                    self.assertLessEqual(r["endLine"], max(nlines, 1))
+                    self.assertLessEqual(r["line"], r["endLine"])
 
     def test_a_leading_bom_is_its_own_gap(self) -> None:
         records = self._ir_raw(b"\xef\xbb\xbf# A\n")[1:]

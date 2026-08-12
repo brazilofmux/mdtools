@@ -13,7 +13,7 @@ that by scanning this package for block-level patterns.
 
 ```console
 $ mdquery outline docs/ir-schema.md
-docs/ir-schema.md:1: # Structural IR — schema `mdtools-ir-1`  [structural-ir-schema-mdtools-ir-1]
+docs/ir-schema.md:1: # Structural IR — schema `mdtools-ir-2`  [structural-ir-schema-mdtools-ir-2]
 docs/ir-schema.md:17:   ## Guarantees  [guarantees]
 docs/ir-schema.md:35:   ## Common fields  [common-fields]
 ```
@@ -59,7 +59,7 @@ heading at the same or a shallower level:
 $ mdquery section docs/ir-schema.md --id stability
 ## Stability
 
-`mdtools-ir-1` may gain **new optional fields** …
+`mdtools-ir-2` may gain **new optional fields** …
 ```
 
 The output is the file's own bytes, sliced by span — not a re-rendering. An
