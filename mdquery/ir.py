@@ -146,6 +146,18 @@ def _records(paths: Iterable[Path], mdfix: Optional[str] = None) -> List[dict]:
     return out
 
 
+def raw_records(paths: Iterable[Path],
+                mdfix: Optional[str] = None) -> List[dict]:
+    """
+    Every record as mdfix emitted it — `gap` records and nested prose included.
+
+    `load` drops both, because a query for "the blocks in this file" means the
+    top-level content ones. A caller that has to reproduce the file, or that
+    edits prose nested in a list item, needs the whole sequence.
+    """
+    return _records(paths, mdfix)
+
+
 def load(paths: Iterable[Path], mdfix: Optional[str] = None) -> List[Document]:
     """
     Parse `mdfix --emit-ir` output into one Document per input file.

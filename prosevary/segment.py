@@ -1,20 +1,35 @@
 """
-Markdown-aware segmentation for prosevary.
+Segment a Markdown document into paraphrasable prose and everything else.
 
-Goal: identify spans that may be paraphrased (prose sentences inside
-paragraphs) and leave everything else byte-identical on reassembly.
+**This module contains no Markdown grammar.** Block structure comes from
+`mdfix --emit-ir`, which is the boundary in docs/dialect-policy.md §2. What
+remains here is prose logic — splitting a paragraph into sentences, and
+putting back a closing quote a rewrite dropped — which is not Markdown and
+belongs on this side.
 
-This is deliberately conservative. Ambiguous structures stay frozen.
-Block classification is multi-line-aware (tables, HTML, setext, indented
-code, reference definitions) so structural regions never reach generation.
+It used to contain 685 lines of block grammar restating `mdfix.rl`: fence
+tracking, setext detection, raw-HTML block kinds, the four table forms,
+indented code, list content columns. Every structural bug arrived in pairs,
+and `tests/test_tool_parity.py` existed only because neither copy could be
+trusted to agree with the other. Two rules had already drifted by the time the
+IR could replace them — prosevary accepted an indented setext underline that
+Pandoc reads as a paragraph, and treated `[id]:x` as paraphrasable prose.
+
+Only `paragraph` records are offered for rewriting. Headings, lists, block
+quotes, tables, code, raw HTML, front matter and link/footnote definitions are
+reproduced exactly.
 """
 
 from __future__ import annotations
 
 import re
+import tempfile
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Iterator, List, Optional, Sequence, Tuple
+from pathlib import Path
+from typing import Dict, Iterator, List, Optional, Sequence, Tuple
+
+from mdquery.ir import raw_records
 
 
 class LineKind(Enum):
@@ -28,104 +43,36 @@ class LineKind(Enum):
     HTML = auto()
     FRONT_MATTER = auto()
     INDENTED_CODE = auto()
+    LINE_BLOCK = auto()
     REFERENCE = auto()  # link/image ref defs, footnote defs
-    TEXT = auto()  # ordinary paragraph line — candidate region
+    TEXT = auto()  # ordinary paragraph line — the only candidate region
 
 
-_HEADING = re.compile(r"^#{1,6}\s")
-# Openers accept any indentation: a fence inside an ordered list item sits at
-# content column 4+ and is a real fence. Capping it here classified the block
-# as TEXT and handed shell code to the paraphraser. Closers are stricter —
-# see _is_fence_closer.
-_FENCE_OPEN = re.compile(r"^(?P<indent>[ \t]*)(?P<marker>`{3,}|~{3,})(?P<rest>.*)$")
-_TABLE_LEADING = re.compile(r"^\|")
-# Pandoc grid tables: `+---+---+` / `+===+===+` borders and `| … |` rows.
-_GRID_BORDER = re.compile(r"^ {0,3}\+[-=+]+\+\s*$")
-_GRID_ROW = re.compile(r"^ {0,3}\|.*\|\s*$")
-# Pandoc simple tables: two or more dash runs separated by whitespace. The
-# separation is what distinguishes this from a setext underline or a thematic
-# break, both of which are a single unbroken run.
-#
-# Tabs count. Pandoc expands them before parsing, so `----\t----` is a table
-# exactly as `----    ----` is — confirmed with `pandoc -t json` on tabs in
-# the dash row, the header, and the body. mdfix accepted them and this side
-# did not, so the same document was a frozen table to one tool and
-# paraphrasable prose to the other.
-_SIMPLE_DASH_ROW = re.compile(r"^ {0,3}-{2,}(?:[ \t]+-{2,})+[ \t]*$")
-# A multiline table opens and closes with an unbroken dash run. That run is
-# also what a setext underline and a thematic break look like, so it only
-# counts as a table opener when a header and a spaced dash row follow it and a
-# closing run appears later — see _multiline_table_end.
-_FULL_DASH_ROW = re.compile(r"^ {0,3}-{2,}[ \t]*$")
-_BLOCKQUOTE = re.compile(r"^>\s?")
-_LIST = re.compile(r"^(\s*)([-*+]|\d+\.)\s+")
-_HR = re.compile(r"^(\*\s*){3,}$|^(-\s*){3,}$|^(_\s*){3,}$")
-# HTML block openers (CommonMark types 1–7, conservative).
-_HTML_OPEN = re.compile(r"^ {0,3}</?[a-zA-Z]")
-_HTML_COMMENT = re.compile(r"^ {0,3}<!--")
-_HTML_DECL = re.compile(r"^ {0,3}<![A-Z]")
-_HTML_CDATA = re.compile(r"^ {0,3}<!\[CDATA\[")
-_HTML_PI = re.compile(r"^ {0,3}<\?")
-# Complete single-line HTML comment.
-_HTML_COMMENT_FULL = re.compile(r"^ {0,3}<!--.*?-->\s*$")
-# Raw HTML blocks, paired with the terminator that ends each kind.
-#
-# Pandoc keeps these as a RawBlock running to their own terminator — a blank
-# line does not end them. Representing every HTML block with one boolean and
-# stopping at the first blank exposed the contents: `alert("A → B");` inside a
-# <script> reached sentence segmentation, and a comment's body and its `-->`
-# became prose.
-#
-# `<div>` and friends are deliberately absent. Pandoc parses those into a Div
-# whose contents are markdown, so their prose *should* be reachable; only
-# these five kinds are raw.
-_RAW_HTML_BLOCKS = (
-    (re.compile(r"^ {0,3}<!--"), re.compile(r"-->")),
-    (re.compile(r"^ {0,3}<!\[CDATA\["), re.compile(r"\]\]>")),
-    (re.compile(r"^ {0,3}<\?"), re.compile(r"\?>")),
-    (re.compile(r"^ {0,3}<![A-Za-z]"), re.compile(r">")),
-    (
-        re.compile(r"^ {0,3}<(?:script|pre|style|textarea)\b", re.IGNORECASE),
-        re.compile(r"</(?:script|pre|style|textarea)\s*>", re.IGNORECASE),
-    ),
-)
-# One HTML tag: (closing slash, name, self-closing slash).
-_HTML_TAG = re.compile(r"<(/?)([a-zA-Z][\w-]*)\b[^>]*?(/?)>")
-# HTML void elements have no end tag. Without treating them as self-closing,
-# a bare <br> or <img src=...> opens an HTML block and freezes every following
-# line until a blank — the same class of bug as unclosed <span>…</span>.
-_HTML_VOID = frozenset(
-    {
-        "area",
-        "base",
-        "br",
-        "col",
-        "embed",
-        "hr",
-        "img",
-        "input",
-        "link",
-        "meta",
-        "param",
-        "source",
-        "track",
-        "wbr",
-    }
-)
-# Setext underlines: 0–3 spaces, then only = or only -. CommonMark allows a
-# single dash, and requiring 3+ did not merely miss headings — the title and a
-# lone "-" merged into one region and split as the single sentence
-# "Subtitle\n-", so one accepted rewrite destroyed both. A bare dash run is
-# only ever read as an underline when a paragraph line precedes it (see the
-# setext branch in classify_lines); "- item" is a list because _LIST requires
-# whitespace after the marker.
-_SETEXT_EQ = re.compile(r"^ {0,3}=+\s*$")
-_SETEXT_DASH = re.compile(r"^ {0,3}-+\s*$")
-# Link/image reference definitions and Pandoc footnote definitions.
-_REF_DEF = re.compile(r"^ {0,3}\[[^\]\n]+\]:\s+\S")
-_FOOTNOTE_DEF = re.compile(r"^ {0,3}\[\^[^\]\n]+\]:")
-# Continuation line carrying a reference definition's optional title.
-_REF_TITLE_CONT = re.compile(r"""^\s+(["'(]).*$""")
+# IR block kind -> LineKind. Anything unknown is protected: a kind this
+# version does not recognize is opaque-but-located per the schema's stability
+# rules, and guessing would be how prose leaks into a construct.
+_KIND_TO_LINE = {
+    "frontmatter": LineKind.FRONT_MATTER,
+    "heading": LineKind.HEADING,
+    "paragraph": LineKind.TEXT,
+    "list": LineKind.LIST,
+    "block_quote": LineKind.BLOCKQUOTE,
+    "code_fence": LineKind.FENCE,
+    "code_indented": LineKind.INDENTED_CODE,
+    "table": LineKind.TABLE,
+    "line_block": LineKind.LINE_BLOCK,
+    "raw_html": LineKind.HTML,
+    "thematic_break": LineKind.HR,
+    "reference_def": LineKind.REFERENCE,
+    "footnote_def": LineKind.REFERENCE,
+}
+
+# The one kind whose text may be rewritten.
+PROSE_KIND = "paragraph"
+
+
+# ── Sentence splitting: prose logic, not Markdown ──────────────────────────
+
 # Sentence end: .!? then optional closing quotes, then whitespace, then the
 # next sentence-ish token. Closing quotes are matched so the split can fire,
 # but they belong to the *preceding* sentence (see split_sentences) — leaving
@@ -236,577 +183,6 @@ def _restore_trailing_closers(original: str, candidate: str) -> str:
     return candidate + needed
 
 
-@dataclass
-class Line:
-    kind: LineKind
-    text: str  # includes trailing newline if present in source
-    raw: str  # same as text for now; kept for future mdfix-style tracking
-
-
-@dataclass
-class Sentence:
-    """One paraphrasable sentence, located inside a prose region."""
-
-    text: str
-    start: int  # char offset into the joined prose region
-    end: int
-    region_id: int
-
-
-@dataclass(frozen=True)
-class FenceState:
-    """Delimiter information needed to recognize the matching closer."""
-
-    marker: str
-    length: int
-    indent: int
-
-
-@dataclass
-class Region:
-    """Contiguous run of TEXT lines that form one or more paragraphs."""
-
-    region_id: int
-    line_start: int  # inclusive index into lines[]
-    line_end: int  # exclusive
-    text: str  # joined content without final file-level concerns
-    sentences: List[Sentence] = field(default_factory=list)
-
-
-@dataclass
-class Document:
-    lines: List[Line]
-    regions: List[Region]
-
-    def reconstruct(self, replacements: dict[Tuple[int, int], str]) -> str:
-        """
-        Rebuild the file. replacements keys are (region_id, sent_index) → new text.
-        Sentences not in replacements stay original.
-        """
-        # Build per-region new body text from sentences.
-        region_bodies: dict[int, str] = {}
-        for reg in self.regions:
-            if not reg.sentences:
-                region_bodies[reg.region_id] = reg.text
-                continue
-            parts: List[str] = []
-            cursor = 0
-            for i, sent in enumerate(reg.sentences):
-                if sent.start > cursor:
-                    parts.append(reg.text[cursor : sent.start])
-                new = replacements.get((reg.region_id, i), sent.text)
-                if new is not sent.text:
-                    new = _restore_trailing_closers(sent.text, new)
-                parts.append(new)
-                cursor = sent.end
-            if cursor < len(reg.text):
-                parts.append(reg.text[cursor:])
-            region_bodies[reg.region_id] = "".join(parts)
-
-        out: List[str] = []
-        i = 0
-        region_by_start = {r.line_start: r for r in self.regions}
-        while i < len(self.lines):
-            if i in region_by_start:
-                reg = region_by_start[i]
-                body = region_bodies[reg.region_id]
-                # Preserve how lines joined: we joined with '' after keeping
-                # each line's original text (including newlines).
-                out.append(body)
-                i = reg.line_end
-            else:
-                out.append(self.lines[i].text)
-                i += 1
-        return "".join(out)
-
-
-# CommonMark measures block indentation in columns with a tab stop of four,
-# not in characters.
-_TAB_STOP = 4
-
-
-def indent_columns(text: str) -> Tuple[int, int]:
-    """
-    (columns, characters) spanned by text's leading whitespace.
-
-    A tab advances to the next multiple of four, so a leading tab is four
-    columns of indentation even though it is one character. Counting
-    characters let a tab-indented delimiter pass a three-space limit and close
-    a fence that CommonMark and GFM still consider open — everything after it,
-    including the real closer, then reached generation as prose.
-    """
-    col = 0
-    chars = 0
-    for ch in text:
-        if ch == " ":
-            col += 1
-        elif ch == "\t":
-            col += _TAB_STOP - (col % _TAB_STOP)
-        else:
-            break
-        chars += 1
-    return col, chars
-
-
-def _fence_opener(text: str) -> Optional[FenceState]:
-    """Return a CommonMark/Pandoc fence descriptor, or None."""
-    line = text.rstrip("\r\n")
-    m = _FENCE_OPEN.fullmatch(line)
-    if m is None:
-        return None
-    run = m.group("marker")
-    # Backtick info strings cannot themselves contain a backtick. Without
-    # this guard an inline-code-looking prose line can open a block forever.
-    if run[0] == "`" and "`" in m.group("rest"):
-        return None
-    return FenceState(
-        marker=run[0],
-        length=len(run),
-        # Columns, not characters: the closer's limit is relative to this.
-        indent=indent_columns(m.group("indent"))[0],
-    )
-
-
-def _is_fence_closer(text: str, fence: FenceState) -> bool:
-    """
-    Whether text is a valid closer for fence.
-
-    Indentation may exceed the opener's by at most 3 *columns*, the CommonMark
-    rule relative to the container. Unlike the opener this must stay strict: a
-    more deeply indented delimiter inside the block is content, and accepting
-    it as a closer would truncate the block.
-
-    Columns matter here: one tab is a single character but four columns, so a
-    tab-indented delimiter is content, not a closer.
-    """
-    line = text.rstrip("\r\n")
-    limit = fence.indent + 3
-    cols, i = indent_columns(line)
-    if cols > limit:
-        return False
-    start = i
-    while i < len(line) and line[i] == fence.marker:
-        i += 1
-    if i - start < fence.length:
-        return False
-    return not line[i:].strip(" \t")
-
-
-def _is_setext_underline(line: str) -> bool:
-    return bool(_SETEXT_EQ.match(line) or _SETEXT_DASH.match(line))
-
-
-def _setext_text_ok(line: str) -> bool:
-    """A line that may be the text of a setext heading (not blank/structural)."""
-    if not line.strip():
-        return False
-    if line.lstrip().startswith("#"):
-        return False
-    if _BLOCKQUOTE.match(line) or _LIST.match(line):
-        return False
-    return True
-
-
-def _is_table_separator(line: str) -> bool:
-    """
-    GFM table delimiter row: dashes/colons separated by pipes.
-
-    Accepts both `| --- | --- |` and `--- | ---` forms.
-    """
-    s = line.strip()
-    if "|" not in s or "-" not in s:
-        return False
-    # Strip outer pipes for the cell check.
-    core = s
-    if core.startswith("|"):
-        core = core[1:]
-    if core.endswith("|"):
-        core = core[:-1]
-    cells = core.split("|")
-    if not cells:
-        return False
-    for cell in cells:
-        # GFM requires only one dash per cell: `-`, `--`, `:-:`, `:-` are all
-        # valid delimiter rows. Requiring three let no-leading-pipe tables with
-        # short or aligned delimiters through to the paraphraser; leading-pipe
-        # tables only escaped that via the _TABLE_LEADING fallback.
-        if not re.fullmatch(r":?-+:?", cell.strip()):
-            return False
-    return True
-
-
-def _is_simple_table_header(raw_lines: Sequence[str], i: int) -> bool:
-    """
-    Whether line i opens a Pandoc simple table.
-
-    Pandoc requires all three of a header line, a spaced dash row, and at
-    least one body row — verified against `pandoc -t json`:
-
-        Right  Left / ---  ---- / 12  34   -> Table
-        Right  Left / ---  ----            -> Para Para   (no body row)
-        ---    ----  / 12  34              -> HorizontalRule Para (no header)
-
-    Column positions carry the structure in this form, so every line of it is
-    verbatim: shortening a cell moves the columns.
-    """
-    n = len(raw_lines)
-    if i + 2 >= n:
-        return False
-    header = raw_lines[i].rstrip("\r\n")
-    dashes = raw_lines[i + 1].rstrip("\r\n")
-    body = raw_lines[i + 2].rstrip("\r\n")
-    if not header.strip() or _SIMPLE_DASH_ROW.match(header):
-        return False
-    if not _SIMPLE_DASH_ROW.match(dashes):
-        return False
-    return bool(body.strip())
-
-
-def _multiline_table_end(raw_lines: Sequence[str], i: int) -> int:
-    """
-    Index just past a Pandoc multiline table starting at line i, or -1.
-
-    Shape, confirmed with `pandoc -t json`:
-
-        ----------          unbroken dash run (the opener)
-         A    B             one or more header lines
-        ----- -----         spaced dash row
-         1    2             body rows …
-                            … which may include blank lines
-         3    4
-        ----------          unbroken dash run (the closer)
-
-    The opener is what allows blank lines inside: without it the same content
-    ends at the first blank, and the trailing dash run becomes a setext
-    underline instead (`Table Header Para`). A closer is required too —
-    without one pandoc ends the table at the first blank and returns
-    `Table Para Para Para`.
-
-    Those conditions are what keep a lone dash run a thematic break.
-    """
-    n = len(raw_lines)
-    if not _FULL_DASH_ROW.match(raw_lines[i].rstrip("\r\n")):
-        return -1
-
-    j = i + 1
-    saw_header = False
-    while j < n:
-        line = raw_lines[j].rstrip("\r\n")
-        if not line.strip():
-            return -1                      # blank before the column row
-        if _SIMPLE_DASH_ROW.match(line):
-            break
-        if _FULL_DASH_ROW.match(line):
-            return -1                      # two runs with no column row
-        saw_header = True
-        j += 1
-    else:
-        return -1
-    if not saw_header:
-        return -1
-
-    j += 1                                  # past the spaced dash row
-    while j < n:
-        line = raw_lines[j].rstrip("\r\n")
-        if _FULL_DASH_ROW.match(line):
-            return j + 1                    # closer is part of the table
-        j += 1
-    return -1                               # unterminated: not a table
-
-
-def _looks_like_table_row(line: str) -> bool:
-    """Any non-empty line containing a pipe — only used after a separator context."""
-    return bool(line.strip()) and "|" in line
-
-
-def _is_html_block_start(line: str) -> bool:
-    return bool(
-        _HTML_COMMENT.match(line)
-        or _HTML_DECL.match(line)
-        or _HTML_CDATA.match(line)
-        or _HTML_PI.match(line)
-        or _HTML_OPEN.match(line)
-    )
-
-
-def _raw_html_terminator(line: str):
-    """The terminator pattern for a raw HTML opener, or None if not raw."""
-    for opener, terminator in _RAW_HTML_BLOCKS:
-        if opener.match(line):
-            return terminator
-    return None
-
-
-def _is_html_block_complete(line: str) -> bool:
-    """Single-line HTML that should not open a multi-line HTML region."""
-    if _HTML_COMMENT_FULL.match(line):
-        return True
-    # Self-contained one-line tag with a closer on the same line, e.g. <br/>.
-    if re.match(r"^ {0,3}<[^>]+/>\s*$", line):
-        return True
-    # Every tag opened on this line is also closed on it, e.g.
-    # "<span>inline html</span>". Previously no branch matched such a line, so
-    # it opened a block and silently froze every following line up to the next
-    # blank — swallowing ordinary prose. Void elements (br, img, hr, …) count
-    # as self-closing even without a trailing slash.
-    tags = _HTML_TAG.findall(line)
-    if tags:
-        depth = 0
-        for closing, name, self_closing in tags:
-            if self_closing or name.lower() in _HTML_VOID:
-                continue
-            depth += -1 if closing else 1
-        if depth <= 0:
-            return True
-    return False
-
-
-def _is_indented_code(line: str) -> bool:
-    """Four spaces or a tab at the start — CommonMark indented code signal."""
-    if not line:
-        return False
-    if line.startswith("\t"):
-        return True
-    return line.startswith("    ")
-
-
-def _is_reference_def(line: str) -> bool:
-    return bool(_FOOTNOTE_DEF.match(line) or _REF_DEF.match(line))
-
-
-def classify_lines(raw_lines: Sequence[str]) -> List[Line]:
-    """
-    Multi-line-aware classification. Non-TEXT kinds never enter generation.
-
-    Order matters: fence and front-matter state first, then setext look-ahead
-    (so `---` after a title is a heading underline, not a thematic break),
-    then GFM tables, then the remaining single-line forms.
-    """
-    lines: List[Line] = []
-    fence: Optional[FenceState] = None
-    in_fm = False
-    in_html = False
-    raw_html_end = None
-    i = 0
-    n = len(raw_lines)
-
-    def emit(kind: LineKind, raw: str) -> None:
-        lines.append(Line(kind=kind, text=raw, raw=raw))
-
-    while i < n:
-        raw = raw_lines[i]
-        stripped = raw.rstrip("\r\n")
-
-        # ── YAML front matter ──
-        if fence is None and not in_html and raw_html_end is None:
-            if i == 0 and stripped.strip() == "---":
-                emit(LineKind.FRONT_MATTER, raw)
-                in_fm = True
-                i += 1
-                continue
-            if in_fm:
-                emit(LineKind.FRONT_MATTER, raw)
-                if stripped.strip() == "---":
-                    in_fm = False
-                i += 1
-                continue
-
-        # ── Fenced code (delimiter-aware) ──
-        if fence is not None:
-            if _is_fence_closer(stripped, fence):
-                emit(LineKind.FENCE, raw)
-                fence = None
-            else:
-                emit(LineKind.FENCE, raw)
-            i += 1
-            continue
-
-        # ── Raw HTML block: runs to its own terminator, blank lines included ──
-        if raw_html_end is not None:
-            emit(LineKind.HTML, raw)
-            if raw_html_end.search(stripped):
-                raw_html_end = None
-            i += 1
-            continue
-
-        # ── HTML block continuation (blank line ends the block) ──
-        if in_html:
-            if not stripped.strip():
-                in_html = False
-                emit(LineKind.BLANK, raw)
-            else:
-                emit(LineKind.HTML, raw)
-            i += 1
-            continue
-
-        # ── Blank ──
-        if not stripped.strip():
-            emit(LineKind.BLANK, raw)
-            i += 1
-            continue
-
-        # ── Fence opener ──
-        opener = _fence_opener(stripped)
-        if opener is not None:
-            emit(LineKind.FENCE, raw)
-            fence = opener
-            i += 1
-            continue
-
-        # ── Setext heading (text + underline) ──
-        if (
-            i + 1 < n
-            and _setext_text_ok(stripped)
-            and _is_setext_underline(raw_lines[i + 1].rstrip("\r\n"))
-        ):
-            # CommonMark makes the *whole* preceding paragraph the heading, not
-            # just the line above the underline. Retroactively promote the
-            # contiguous run of TEXT already emitted, otherwise earlier lines of
-            # a multi-line heading stay paraphrasable.
-            j = len(lines) - 1
-            while j >= 0 and lines[j].kind is LineKind.TEXT:
-                lines[j] = Line(
-                    kind=LineKind.HEADING, text=lines[j].text, raw=lines[j].raw
-                )
-                j -= 1
-            emit(LineKind.HEADING, raw)
-            emit(LineKind.HEADING, raw_lines[i + 1])
-            i += 2
-            continue
-
-        # ── ATX heading ──
-        if _HEADING.match(stripped):
-            emit(LineKind.HEADING, raw)
-            i += 1
-            continue
-
-        # ── Pandoc multiline table: dash-run delimited, spans blank lines ──
-        # Consume from the opener so the closing dash run is never left for
-        # setext to treat as an underline on the last body row.
-        multiline_end = _multiline_table_end(raw_lines, i)
-        if multiline_end > i:
-            while i < multiline_end:
-                emit(LineKind.TABLE, raw_lines[i])
-                i += 1
-            continue
-
-        # ── Pandoc grid table: borders and rows, ends at the last border ──
-        if _GRID_BORDER.match(stripped):
-            while i < n:
-                row_s = raw_lines[i].rstrip("\r\n")
-                if not (_GRID_BORDER.match(row_s) or _GRID_ROW.match(row_s)):
-                    break
-                emit(LineKind.TABLE, raw_lines[i])
-                i += 1
-            continue
-
-        # ── Pandoc simple table: header, spaced dash row, body, ends blank ──
-        if _is_simple_table_header(raw_lines, i):
-            emit(LineKind.TABLE, raw_lines[i])          # header
-            emit(LineKind.TABLE, raw_lines[i + 1])      # dash row
-            i += 2
-            while i < n:
-                row_s = raw_lines[i].rstrip("\r\n")
-                if not row_s.strip():
-                    break
-                emit(LineKind.TABLE, raw_lines[i])
-                i += 1
-            continue
-
-        # ── GFM table: header row + delimiter row, then body rows ──
-        if (
-            i + 1 < n
-            and _looks_like_table_row(stripped)
-            and _is_table_separator(raw_lines[i + 1].rstrip("\r\n"))
-        ):
-            # A leading-pipe table's rows all start with a pipe. Without this
-            # the run absorbed the first prose line that merely contained a
-            # pipe, freezing it out of generation entirely.
-            leading_style = stripped.lstrip().startswith("|")
-            while i < n:
-                row = raw_lines[i]
-                row_s = row.rstrip("\r\n")
-                if not row_s.strip():
-                    break
-                if not (
-                    _looks_like_table_row(row_s) or _is_table_separator(row_s)
-                ):
-                    break
-                if leading_style and not row_s.lstrip().startswith("|"):
-                    break
-                emit(LineKind.TABLE, row)
-                i += 1
-            continue
-
-        # Leading-pipe table row without a separator yet (partial/broken tables
-        # stay frozen rather than becoming prose).
-        if _TABLE_LEADING.match(stripped):
-            emit(LineKind.TABLE, raw)
-            i += 1
-            continue
-
-        # ── Thematic break ──
-        if _HR.match(stripped.strip()):
-            emit(LineKind.HR, raw)
-            i += 1
-            continue
-
-        # ── Blockquote / list marker lines ──
-        if _BLOCKQUOTE.match(stripped):
-            emit(LineKind.BLOCKQUOTE, raw)
-            i += 1
-            continue
-        if _LIST.match(stripped):
-            emit(LineKind.LIST, raw)
-            i += 1
-            continue
-
-        # ── Reference and footnote definitions ──
-        if _is_reference_def(stripped):
-            emit(LineKind.REFERENCE, raw)
-            i += 1
-            # A definition's optional title may sit on the next indented line;
-            # left as TEXT it became a paraphrasable "sentence" that a rewrite
-            # would corrupt.
-            while i < n and _REF_TITLE_CONT.match(raw_lines[i].rstrip("\r\n")):
-                emit(LineKind.REFERENCE, raw_lines[i])
-                i += 1
-            continue
-
-        # ── HTML block start ──
-        if _is_html_block_start(stripped):
-            emit(LineKind.HTML, raw)
-            terminator = _raw_html_terminator(stripped)
-            if terminator is not None:
-                # Raw kinds close on their own terminator. One-liners such as
-                # `<!-- note -->` or `<script>x</script>` close immediately.
-                if not terminator.search(stripped[stripped.index("<") + 1:]):
-                    raw_html_end = terminator
-            elif not _is_html_block_complete(stripped):
-                in_html = True
-            i += 1
-            continue
-
-        # ── Indented code (4 spaces or tab) ──
-        # Indented code cannot interrupt a paragraph: an indented line directly
-        # after a TEXT line is a lazy continuation. Firing here split paragraphs
-        # mid-sentence and handed generation a fragment whose frozen tail would
-        # not rejoin grammatically.
-        if _is_indented_code(stripped) and not (
-            lines and lines[-1].kind is LineKind.TEXT
-        ):
-            while i < n and _is_indented_code(raw_lines[i].rstrip("\r\n")):
-                emit(LineKind.INDENTED_CODE, raw_lines[i])
-                i += 1
-            continue
-
-        # ── Ordinary prose ──
-        emit(LineKind.TEXT, raw)
-        i += 1
-
-    return lines
-
-
 def split_sentences(prose: str) -> List[Tuple[int, int, str]]:
     """
     Return list of (start, end, text) for sentences in prose.
@@ -856,36 +232,173 @@ def split_sentences(prose: str) -> List[Tuple[int, int, str]]:
     return out
 
 
+# ── Document model ─────────────────────────────────────────────────────────
+
+
+@dataclass
+class Line:
+    kind: LineKind
+    text: str  # includes trailing newline if present in source
+    raw: str
+
+
+@dataclass
+class Sentence:
+    """One paraphrasable sentence, located inside a prose region."""
+
+    text: str
+    start: int  # char offset into the region's text
+    end: int
+    region_id: int
+
+
+@dataclass
+class Region:
+    """One prose block, the only thing prosevary may rewrite."""
+
+    region_id: int
+    line_start: int  # inclusive index into lines[]
+    line_end: int  # exclusive
+    text: str
+    sentences: List[Sentence] = field(default_factory=list)
+    # Byte span in the source, so a caller can emit mdfix edits directly.
+    byte_start: int = 0
+    byte_end: int = 0
+
+
+@dataclass
+class Document:
+    lines: List[Line]
+    regions: List[Region]
+    # Every record's (kind, text) in source order. The IR is total, so
+    # concatenating these reproduces the file — which is what makes
+    # reconstruct() exact rather than approximate.
+    _pieces: List[Tuple[str, str, Optional[int]]] = field(default_factory=list)
+
+    def reconstruct(self, replacements: Dict[Tuple[int, int], str]) -> str:
+        """
+        Rebuild the file. Keys are (region_id, sentence_index) -> new text.
+
+        Untouched pieces are the source's own bytes, so a document with no
+        replacements comes back byte for byte.
+        """
+        bodies: Dict[int, str] = {}
+        for region in self.regions:
+            if not region.sentences:
+                bodies[region.region_id] = region.text
+                continue
+            parts: List[str] = []
+            cursor = 0
+            for i, sentence in enumerate(region.sentences):
+                if sentence.start > cursor:
+                    parts.append(region.text[cursor:sentence.start])
+                new = replacements.get((region.region_id, i), sentence.text)
+                if new is not sentence.text:
+                    new = _restore_trailing_closers(sentence.text, new)
+                parts.append(new)
+                cursor = sentence.end
+            if cursor < len(region.text):
+                parts.append(region.text[cursor:])
+            bodies[region.region_id] = "".join(parts)
+
+        out: List[str] = []
+        for kind, text, region_id in self._pieces:
+            if region_id is not None:
+                out.append(bodies[region_id])
+            else:
+                out.append(text)
+        return "".join(out)
+
+
 def parse(source: str) -> Document:
-    raw_lines = source.splitlines(keepends=True)
-    if not raw_lines and source == "":
-        return Document(lines=[], regions=[])
+    """
+    Segment `source` using mdfix's structural IR.
 
-    lines = classify_lines(raw_lines)
+    The IR reader wants a path, so the text is written to a temp file. That is
+    the price of not carrying a second parser, and it is a cheap one.
+    """
+    data = source.encode("utf-8")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "doc.md"
+        path.write_bytes(data)
+        records = [r for r in raw_records([path]) if r.get("kind") != "document"]
 
-    # Group contiguous TEXT lines into regions (broken by blank/other).
+    top = [r for r in records if not r.get("depth")]
+    nested = sorted((r for r in records if r.get("depth")),
+                    key=lambda r: r["start"])
+
+    pieces: List[Tuple[str, str, Optional[int]]] = []
     regions: List[Region] = []
-    i = 0
-    rid = 0
-    while i < len(lines):
-        if lines[i].kind != LineKind.TEXT:
-            i += 1
-            continue
-        start = i
-        while i < len(lines) and lines[i].kind == LineKind.TEXT:
-            i += 1
-        end = i
-        body = "".join(L.text for L in lines[start:end])
-        reg = Region(region_id=rid, line_start=start, line_end=end, text=body)
-        for s_i, (a, b, t) in enumerate(split_sentences(body)):
-            reg.sentences.append(Sentence(text=t, start=a, end=b, region_id=rid))
-        regions.append(reg)
-        rid += 1
 
-    return Document(lines=lines, regions=regions)
+    def add_region(record: dict, start: int, end: int) -> None:
+        span = text_slice(data, start, end)
+        region = Region(
+            region_id=len(regions),
+            line_start=record["line"] - 1,
+            line_end=record["endLine"],
+            text=span,
+            byte_start=start,
+            byte_end=end,
+        )
+        region.sentences = [
+            Sentence(text=t, start=a, end=b, region_id=region.region_id)
+            for a, b, t in split_sentences(span)
+        ]
+        regions.append(region)
+        pieces.append((PROSE_KIND, span, region.region_id))
+
+    for record in top:
+        start, end = record["start"], record["end"]
+        if record["kind"] == PROSE_KIND:
+            add_region(record, start, end)
+            continue
+
+        # A container may hold prose children (schema 3). Split it around
+        # them so every piece is either verbatim or a rewritable region, and
+        # the concatenation is still the original bytes.
+        children = [c for c in nested if start <= c["start"] and c["end"] <= end
+                    and c["kind"] == PROSE_KIND]
+        cursor = start
+        for child in children:
+            if child["start"] > cursor:
+                pieces.append((record["kind"],
+                               text_slice(data, cursor, child["start"]), None))
+            add_region(child, child["start"], child["end"])
+            cursor = child["end"]
+        if cursor < end:
+            pieces.append((record["kind"], text_slice(data, cursor, end), None))
+        elif not children:
+            pieces.append((record["kind"], text_slice(data, start, end), None))
+
+    lines = _lines_from(data, top)
+    return Document(lines=lines, regions=regions, _pieces=pieces)
+
+
+def text_slice(data: bytes, start: int, end: int) -> str:
+    return data[start:end].decode("utf-8", errors="replace")
+
+
+def _lines_from(data: bytes, records: Sequence[dict]) -> List[Line]:
+    """
+    One Line per source line, carrying the kind of the record covering it.
+
+    A blank line lives inside a `gap`, so it reports BLANK; a line inside a
+    fence reports FENCE. This is a view for callers that think in lines, not
+    a second classification — every kind comes from the IR.
+    """
+    text = data.decode("utf-8", errors="replace")
+    raw_lines = text.splitlines(keepends=True)
+    kinds: List[LineKind] = [LineKind.BLANK] * len(raw_lines)
+    for record in records:
+        line_kind = _KIND_TO_LINE.get(record["kind"])
+        if line_kind is None:
+            continue
+        for i in range(record["line"] - 1, min(record["endLine"], len(raw_lines))):
+            kinds[i] = line_kind
+    return [Line(kind=k, text=t, raw=t) for k, t in zip(kinds, raw_lines)]
 
 
 def iter_sentences(doc: Document) -> Iterator[Tuple[Region, int, Sentence]]:
-    for reg in doc.regions:
-        for i, sent in enumerate(reg.sentences):
-            yield reg, i, sent
+    for region in doc.regions:
+        for i, sentence in enumerate(region.sentences):
+            yield region, i, sentence

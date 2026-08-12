@@ -127,8 +127,11 @@ class ReconstructProperties(unittest.TestCase):
         sentinel = "REWRITTEN"
         for source in _documents(seed=6, count=2000):
             doc = parse(source)
+            data = source.encode("utf-8")
             for region in doc.regions:
-                base = _region_offset(doc, region.line_start)
+                # The region's own byte span, not a line offset: schema 3
+                # regions can start mid-line, after a list marker.
+                base = len(data[:region.byte_start].decode("utf-8"))
                 for index, sent in enumerate(region.sentences):
                     out = parse(source).reconstruct(
                         {(region.region_id, index): sentinel}

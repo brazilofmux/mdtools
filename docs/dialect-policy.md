@@ -42,10 +42,11 @@ through 7 depends on it.
 > that implementation consume its output and must not re-derive it.**
 
 The rule exists because the repository has already paid for its absence.
-`prosevary/segment.py` is 891 lines, roughly 685 of which restate the block
+`prosevary/segment.py` was 891 lines, roughly 685 of which restated the block
 grammar in `mdfix/mdfix.rl`: fence tracking, setext detection, raw-HTML block
 kinds, the four table forms, indented code, list content columns. Written
-twice, in two languages, from one spec.
+twice, in two languages, from one spec. It is now 404 lines and contains no
+Markdown grammar at all.
 
 Every structural bug so far arrived in pairs. Raw HTML blocks, dash rows
 containing tabs, and the list-context rule each had to be fixed on both sides,
@@ -66,9 +67,9 @@ mdfix owns the grammar in both directions:
   and splices them into the original bytes. **Shipped**, schema
   `mdtools-edits-1`; see [edit-schema.md](edit-schema.md).
 
-Both halves now exist. Until consumers migrate, prosevary still carries its own
-block classifier and `tests/test_tool_parity.py` is the dual-grammar safety
-net. The IR under-reports structure in a handful of places (setext headings,
+Both halves exist, and both consumers have migrated: prosevary takes its block
+structure from the IR, and `tests/test_tool_parity.py` is retired — there is no
+longer a second grammar for it to check against. The IR under-reports structure in a handful of places (setext headings,
 definition lists, math, raw LaTeX), all recorded in ir-schema.md and pinned by
 tests; those are fixed in `mdfix.rl`, never in a consumer.
 
