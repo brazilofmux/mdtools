@@ -54,7 +54,7 @@ closed, the flag flips and the consumer sees it.
 |---|---|---|---|
 | `document` | `schema`, `source`, `bytes`, `lines` | — | header record |
 | `frontmatter` | | `true` | metadata |
-| `heading` | `level`, `text`, `plain` | `false` | `Header` |
+| `heading` | `level`, `style`, `text`, `plain` | `false` | `Header` |
 | `paragraph` | | `false` | `Para` |
 | `list` | | `false` | `BulletList` / `OrderedList` |
 | `block_quote` | | `false` | `BlockQuote` |
@@ -64,11 +64,28 @@ closed, the flag flips and the consumer sees it.
 | `line_block` | | `false` | `LineBlock` |
 | `raw_html` | `htmlKind` | `true` | `RawBlock` |
 | `thematic_break` | | `true` | `HorizontalRule` |
+| `reference_def` | | `false` | *none — a definition* |
+| `footnote_def` | | `false` | *none — a definition* |
 
 `table.form` is one of `pipe`, `simple`, `grid`, `multiline`. The last three
 are `protected`; **`pipe` is not** — mdfix rewrites punctuation inside pipe
 cells (dialect-policy §7 gap 4). `htmlKind` is one of `comment`, `cdata`,
 `processing-instruction`, `declaration`, `element`.
+
+`heading.style` is `atx` or `setext`. A setext record spans both lines, text
+and underline. The underline must start at **column 0** — CommonMark allows
+up to three spaces, pandoc's `markdown` reader does not, and pandoc is the
+output dialect. The text line may itself be indented 0–3, may look like a thematic
+break (`-----` under `-----` is a heading), and must be a single line.
+
+`reference_def` and `footnote_def` carry no counterpart in Pandoc's block list
+at all — like front matter, they are *definitions*, and `[id]: http://x` on its
+own yields an empty block list. They are separate kinds rather than paragraphs
+because a prose pass must never be handed one: paraphrasing a link definition
+breaks every reference to it. The two continue differently, both verified:
+a reference definition takes only a quoted title on the following line (an
+indented plain line after it is a code block), while a footnote definition
+takes indented continuations and survives a blank line.
 
 `heading.text` is the content after the marker with a closing `#` run removed,
 so `## Sub ##` yields `Sub`. A `#` that is part of the text survives: `# C#`
@@ -139,7 +156,6 @@ and Pandoc reports something richer:
 
 | Construct | Pandoc | IR | Consequence |
 |---|---|---|---|
-| Setext heading (`Title` / `=====`) | `Header` | `paragraph` | missing from outlines |
 | Definition list | `DefinitionList` | `paragraph` | not queryable |
 | Pipe table without leading `\|` | `Table` | `paragraph` | missing from table queries |
 | Display math `$$` | `Para` with `Math` | `paragraph` | §7 gap 2 |

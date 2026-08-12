@@ -111,9 +111,11 @@ These are consequences of what the IR carries today. Each is fixed in
   blocks or protection therefore under-report inside containers. mdquery
   **warns on stderr** when it sees a container whose span holds a fence, so a
   result never looks exhaustive when it is not; `-q` silences it.
-- **Under-reported constructs.** Setext headings, definition lists, display
-  math and raw LaTeX arrive as `paragraph`, so they are invisible to
-  `--kind`. See ir-schema.md, "Known divergences from Pandoc".
+- **Under-reported constructs.** Definition lists, display math and raw LaTeX
+  arrive as `paragraph`, so they are invisible to `--kind`. Setext headings,
+  link definitions and footnote definitions are reported properly and appear
+  in `outline` with the identifiers Pandoc computes. See the divergence list
+  in ir-schema.md.
 
 ## Finding mdfix
 

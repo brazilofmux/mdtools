@@ -26,7 +26,7 @@ from .query import (
 KINDS = (
     "frontmatter", "heading", "paragraph", "list", "block_quote",
     "code_fence", "code_indented", "table", "line_block", "raw_html",
-    "thematic_break",
+    "thematic_break", "reference_def", "footnote_def",
 )
 TABLE_FORMS = ("pipe", "simple", "grid", "multiline")
 
