@@ -3533,11 +3533,11 @@ static void process(FILE *out)
         char *line = lines[i];
         enum linetype type = classify(line);
 
-        /* ── YAML frontmatter handling ──
-         * Only the very first line can open frontmatter.
-         * The next --- closes it.  After that, --- is a thematic break.
-         */
-        if (type == LT_FMATTER && !fence.active && fmatter_close > 0) {
+        /* YAML frontmatter: open only at line 0 when a closer exists.
+         * Close at the precomputed line (--- or ...), not by LT_FMATTER —
+         * classify() only tags dashes, so a Pandoc `...` closer must be
+         * index-based. Later `---` is a thematic break. */
+        if (!fence.active && fmatter_close > 0) {
             if (i == 0) {
                 in_frontmatter = 1;
                 fix_trailing_ws(line, i + 1);
@@ -3554,8 +3554,8 @@ static void process(FILE *out)
                 had_blank = 0;
                 continue;
             }
-            /* Past frontmatter — this is a thematic break, treat as text */
-            type = LT_TEXT;
+            if (type == LT_FMATTER)
+                type = LT_TEXT;
         }
 
         /* ── Inside frontmatter: pass through, just trim whitespace ── */

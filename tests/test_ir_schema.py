@@ -496,6 +496,22 @@ class BlockKindTests(IRTestCase):
         self.assertEqual(record["kind"], "frontmatter")
         self.assertEqual((record["line"], record["endLine"]), (1, 3))
 
+    def test_dot_closer_does_not_freeze_the_fixer(self) -> None:
+        # process() used to gate open/close on LT_FMATTER only, so a Pandoc
+        # `...` closer left in_frontmatter set and the body was pass-through.
+        # The L2 ATX-space repair must still run after a `...` block.
+        source = "---\ntitle: T\n...\n\n#Title\n"
+        path = self.dir / "fm.md"
+        out = self.dir / "fm.out.md"
+        path.write_text(source, encoding="utf-8")
+        result = subprocess.run(
+            [str(MDFIX), "-q", str(path), str(out)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(out.read_text(encoding="utf-8"),
+                         "---\ntitle: T\n...\n\n# Title\n")
+
     def test_empty_front_matter(self) -> None:
         self.assertEqual(self._kinds("---\n---\n\n# H\n"),
                          ["frontmatter", "heading"])
