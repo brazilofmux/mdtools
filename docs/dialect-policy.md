@@ -148,7 +148,7 @@ Load-bearing extensions, with the behavior each one buys:
 | `+line_blocks` | `\|`-prefixed lines are `LineBlock`, whitespace- and line-count-significant. See §7. |
 | `+yaml_metadata_block` | Front matter is metadata, not prose. |
 | `+footnotes`, `+inline_notes` | Footnote definitions are structure, not paragraphs. |
-| `+escaped_line_breaks`, `-hard_line_breaks` | A two-space line ending is a hard break under this profile. **`-w`, `--canonical`, `--wrap`, and `--technical` currently destroy hard breaks** — see §7. |
+| `+escaped_line_breaks`, `-hard_line_breaks` | A two-space line ending is a hard break under this profile. **`mdfix -w` / `--canonical` / `--wrap` / `--technical` currently destroy hard breaks** — see §7. |
 | `+smart` | See §4 — typographic output should be invariant under this flag. |
 | `+auto_identifiers`, `-gfm_auto_identifiers` | Heading anchors follow Pandoc's slug rules, which mdlinks (#14) will depend on. |
 | `+fenced_divs`, `+native_divs`, `+bracketed_spans`, `+native_spans` | Div and span syntax is structure to preserve, not prose. |
