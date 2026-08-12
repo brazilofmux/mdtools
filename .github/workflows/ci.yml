@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # mdfix.c is generated but committed, so it can drift from mdfix.rl — by a
+  # hand-edit to the .c, or a .rl change committed without regenerating.
+  # Either way, reviewing the .rl tells you nothing about what ships.
+  source-integrity:
+    name: mdfix.c matches mdfix.rl
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ragel
+        run: sudo apt-get update && sudo apt-get install -y ragel
+      - run: make check-sync
+
+  # The committed .c exists so contributors can build without ragel. That is
+  # a documented property, so assert it: touch the .c first, otherwise make
+  # may or may not try to regenerate depending on checkout timestamps.
+  build-without-ragel:
+    name: builds from committed mdfix.c
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confirm ragel is absent
+        run: "! command -v ragel"
+      - name: Build
+        run: |
+          touch mdfix/mdfix.c
+          make
+          ./mdfix/mdfix -h > /dev/null
+
+  tests:
+    name: tests (python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # README claims 3.10+. This matrix is what makes that claim true —
+        # development happens on 3.14, so nothing else verifies the floor.
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install ragel
+        # Not because tests need it, but so the build never depends on which
+        # of mdfix.c / mdfix.rl checkout happened to stamp later.
+        run: sudo apt-get update && sudo apt-get install -y ragel
+      - name: Install PyYAML
+        run: python -m pip install --disable-pip-version-check -r prosevary/requirements.txt
+      - name: Run tests
+        run: make test
+        env:
+          # The suite must not depend on developer configuration. This is a
+          # second line of defence behind the per-test cleanup: three tests
+          # once failed only because PROSEVARY_DB happened to be set.
+          PROSEVARY_DB: ""
+          PROSEVARY_GLOSSARY: ""
+          PROSEVARY_EMBED_MODEL: ""
+          PROSEVARY_BASE_URL: ""
+
+  sanitizers:
+    name: address + UB sanitizers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ragel
+        run: sudo apt-get update && sudo apt-get install -y ragel
+      # Catches the class the test suite cannot see: a few bytes written past
+      # a heap allocation. A right-sized line buffer once overflowed on a
+      # six-character input and 140 tests stayed green.
+      - name: Build and run under sanitizers
+        run: make asan
+
+  warnings:
+    name: C warnings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Not -Werror: three warnings predate this workflow (an unused ragel
+      # `act`, a deliberate self-assign, an unused profile helper). Failing on
+      # them would mean editing generated code. This job surfaces new ones.
+      - name: Compile with -Wall -Wextra
+        run: |
+          cc -O2 -Wall -Wextra -c -o /dev/null mdfix/mdfix.c 2>&1 | tee warnings.txt
+          echo "--- warnings originating in mdfix.rl ---"
+          grep 'mdfix\.rl:' warnings.txt || echo "(none)"
