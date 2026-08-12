@@ -2383,13 +2383,21 @@ static void process(FILE *out)
         {
             int table_end = table_block_end(i);
             if (table_end > i) {
+                /*
+                 * A table strictly left of the enclosing item's content column
+                 * ends the list; one at or past that column is inside the item.
+                 * Always clearing (the previous behaviour) made a later
+                 * four-space list continuation look like margin indented code.
+                 */
+                if (indent_columns(line, NULL) < list_content_col) {
+                    prev_was_list_ctx = 0;
+                    list_content_col = 0;
+                }
                 flush_paragraph(out);
                 for (; i < table_end; i++)
                     fprintf(out, "%s\n", lines[i]);
                 i--;  /* the loop's own i++ moves past the last table line */
                 prev_content_type = LT_TABLEBLOCK;
-                prev_was_list_ctx = 0;
-                list_content_col = 0;
                 had_blank = 0;
                 continue;
             }

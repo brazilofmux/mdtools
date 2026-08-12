@@ -148,6 +148,34 @@ class MdfixTableTests(unittest.TestCase):
                 once = self._fix(source)
                 self.assertEqual(self._fix(once), once)
 
+    def test_list_context_survives_a_nested_table(self) -> None:
+        # Nested table must not wipe list_content_col. Content column for
+        # `- item` is 2, so a four-space line is list continuation (prose)
+        # and a six-space line is indented code.
+        nested = "\n".join(
+            ("  " + ln if ln else ln) for ln in GRID.strip("\n").split("\n")
+        )
+        source = (
+            f"- item\n\n{nested}\n\n"
+            f"    cont A {ARROW} C\n\n"
+            f"      code {ARROW} here\n"
+        )
+        out = self._fix(source, "--canonical")
+        self.assertNotIn(f"cont A {ARROW} C", out)
+        self.assertIn(f"code {ARROW} here", out)
+        # Table cells stay protected.
+        self.assertIn(f"A {ARROW} B", out)
+
+    def test_margin_table_ends_list_context(self) -> None:
+        # A table at the margin is left of the item's content column, so it
+        # ends the list and a later four-space block is margin indented code.
+        source = (
+            f"- item\n\n{GRID}\n"
+            f"    code A {ARROW} B\n"
+        )
+        out = self._fix(source, "--canonical")
+        self.assertIn(f"code A {ARROW} B", out)
+
 
 @unittest.skipUnless(PANDOC, "pandoc not installed")
 class PandocTableOracleTests(unittest.TestCase):
