@@ -178,6 +178,7 @@ static int  opt_fence_canonical = 0;
 static int  opt_pandoc_safe_links = 0;
 static int  opt_scrivener_repair = 0;
 static int  opt_spaced_emdash = 0;
+static int  opt_required   = 1;       /* L2: on unless --no-required */
 static int  opt_wrap_width = 0;       /* 0 = disabled */
 static int  opt_emit_ir   = 0;        /* structural IR to stdout; never writes */
 
@@ -1945,6 +1946,63 @@ static int fix_footnote_def(char *line, int linenum)
  * - Ensure single space after ATX hashes.
  * - Remove trailing closing hashes ("## Title ##" -> "## Title").
  */
+/*
+ * L2 required (architecture.md I2.3): a space after the ATX marker.
+ *
+ * `#Title` is not a heading to Pandoc — it reads as a paragraph, so the
+ * document means something different from what the author wrote. That makes
+ * this a *repair* rather than a style choice, and I2.1 is the test: omitting
+ * it changes the AST. It ran only under --heading-canonical, so a bare mdfix
+ * run left a broken heading broken, which is exactly what I2.3 forbids.
+ *
+ * Collapsing `##   Title` to one space is the same fix seen from the other
+ * side: Pandoc reads both as the same Header, so that half is cosmetic and
+ * rides along only because splitting it would complicate the code without
+ * changing any output a reader sees.
+ */
+static int fix_heading_space(char *line, int linenum)
+{
+    if (!opt_required)
+        return 0;
+
+    int len = (int)strlen(line);
+    int i = 0;
+    while (i < 3 && line[i] == ' ')
+        i++;
+    int hstart = i;
+    while (line[i] == '#')
+        i++;
+    int hend = i;
+    if (hend == hstart || hend - hstart > 6)
+        return 0;
+
+    int changed = 0;
+    if (line[i] != ' ' && line[i] != '\0') {
+        if (len + 1 < MAX_LINE) {
+            memmove(line + i + 1, line + i, (size_t)(len - i + 1));
+            line[i] = ' ';
+            changed = 1;
+        }
+    } else if (line[i] == ' ') {
+        int j = i;
+        while (line[j] == ' ')
+            j++;
+        if (j > i + 1) {
+            memmove(line + i + 1, line + j, (size_t)(len - j + 1));
+            changed = 1;
+        }
+    }
+
+    if (changed) {
+        if (opt_verbose)
+            fprintf(stderr, "  line %d: ATX heading spacing\n", linenum);
+        fix_counts[FIX_HEADING_CANONICAL]++;
+    }
+    return changed;
+}
+
+/* The cosmetic remainder: a trailing '#' run. Pandoc reads `# Title ###` as
+ * the same Header either way, so this stays opt-in. */
 static int fix_heading_canonical(char *line, int linenum)
 {
     if (!opt_heading_canonical)
@@ -1963,24 +2021,6 @@ static int fix_heading_canonical(char *line, int linenum)
         return 0;
     if (hend - hstart > 6)
         return 0;
-
-    if (line[i] != ' ' && line[i] != '\0') {
-        if (len + 1 < MAX_LINE) {
-            memmove(line + i + 1, line + i, len - i + 1);
-            line[i] = ' ';
-            len++;
-            changed = 1;
-        }
-    } else if (line[i] == ' ') {
-        int j = i;
-        while (line[j] == ' ')
-            j++;
-        if (j > i + 1) {
-            memmove(line + i + 1, line + j, len - j + 1);
-            len -= (j - (i + 1));
-            changed = 1;
-        }
-    }
 
     int end = len - 1;
     while (end >= 0 && line[end] == ' ')
@@ -3714,7 +3754,8 @@ static void process(FILE *out)
          * intervening blank line, pandoc will choke — especially
          * when the preceding line ends with a colon.
          */
-        if (!had_blank
+        if (opt_required
+            && !had_blank
             && is_list_type(type)
             && !in_list_context
             && prev_content_type != LT_BLANK)
@@ -3733,7 +3774,8 @@ static void process(FILE *out)
          * intervening blank line, the markdown structure is ambiguous.
          * Exception: indented continuation lines are part of the list item.
          */
-        if (!had_blank
+        if (opt_required
+            && !had_blank
             && !is_list_type(type)
             && in_list_context
             && !is_list_continuation(line))
@@ -3759,6 +3801,7 @@ static void process(FILE *out)
         fix_trailing_ws(line, i + 1);
         fix_bullet(line, i + 1);
         fix_heading_fmt(line, i + 1);
+        fix_heading_space(line, i + 1);
         fix_heading_canonical(line, i + 1);
         if (type == LT_TEXT) {
             lint_serial_comma(line, i + 1);
@@ -3891,13 +3934,16 @@ static void usage(const char *prog)
         "        Enable full canonical Markdown profile (safe passes)\n"
         "  --canonical-lint\n"
         "        Canonical gate mode: fail if file is not canonical\n"
+        "  --no-required\n"
+        "        Disable the required (L2) repairs. Output is then not\n"
+        "        guaranteed Pandoc-readable; for inspection, not for writing\n"
         "  --emit-ir\n"
         "        Emit the structural IR as JSONL on stdout and write nothing.\n"
         "        Byte spans slice the input exactly; see docs/ir-schema.md\n"
         "  --footnote-canonical\n"
         "        Normalize footnote refs/defs to canonical style\n"
         "  --heading-canonical\n"
-        "        Normalize ATX heading spacing/trailing hashes\n"
+        "        Remove trailing heading hashes (spacing is required, R3)\n"
         "  --fence-canonical\n"
         "        Normalize code fence delimiter lines\n"
         "  --pandoc-safe-links\n"
@@ -3912,11 +3958,18 @@ static void usage(const char *prog)
         "        Technical docs profile: --canonical + --spaced-emdash + --wrap=78\n"
         "  -h    This help\n"
         "\n"
-        "Fixes (always on):\n"
+        "Required repairs (on by default; --no-required disables).\n"
+        "Without these Pandoc reads the document as something else —\n"
+        "see docs/transforms.md:\n"
+        "  R1. Blank line before lists        (else the list is swallowed\n"
+        "                                      into the paragraph)\n"
+        "  R2. Blank line after lists         (else the next paragraph is\n"
+        "                                      swallowed into the item)\n"
+        "  R3. Space after the ATX marker     (#Title is a paragraph,\n"
+        "                                      not a heading)\n"
+        "\n"
+        "Fixes (always on; editorial, see issue #60):\n"
         "  1. Bullet markers normalized to -  (linter: list_bullet_style)\n"
-        "  2. Blank line before lists         (linter: pandoc_list_error,\n"
-        "                                      list_spacing_before)\n"
-        "  3. Blank line after lists          (linter: list_spacing)\n"
         "  4. Bold/italic stripped from heads  (linter: header_formatting)\n"
         "  5. Bold colons moved inside tags   (**Term**: → **Term:**)\n"
         "  6. Arrow asides converted to em-dash (→ → —)\n"
@@ -3947,8 +4000,8 @@ static void usage(const char *prog)
         "  18. Normalize footnote defs        ([^1]: text)\n"
         "\n"
         "Fixes (opt-in with --heading-canonical):\n"
-        "  19. Normalize heading spacing      (##Title -> ## Title)\n"
         "  20. Remove trailing heading hashes (## Title ## -> ## Title)\n"
+        "      (heading spacing is now a required repair, R3)\n"
         "\n"
         "Fixes (opt-in with --fence-canonical):\n"
         "  21. Normalize fence delimiters     (opening/closing fence lines)\n"
@@ -4461,6 +4514,11 @@ int main(int argc, char *argv[])
         }
         if (strcmp(argv[argi], "--canonical-lint") == 0) {
             opt_canonical_lint = 1;
+            argi++;
+            continue;
+        }
+        if (strcmp(argv[argi], "--no-required") == 0) {
+            opt_required = 0;
             argi++;
             continue;
         }

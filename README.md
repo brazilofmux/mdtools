@@ -12,7 +12,8 @@ These used to be copy-pasted across `slow32-book`, `mush`, `religions`, and othe
 This repo is the source of truth.
 
 Read [docs/architecture.md](docs/architecture.md) for the layering and the
-invariants each stage guarantees, then
+invariants each stage guarantees,
+[docs/transforms.md](docs/transforms.md) for which fixes run by default, then
 [docs/dialect-policy.md](docs/dialect-policy.md) before adding a pass or a
 tool. It fixes the input dialects, the single canonical output profile, and the
 rule that Markdown grammar lives in exactly one implementation.
