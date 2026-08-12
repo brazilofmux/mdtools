@@ -52,6 +52,27 @@ _HTML_PI = re.compile(r"^ {0,3}<\?")
 _HTML_COMMENT_FULL = re.compile(r"^ {0,3}<!--.*?-->\s*$")
 # One HTML tag: (closing slash, name, self-closing slash).
 _HTML_TAG = re.compile(r"<(/?)([a-zA-Z][\w-]*)\b[^>]*?(/?)>")
+# HTML void elements have no end tag. Without treating them as self-closing,
+# a bare <br> or <img src=...> opens an HTML block and freezes every following
+# line until a blank — the same class of bug as unclosed <span>…</span>.
+_HTML_VOID = frozenset(
+    {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+)
 # Setext underlines: 0–3 spaces, then only = or only -. CommonMark allows a
 # single dash, and requiring 3+ did not merely miss headings — the title and a
 # lone "-" merged into one region and split as the single sentence
@@ -265,12 +286,13 @@ def _is_html_block_complete(line: str) -> bool:
     # Every tag opened on this line is also closed on it, e.g.
     # "<span>inline html</span>". Previously no branch matched such a line, so
     # it opened a block and silently froze every following line up to the next
-    # blank — swallowing ordinary prose.
+    # blank — swallowing ordinary prose. Void elements (br, img, hr, …) count
+    # as self-closing even without a trailing slash.
     tags = _HTML_TAG.findall(line)
     if tags:
         depth = 0
-        for closing, _name, self_closing in tags:
-            if self_closing:
+        for closing, name, self_closing in tags:
+            if self_closing or name.lower() in _HTML_VOID:
                 continue
             depth += -1 if closing else 1
         if depth <= 0:

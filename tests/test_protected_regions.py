@@ -191,6 +191,23 @@ class ReviewFixTests(unittest.TestCase):
         self.assertEqual(_kinds(source), ["TEXT", "HTML", "TEXT"])
         self.assertIn("More prose follows.", "".join(_sentences(source)))
 
+    def test_void_html_tags_do_not_swallow_following_prose(self) -> None:
+        # Void elements have no end tag. Without treating them as self-closing,
+        # <br> / <img> opened a block and froze the next prose line.
+        for tag in (
+            "<br>",
+            "<br/>",
+            '<img src="x.png">',
+            '<img src="x.png"/>',
+            "<hr>",
+            '<input type="text">',
+        ):
+            source = f"Before.\n{tag}\nAfter without blank.\n"
+            with self.subTest(tag=tag):
+                self.assertEqual(_kinds(source), ["TEXT", "HTML", "TEXT"])
+                self.assertEqual(_sentences(source), ["Before.", "After without blank."])
+                self.assertEqual(parse(source).reconstruct({}), source)
+
     def test_table_run_does_not_absorb_following_prose(self) -> None:
         source = "| Name | Type |\n|---|---|\n| a | b |\nThis prose has a | pipe.\n"
         self.assertEqual(_kinds(source)[-1], "TEXT")
