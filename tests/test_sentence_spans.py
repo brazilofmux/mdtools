@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
-from prosevary.segment import parse, split_sentences
+from prosevary.segment import (
+    _restore_trailing_closers,
+    _unmatched_trailing_closers,
+    parse,
+    split_sentences,
+)
 
 
 def _texts(source: str) -> list[str]:
@@ -161,6 +168,85 @@ class MultiSentenceQuotationTests(unittest.TestCase):
         src = "One sentence here. Two sentences here.\n"
         out = parse(src).reconstruct({(0, 0): "Rewritten one"})
         self.assertIn("Rewritten one Two sentences here.", out)
+
+
+class SelfOpenedCloserTests(unittest.TestCase):
+    """
+    Restoration is only for closers belonging to something larger than the
+    sentence. A sentence that opens its own delimiters must not have them
+    re-appended (issue #31).
+    """
+
+    def test_reported_case_does_not_duplicate(self) -> None:
+        src = 'He said ("Hello.") Next.\n'
+        out = parse(src).reconstruct({(0, 0): "He replied (Hi.)"})
+        self.assertEqual(out, "He replied (Hi.) Next.\n")
+        self.assertNotIn('")', out)
+
+    def test_unmatched_run_is_computed_not_the_whole_run(self) -> None:
+        # Both delimiters are opened inside the sentence.
+        self.assertEqual(_unmatched_trailing_closers('He said ("Hello.")'), "")
+        # The quote opens in the previous sentence.
+        self.assertEqual(_unmatched_trailing_closers('This is two."'), '"')
+
+    def test_candidate_keeping_part_of_the_run_is_not_doubled(self) -> None:
+        self.assertEqual(
+            _restore_trailing_closers('A quote ("x.")', "B quote (y.)"),
+            "B quote (y.)",
+        )
+
+    def test_structural_closer_is_still_restored(self) -> None:
+        src = 'He said, "This is one. This is two." Then he left.\n'
+        out = parse(src).reconstruct({(0, 1): "This is number two."})
+        self.assertEqual(out.count('"'), src.count('"'))
+        self.assertIn('This is number two."', out)
+
+
+class JudgedTextIsWrittenTextTests(unittest.TestCase):
+    """
+    Restoration used to happen during reconstruction, after the gates and
+    after the decision was logged — so the bytes in the document were not the
+    string freeze checked, the judge accepted, or the run log recorded.
+    """
+
+    def test_accepted_candidate_equals_written_text(self) -> None:
+        from prosevary.embed import HashEmbedder
+        from prosevary.llm import Generator, NullJudge
+        from prosevary.pipeline import run_pipeline
+        from prosevary.store import Store
+
+        src = 'He said, "This is one. This is two." Then he left.\n'
+
+        class DropsCloser(Generator):
+            model_id = "test-drops-closer"
+
+            def paraphrase(self, sentence, freeze_terms, k=3):
+                # Returns a rewrite of the second sentence without its quote.
+                return ["This is number two."] if "two" in sentence else []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / "d.sqlite")
+            self.addCleanup(store.close)
+            doc = parse(src)
+            result = run_pipeline(
+                doc, store, HashEmbedder(), DropsCloser(), NullJudge(),
+                tau=0.0, k=1, seed=1,
+            )
+            accepted = [d for d in result.decisions if d.status == "accepted"]
+            self.assertTrue(accepted, "expected the candidate to be accepted")
+            out = doc.reconstruct(result.replacements)
+            for decision in accepted:
+                # The logged candidate must already be final. `assertIn` is too
+                # weak here — an unrestored candidate is still a substring of
+                # the restored one, so it passes while the invariant is broken.
+                self.assertEqual(
+                    _restore_trailing_closers(decision.original, decision.candidate),
+                    decision.candidate,
+                    "logged candidate still needed restoring, so the bytes "
+                    "written differ from the string that was judged",
+                )
+                self.assertIn(decision.candidate, out)
+            self.assertEqual(out.count('"'), src.count('"'))
 
 
 class EnumerationLabelTests(unittest.TestCase):

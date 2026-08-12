@@ -12,7 +12,7 @@ from .candidates import all_candidates
 from .embed import Embedder, cosine
 from .freeze import FreezeSet, load_glossary_terms, sentence_freeze
 from .llm import Generator, Judge
-from .segment import Document, iter_sentences
+from .segment import Document, _restore_trailing_closers, iter_sentences
 from .store import Store
 
 
@@ -107,6 +107,18 @@ def run_pipeline(
         cands = all_candidates(
             original, store, freeze, generator, k=k, rng=rng
         )
+        # Normalize before the gates, not during reconstruction. Restoring a
+        # delimiter afterwards meant the bytes written to the document were
+        # not the string freeze checked, the judge accepted, or the run log
+        # recorded — three records of a rewrite that never existed.
+        seen_cands = {original}
+        normalized = []
+        for cand in cands:
+            cand = _restore_trailing_closers(original, cand)
+            if cand not in seen_cands:
+                seen_cands.add(cand)
+                normalized.append(cand)
+        cands = normalized
         chosen: Optional[str] = None
         chosen_cos: Optional[float] = None
         last_status = "no-candidate"
