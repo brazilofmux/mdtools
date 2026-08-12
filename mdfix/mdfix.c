@@ -3731,6 +3731,8 @@ static void process(FILE *out)
             && is_setext_underline(lines[i + 1]))
         {
             flush_paragraph(out);
+            /* Title is structural but not byte-protected (same as ATX). */
+            apply_scanner(line, i + 1);
             fprintf(out, "%s\n", line);
             fprintf(out, "%s\n", lines[i + 1]);
             i++;
@@ -3786,8 +3788,12 @@ static void process(FILE *out)
                     }
                 }
                 flush_paragraph(out);
-                for (; i <= last; i++)
+                for (; i <= last; i++) {
+                    /* Structural canonicalization only — no prose scanner. */
+                    if (def == 2)
+                        fix_footnote_def(lines[i], i + 1);
                     fprintf(out, "%s\n", lines[i]);
+                }
                 i = last;
                 prev_was_list_ctx = 0;
                 list_content_col = 0;
