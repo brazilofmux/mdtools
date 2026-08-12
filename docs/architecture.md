@@ -53,7 +53,7 @@ since the `segment.py` cut.
 | **L3 Optional** | Transforms the caller asks for, which may never break L2 — [transforms.md](transforms.md) |
 | **L4 Interface** | Emitting IR, accepting IR and edits, validating both |
 | **L5 Output** | Turning IR plus edits back into bytes — [edit-schema.md](edit-schema.md) |
-| **D Diagnostics** | Located, rule-identified warnings and errors from any layer |
+| **D Diagnostics** | Located, rule-identified warnings and errors from any layer — [diagnostics.md](diagnostics.md) |
 
 ## 2. Invariants
 
@@ -144,10 +144,14 @@ Each has an identifier so issues and tests can cite it.
 ### D — Diagnostics
 
 - **ID.1 Located.** Every diagnostic carries a path, a byte span, and a line.
+  *(Issue #12: `mdfix --diagnostics`; see [diagnostics.md](diagnostics.md).
+  Spans are line-level.)*
 - **ID.2 Identified.** Every diagnostic carries a stable rule ID, so a
   consumer can suppress or gate on one without matching English text.
 - **ID.3 Machine-readable.** Diagnostics are available as JSONL on a stream
-  separate from the document.
+  separate from the document. *(Done: JSONL on stderr, which they own — the
+  human summary and `-v` lines are suppressed, because a progress line
+  interleaved with the stream makes it unparseable.)*
 
 ## 3. What "Pandoc-friendly" means
 
@@ -187,7 +191,7 @@ lands.
 | L3 | ~20 transforms exist. Editorial bundle is opt-in (`--editorial`; implied by `--canonical` / `--technical`), so I3.3 holds. I3.1 matrix in `tests/test_transform_matrix.py`; still false in the pinned §7 cases (hard breaks; Chicago ellipsis). |
 | L4 | Emits IR (`--emit-ir`, schema `mdtools-ir-2`, total). Accepts edit lists (`--apply-edits`, schema `mdtools-edits-1`) with I4.2 validation. **Still cannot accept IR** for rewrite; no general IR validator. |
 | L5 | **Splicing applier shipped** (`--apply-edits`). I5.1–I5.2 hold via splice-not-serialize. I5.3 (serialize round-trip) still needs a serializer. |
-| D | English prose on stderr. No IDs, no spans, no machine format. |
+| D | **`--diagnostics` shipped** (JSONL on stderr; path, line-level span, stable rule ids; ID.1–ID.3). Human progress suppressed so the stream stays parseable. L1 encoding errors and mdquery under-report warnings not yet on this stream; spans are not sub-line. |
 
 Known dialect gaps are tracked in dialect-policy §7 and ir-schema's divergence
 list, not here.
@@ -276,6 +280,11 @@ Any layer can emit one. They need ID.1–ID.3 because mdcheck (#13) and the
 shared CLI contract (#12) both depend on locations and stable IDs. The document
 goes to stdout; diagnostics go elsewhere, so a JSONL document stream is never
 polluted by a warning.
+
+**Shipped:** `mdfix --diagnostics` (see [diagnostics.md](diagnostics.md)) —
+JSONL on stderr with stable rule ids and line-level spans. Remaining work:
+fold L1 encoding refusals and mdquery under-report warnings onto the same
+stream, and carry sub-line spans when a fix becomes an edit.
 
 ## 7. Non-goals
 

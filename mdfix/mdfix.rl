@@ -157,6 +157,40 @@ static const char *fix_labels[] = {
     "scrivener: split heading emphasis repaired",
 };
 
+/*
+ * Stable rule identifiers — architecture ID.2.
+ *
+ * A consumer gates or suppresses on these, so they are API: the English in
+ * fix_labels[] may be reworded, these may not. Parallel to fix_labels and
+ * fixcat; a mismatch is caught by tests/test_diagnostics.py.
+ */
+static const char *fix_rules[] = {
+    "list.bullet-style",
+    "list.blank-before",
+    "list.blank-after",
+    "heading.emphasis",
+    "whitespace.trailing",
+    "emphasis.bold-colon",
+    "punct.arrow-aside",
+    "blockquote.space",
+    "chicago.emdash-spacing",
+    "chicago.ellipsis",
+    "chicago.sentence-space",
+    "chicago.space-before-punct",
+    "chicago.space-after-punct",
+    "chicago.quote-terminal-punct",
+    "chicago.abbrev-comma",
+    "chicago.etal-period",
+    "footnote.ref-format",
+    "footnote.def-format",
+    "heading.atx-space",
+    "heading.canonical",
+    "fence.canonical",
+    "link.autolink-bare",
+    "heading.scrivener-split",
+};
+
+
 /* ═══════════════════════════════════════════════════════════════════
  * Globals
  * ═══════════════════════════════════════════════════════════════════ */
@@ -210,6 +244,47 @@ static int   nlines = 0;
 static long long line_off[MAX_LINES];
 static int       line_bytes[MAX_LINES];
 static long long src_bytes = 0;   /* total size of the input, terminators included */
+
+
+/*
+ * Diagnostics — architecture ID.1 (located), ID.2 (identified), ID.3
+ * (machine-readable).
+ *
+ * JSONL on stderr, so the document keeps stdout to itself: --emit-ir and
+ * --apply-edits both write there, and a warning mixed into that stream would
+ * corrupt it. Spans are line-level for now, which satisfies ID.1 — carrying a
+ * sub-span through every fixer is a wider change than this needs.
+ */
+static void ir_json_string(FILE *out, const char *s);
+
+static int opt_diagnostics = 0;
+static const char *diag_path = "";
+
+static void emit_diagnostic(const char *rule, const char *severity,
+                            int linenum, const char *message)
+{
+    if (!opt_diagnostics)
+        return;
+    long long start = 0, end = 0;
+    if (linenum >= 1 && linenum <= nlines) {
+        start = line_off[linenum - 1];
+        end = start + line_bytes[linenum - 1];
+    }
+    fputs("{\"kind\":\"diagnostic\",\"path\":", stderr);
+    ir_json_string(stderr, diag_path);
+    fprintf(stderr, ",\"rule\":\"%s\",\"severity\":\"%s\","
+                    "\"line\":%d,\"start\":%lld,\"end\":%lld,\"message\":",
+            rule, severity, linenum, start, end);
+    ir_json_string(stderr, message);
+    fputs("}\n", stderr);
+}
+
+/* Record a fix: the count, and a diagnostic when one was asked for. */
+static void record_fix(enum fixcat cat, int linenum)
+{
+    fix_counts[cat]++;
+    emit_diagnostic(fix_rules[cat], "fix", linenum, fix_labels[cat]);
+}
 
 static int total_issues(void)
 {
@@ -2002,7 +2077,7 @@ static int fix_bullet(char *line, int linenum)
     if (opt_verbose)
         fprintf(stderr, "  line %d: bullet '%c' → '-'\n", linenum, line[pos]);
     line[pos] = '-';
-    fix_counts[FIX_BULLET_STYLE]++;
+    record_fix(FIX_BULLET_STYLE, linenum);
     return 1;
 }
 
@@ -2056,7 +2131,7 @@ static int fix_heading_fmt(char *line, int linenum)
             fprintf(stderr, "  line %d: stripped bold/italic from heading\n",
                     linenum);
         strcpy(line, buf);
-        fix_counts[FIX_HEADER_FMT]++;
+        record_fix(FIX_HEADER_FMT, linenum);
     }
     return changed;
 }
@@ -2084,7 +2159,7 @@ static int fix_blockquote_space(char *line, int linenum)
         
         if (opt_verbose)
             fprintf(stderr, "  line %d: added space after blockquote marker\n", linenum);
-        fix_counts[FIX_BLOCKQUOTE_SPACE]++;
+        record_fix(FIX_BLOCKQUOTE_SPACE, linenum);
         return 1;
     }
     return 0;
@@ -2142,7 +2217,7 @@ static int fix_footnote_refs(char *line, int linenum)
         strcpy(line, buf);
         if (opt_verbose)
             fprintf(stderr, "  line %d: normalized footnote reference token\n", linenum);
-        fix_counts[FIX_FOOTNOTE_REF_FMT]++;
+        record_fix(FIX_FOOTNOTE_REF_FMT, linenum);
         return 1;
     }
     return 0;
@@ -2204,7 +2279,7 @@ static int fix_footnote_def(char *line, int linenum)
         strcpy(line, buf);
         if (opt_verbose)
             fprintf(stderr, "  line %d: normalized footnote definition format\n", linenum);
-        fix_counts[FIX_FOOTNOTE_DEF_FMT]++;
+        record_fix(FIX_FOOTNOTE_DEF_FMT, linenum);
         return 1;
     }
     return 0;
@@ -2248,7 +2323,7 @@ static int fix_heading_space(char *line, int linenum)
     if (changed) {
         if (opt_verbose)
             fprintf(stderr, "  line %d: ATX heading spacing\n", linenum);
-        fix_counts[FIX_HEADING_SPACE]++;
+        record_fix(FIX_HEADING_SPACE, linenum);
     }
     return changed;
 }
@@ -2292,7 +2367,7 @@ static int fix_heading_canonical(char *line, int linenum)
     if (changed) {
         if (opt_verbose)
             fprintf(stderr, "  line %d: heading canonicalized\n", linenum);
-        fix_counts[FIX_HEADING_CANONICAL]++;
+        record_fix(FIX_HEADING_CANONICAL, linenum);
         return 1;
     }
     return 0;
@@ -2338,7 +2413,7 @@ static int fix_fence_canonical(char *line, int linenum, int is_opening)
         strcpy(line, buf);
         if (opt_verbose)
             fprintf(stderr, "  line %d: fence delimiter canonicalized\n", linenum);
-        fix_counts[FIX_FENCE_CANONICAL]++;
+        record_fix(FIX_FENCE_CANONICAL, linenum);
         return 1;
     }
     return 0;
@@ -2422,7 +2497,7 @@ static int fix_pandoc_safe_links(char *line, int linenum)
         strcpy(line, buf);
         if (opt_verbose)
             fprintf(stderr, "  line %d: wrapped bare URL for Pandoc\n", linenum);
-        fix_counts[FIX_PANDOC_SAFE_LINKS]++;
+        record_fix(FIX_PANDOC_SAFE_LINKS, linenum);
         return 1;
     }
     return 0;
@@ -2480,7 +2555,7 @@ static int fix_scrivener_split_heading_emphasis(
             "  line %d/%d: repaired split heading emphasis marker\n",
             heading_lineno, next_lineno);
     }
-    fix_counts[FIX_SCRIVENER_SPLIT_EMPH]++;
+    record_fix(FIX_SCRIVENER_SPLIT_EMPH, heading_lineno);
     return 1;
 }
 
@@ -2716,6 +2791,8 @@ static void lint_chicago_numbers(const char *line, int linenum)
 
             if (!skip_number && val >= 1 && val <= 9 && num_len == 1) {
                 number_style_warnings++;
+                emit_diagnostic("chicago.number-style", "warning", linenum,
+                                "likely Chicago number-style issue");
                 if (!opt_quiet) {
                     fprintf(stderr,
                         "  line %d: numeral '%ld' in prose (Chicago often spells out 1-9)\n",
@@ -2743,6 +2820,8 @@ static void lint_chicago_numbers(const char *line, int linenum)
 
     if (saw_word_small && saw_numeric_large && strstr(line, " and ") != NULL) {
         number_style_warnings++;
+        emit_diagnostic("chicago.number-style", "warning", linenum,
+                        "likely Chicago number-style issue");
         if (!opt_quiet) {
             fprintf(stderr,
                 "  line %d: possible mixed number style (spelled-out + numeral)\n",
@@ -2811,6 +2890,8 @@ static void lint_serial_comma(const char *line, int linenum)
             continue;
 
         serial_comma_warnings++;
+        emit_diagnostic("chicago.serial-comma", "warning", linenum,
+                        "likely missing serial comma");
         if (!opt_quiet) {
             fprintf(stderr,
                 "  line %d: possible missing serial comma before '%.*s'\n",
@@ -2862,7 +2943,7 @@ static int fix_trailing_ws(char *line, int linenum)
 
     /* Only count as a fix if we actually changed something */
     if ((int)strlen(line) != orig) {
-        fix_counts[FIX_TRAILING_WS]++;
+        record_fix(FIX_TRAILING_WS, linenum);
         return 1;
     }
     return 0;
@@ -3699,6 +3780,7 @@ static int apply_scanner(char *line, int linenum)
         for (int i = 0; i < NUM_FIXES; i++) {
             if (ctx.fix_hits[i] > 0) {
                 fix_counts[i] += ctx.fix_hits[i];
+                emit_diagnostic(fix_rules[i], "fix", linenum, fix_labels[i]);
                 if (opt_verbose) {
                     fprintf(stderr, "  line %d: %s\n", linenum, fix_labels[i]);
                 }
@@ -4038,7 +4120,7 @@ static void process(FILE *out)
                 fprintf(stderr, "  line %d: inserted blank line before list\n",
                         i + 1);
             fprintf(out, "\n");
-            fix_counts[FIX_BLANK_BEFORE_LIST]++;
+            record_fix(FIX_BLANK_BEFORE_LIST, i + 1);
         }
 
         /*
@@ -4058,7 +4140,7 @@ static void process(FILE *out)
                 fprintf(stderr, "  line %d: inserted blank line after list\n",
                         i + 1);
             fprintf(out, "\n");
-            fix_counts[FIX_BLANK_AFTER_LIST]++;
+            record_fix(FIX_BLANK_AFTER_LIST, i + 1);
         }
 
         /* Apply pre-scanner C fixers */
@@ -4125,6 +4207,8 @@ static void process(FILE *out)
      */
     if (fence.active) {
         unterminated_fence_warnings++;
+        emit_diagnostic("fence.unterminated", "warning", fence.open_line,
+                        "unterminated code fence");
         if (!opt_quiet) {
             fprintf(stderr,
                 "  warning: unterminated code fence opened at line %d "
@@ -4565,7 +4649,7 @@ static int count_required_repairs(const char *text, long long len)
     int saved_required = opt_required;
     int saved_editorial = opt_editorial, saved_ws = opt_trail_ws;
     int saved_wrap = opt_wrap_width, saved_quiet = opt_quiet;
-    int saved_verbose = opt_verbose;
+    int saved_verbose = opt_verbose, saved_diagnostics = opt_diagnostics;
     int saved_chi = opt_chicago_punct, saved_chi2 = opt_chicago_punct2;
     int saved_abbrev = opt_chicago_abbrev;
     int saved_fn = opt_footnote_canonical, saved_head = opt_heading_canonical;
@@ -4592,6 +4676,8 @@ static int count_required_repairs(const char *text, long long len)
     opt_no_arrow_aside = 1;
     opt_quiet = 1;
     opt_verbose = 0;
+    /* Internal dirt check must not leak JSONL for temp buffers. */
+    opt_diagnostics = 0;
     memset(fix_counts, 0, sizeof fix_counts);
 
     int dirty = -1;
@@ -4626,6 +4712,7 @@ static int count_required_repairs(const char *text, long long len)
     opt_no_arrow_aside = saved_no_arrow;
     opt_quiet = saved_quiet;
     opt_verbose = saved_verbose;
+    opt_diagnostics = saved_diagnostics;
     memset(fix_counts, 0, sizeof fix_counts);
     return dirty;
 }
@@ -4773,6 +4860,9 @@ static void usage(const char *prog)
         "        Enable full canonical Markdown profile (safe passes)\n"
         "  --canonical-lint\n"
         "        Canonical gate mode: fail if file is not canonical\n"
+        "  --diagnostics\n"
+        "        Emit findings as JSONL on stderr: path, byte span, line,\n"
+        "        stable rule id, severity. See docs/diagnostics.md\n"
         "  --apply-edits\n"
         "        Read byte-span edits as JSONL on stdin and splice them into\n"
         "        the file. Untouched bytes are preserved exactly; overlapping\n"
@@ -5217,6 +5307,7 @@ static int write_inplace(const char *input_path)
 static int process_file(const char *input_path, const char *output_path)
 {
     /* Reset per-file state */
+    diag_path = input_path;
     memset(fix_counts, 0, sizeof(fix_counts));
     serial_comma_warnings = 0;
     number_style_warnings = 0;
@@ -5382,6 +5473,11 @@ int main(int argc, char *argv[])
             argi++;
             continue;
         }
+        if (strcmp(argv[argi], "--diagnostics") == 0) {
+            opt_diagnostics = 1;
+            argi++;
+            continue;
+        }
         if (strcmp(argv[argi], "--apply-edits") == 0) {
             opt_apply_edits = 1;
             argi++;
@@ -5479,6 +5575,16 @@ int main(int argc, char *argv[])
             opt++;
         }
         argi++;
+    }
+
+    /*
+     * ID.3: diagnostics are machine-readable, so they own stderr. Human
+     * progress lines interleaved with the JSONL would make the stream
+     * unparseable — a consumer cannot skip what it cannot recognize.
+     */
+    if (opt_diagnostics) {
+        opt_verbose = 0;
+        opt_quiet = 1;
     }
 
     if (opt_canonical || opt_canonical_lint)
