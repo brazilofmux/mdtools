@@ -94,6 +94,11 @@ class Store:
 
     def seed_demo_synonyms(self) -> int:
         """Tiny built-in seed so dry-runs do something without WordNet."""
+        # Meaning-changing pairs that the judge probes treat as rejects must
+        # never appear here. Offline mode has only freeze as a real gate, so a
+        # curated synonym is an unsupervised accept. Dropped on purpose:
+        #   demonstrate → prove   (judge probe #1)
+        #   failed → broke        (outcome shift)
         pairs = [
             ("however", "still", "r", "general"),
             ("however", "even so", "r", "general"),
@@ -104,7 +109,6 @@ class Store:
             ("significant", "large", "a", "general"),
             ("significant", "substantial", "a", "general"),
             ("demonstrate", "show", "v", "general"),
-            ("demonstrate", "prove", "v", "general"),
             ("subsequently", "later", "r", "general"),
             ("subsequently", "afterward", "r", "general"),
             ("approximately", "about", "r", "general"),
@@ -123,9 +127,14 @@ class Store:
             ("numerous", "many", "a", "general"),
             ("fundamental", "basic", "a", "general"),
             ("attempt", "try", "v", "general"),
-            ("failed", "broke", "v", "general"),
             ("incorrect", "wrong", "a", "general"),
         ]
+        # Purge known-bad rows left by older seeds so re-seeding heals a DB.
+        for lemma, syn in (("demonstrate", "prove"), ("failed", "broke")):
+            self.conn.execute(
+                "DELETE FROM synonyms WHERE lemma = ? COLLATE NOCASE AND synonym = ?",
+                (lemma, syn),
+            )
         n = 0
         for lemma, syn, pos, domain in pairs:
             self.add_synonym(lemma, syn, pos, domain)

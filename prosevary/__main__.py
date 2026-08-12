@@ -127,6 +127,13 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Allow writes (still needs -i for in-place). Without -i, print rewritten text to stdout.",
     )
+    p.add_argument(
+        "--allow-inert-gates",
+        action="store_true",
+        help="UNSAFE: permit -i/--apply when the tau and/or judge gates are inert "
+        "(hash embedder is not semantic; null judge accepts everything). "
+        "Dry-run never needs this. Logged in run metadata when used.",
+    )
     p.add_argument("-v", "--verbose", action="store_true", help="Show every decision")
     p.add_argument("--tau", type=float, default=0.92, help="Min cosine similarity (default 0.92)")
     p.add_argument("--k", type=int, default=4, help="Candidates per sentence (default 4)")
@@ -284,6 +291,7 @@ def main(argv: list[str] | None = None) -> int:
 
     gates = active_gates(embedder, judge)
     inert = [g for g in ("tau", "judge") if g not in gates]
+    run_notes = ""
 
     if args.verbose:
         n_sent = sum(len(r.sentences) for r in doc.regions)
@@ -304,10 +312,25 @@ def main(argv: list[str] | None = None) -> int:
             detail.append(f"cosine from {embedder.model_id} is not semantic")
         if "judge" in inert:
             detail.append(f"{judge.model_id} accepts everything")
+        detail_s = "; ".join(detail)
+        if not args.allow_inert_gates:
+            print(
+                "error: refusing to write with inert gates — " + detail_s + ".\n"
+                "  Only the freeze check would vet these rewrites.\n"
+                "  Use a semantic embedder (--embed st or Ollama) and an enforcing\n"
+                "  judge, run dry-run (default / -n) to inspect candidates, or pass\n"
+                "  --allow-inert-gates if you explicitly accept the risk.",
+                file=sys.stderr,
+            )
+            store.close()
+            return 2
+        run_notes = "UNSAFE: --allow-inert-gates; inert=" + "+".join(inert)
         print(
-            "WARNING: writing with inert gates — " + "; ".join(detail) + ".\n"
+            "WARNING: writing with inert gates via --allow-inert-gates — "
+            + detail_s
+            + ".\n"
             "         Only the freeze check vetted these rewrites. "
-            "Start Ollama or pass --embed st for a real gate.",
+            "This is logged in run metadata.",
             file=sys.stderr,
         )
 
@@ -323,6 +346,7 @@ def main(argv: list[str] | None = None) -> int:
         seed=args.seed,
         source_path=str(args.input),
         max_sentences=args.max_sentences,
+        notes=run_notes,
     )
 
     accepted = result.accepted

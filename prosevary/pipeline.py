@@ -72,6 +72,7 @@ def run_pipeline(
     seed: Optional[int] = None,
     source_path: str = "",
     max_sentences: Optional[int] = None,
+    notes: str = "",
 ) -> PipelineResult:
     rng = random.Random(seed)
     gates = active_gates(embedder, judge)
@@ -91,6 +92,7 @@ def run_pipeline(
         model_gen=generator.model_id,
         model_judge=judge.model_id,
         model_embed=embedder.model_id,
+        notes=notes,
     )
     result = PipelineResult(run_id=run_id)
     gidx = 0
