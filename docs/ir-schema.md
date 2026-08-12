@@ -201,6 +201,42 @@ On this repository's markdown that reaches most previously list-trapped
 sentences; remaining opaque items hold nested constructs. Full recursive
 walks (and nested block quotes) are the rest of #65.
 
+## Inline records
+
+Links, images, code spans and footnote references inside prose, so a consumer
+can find them without learning inline Markdown:
+
+```console
+$ mdfix --emit-ir chapter.md | grep '"kind":"link"'
+{"kind":"link","start":4,"end":20,...,"depth":1,"parent":0,"destination":"http://x","text":"text","form":"inline"}
+```
+
+| `kind` | Extra fields |
+|---|---|
+| `link` | `form`, plus `destination` (inline, autolink) or `text` + `label` (reference, shortcut) |
+| `image` | as `link` |
+| `code_span` | `text`; **protected** |
+| `footnote_ref` | `label` |
+| `raw_inline` | — ; **protected** |
+
+`form` is `inline`, `autolink`, `reference` or `shortcut`. Reference and
+shortcut links carry their **label rather than a resolved destination** — the
+consumer already has the `reference_def` records, and holding the document's
+link table in the emitter would buy nothing.
+
+These are **purely additive** — new kinds at `depth > 0`, which the nesting rule
+above already excludes from totality. No existing consumer changed and the
+schema name did not move.
+
+Scanned: paragraphs, headings, prose nested in list items, table cells and
+block quotes. Over this repository's own markdown the link, image and code-span
+counts match `pandoc -t json` exactly, in all thirteen documents.
+
+Cell boundaries are not modelled — a record inside a table locates the
+construct, and a consumer that edits must respect `protected` on the table
+record above it. Emphasis and strong are not emitted; `heading.plain` already
+resolves them where it matters.
+
 ## Known divergences from Pandoc
 
 The IR is mdfix's block segmentation, and mdfix is a line classifier rather

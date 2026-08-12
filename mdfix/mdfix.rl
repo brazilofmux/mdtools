@@ -1081,6 +1081,10 @@ static int is_wrappable_at(const char *line, enum linetype type, int index)
  * ═══════════════════════════════════════════════════════════════════ */
 
 #define IR_SCHEMA "mdtools-ir-3"
+#define IR_CHUNK  (MAX_LINE * 50)
+
+static void emit_inline(FILE *out, const char *text, long long base,
+                        int line, int depth, long long parent);
 
 /*
  * A pipe-table delimiter row: `|---|---|`, `--|--`, `|:--|--:|`.
@@ -1556,6 +1560,9 @@ static void ir_emit_heading(FILE *out, int i)
     fputs(",\"plain\":", out);
     ir_json_string(out, plain);
     fputs("}\n", out);
+
+    /* A link in a heading is where anchors and cross-references live. */
+    emit_inline(out, text, line_off[i] + p, i + 1, 1, line_off[i]);
 }
 
 static const char *ir_raw_html_name(enum raw_html_kind kind)
@@ -1644,6 +1651,272 @@ static int item_line_is_plain(int i, int content_col)
     return 1;
 }
 
+
+/*
+ * Inline records — issue #14/#16 groundwork.
+ *
+ * Links, images, code spans and footnote references inside prose, so a
+ * consumer can find them without learning inline Markdown. mdlinks cannot
+ * exist without these, and mdterms carries a backtick-scanning exception
+ * today only because they were missing.
+ *
+ * Purely additive: these are new kinds at depth > 0, and schema 3 already
+ * says nested records live inside their parent and do not participate in
+ * totality. No existing consumer changes — mdquery filters depth, prosevary
+ * and mdterms filter on kind.
+ *
+ * Reference and shortcut links carry their label rather than a destination.
+ * Resolving one needs the `reference_def` records, which the consumer already
+ * has; doing it here would mean holding the document's link table in the
+ * emitter for no gain.
+ */
+
+/* A code span: matched backtick runs. Returns total length, or 0. */
+static int inline_code_len(const char *s, int *body_off, int *body_len)
+{
+    if (*s != '`')
+        return 0;
+    int run = 0;
+    while (s[run] == '`')
+        run++;
+    int j = run;
+    while (s[j]) {
+        int close = 0;
+        while (s[j + close] == '`')
+            close++;
+        if (close == run) {
+            *body_off = run;
+            *body_len = j - run;
+            return j + run;
+        }
+        j += close ? close : 1;
+    }
+    return 0;
+}
+
+/* `<http://x>` or `<a@b.com>`: a '<' whose contents hold no space and which
+ * is not a tag. Returns length, or 0. */
+static int inline_autolink_len(const char *s)
+{
+    if (*s != '<')
+        return 0;
+    int i = 1;
+    int has_colon_or_at = 0;
+    for (; s[i] && s[i] != '>'; i++) {
+        if (s[i] == ' ' || s[i] == '\t' || s[i] == '<')
+            return 0;
+        if (s[i] == ':' || s[i] == '@')
+            has_colon_or_at = 1;
+    }
+    return (s[i] == '>' && has_colon_or_at && i > 1) ? i + 1 : 0;
+}
+
+/* `[^label]` — a footnote reference, not a link. */
+static int inline_footnote_ref_len(const char *s, int *label_off, int *label_len)
+{
+    if (s[0] != '[' || s[1] != '^')
+        return 0;
+    int i = 2;
+    for (; s[i] && s[i] != ']'; i++)
+        if (s[i] == '[')
+            return 0;
+    if (s[i] != ']')
+        return 0;
+    *label_off = 2;
+    *label_len = i - 2;
+    return i + 1;
+}
+
+/* `[text][label]` or `[text]`, neither followed by '('. Returns length. */
+static int inline_ref_link_len(const char *s, int *text_off, int *text_len,
+                               int *label_off, int *label_len, int *shortcut)
+{
+    if (*s != '[')
+        return 0;
+    int i = 1, depth = 1;
+    for (; s[i]; i++) {
+        if (s[i] == '\\' && s[i + 1]) { i++; continue; }
+        if (s[i] == '[') depth++;
+        else if (s[i] == ']' && --depth == 0) break;
+    }
+    if (s[i] != ']')
+        return 0;
+    *text_off = 1;
+    *text_len = i - 1;
+    int after = i + 1;
+    if (s[after] == '(')
+        return 0;                      /* inline form; handled elsewhere */
+    if (s[after] == '[') {
+        int j = after + 1;
+        for (; s[j] && s[j] != ']'; j++)
+            if (s[j] == '[')
+                return 0;
+        if (s[j] != ']')
+            return 0;
+        *label_off = after + 1;
+        *label_len = j - (after + 1);
+        *shortcut = 0;
+        return j + 1;
+    }
+    *label_off = 1;
+    *label_len = i - 1;
+    *shortcut = 1;
+    return after;
+}
+
+static void ir_inline(FILE *out, const char *kind, long long start,
+                      long long end, int line, int protectd, int depth,
+                      long long parent)
+{
+    fprintf(out,
+        "{\"kind\":\"%s\",\"start\":%lld,\"end\":%lld,"
+        "\"line\":%d,\"endLine\":%d,\"protected\":%s,"
+        "\"depth\":%d,\"parent\":%lld",
+        kind, start, end, line, line, protectd ? "true" : "false",
+        depth, parent);
+}
+
+static void ir_inline_field(FILE *out, const char *name,
+                            const char *text, int len)
+{
+    char buf[MAX_LINE];
+    int n = len < MAX_LINE - 1 ? len : MAX_LINE - 1;
+    if (n < 0)
+        n = 0;
+    memcpy(buf, text, (size_t)n);
+    buf[n] = '\0';
+    fprintf(out, ",\"%s\":", name);
+    ir_json_string(out, buf);
+}
+
+/*
+ * Walk one prose block's bytes, emitting inline records.
+ *
+ * `base` is the block's byte offset and `line` its first line, so a record's
+ * span addresses the file rather than the chunk.
+ */
+static void emit_inline(FILE *out, const char *text, long long base,
+                        int line, int depth, long long parent)
+{
+    int i = 0;
+    int lineno = line;
+    while (text[i]) {
+        if (text[i] == '\n') {
+            lineno++;
+            i++;
+            continue;
+        }
+        if (text[i] == '\\' && text[i + 1]) {
+            i += 2;               /* an escaped bracket opens nothing */
+            continue;
+        }
+
+        int body_off = 0, body_len = 0;
+        int span = inline_code_len(text + i, &body_off, &body_len);
+        if (span) {
+            ir_inline(out, "code_span", base + i, base + i + span, lineno,
+                      1, depth, parent);
+            ir_inline_field(out, "text", text + i + body_off, body_len);
+            fputs("}\n", out);
+            i += span;
+            continue;
+        }
+
+        if (text[i] == '<') {
+            span = inline_autolink_len(text + i);
+            if (span) {
+                ir_inline(out, "link", base + i, base + i + span, lineno,
+                          0, depth, parent);
+                ir_inline_field(out, "destination", text + i + 1, span - 2);
+                fputs(",\"form\":\"autolink\"}\n", out);
+                i += span;
+                continue;
+            }
+            span = inline_html_tag_len(text + i);
+            if (span) {
+                ir_inline(out, "raw_inline", base + i, base + i + span,
+                          lineno, 1, depth, parent);
+                fputs("}\n", out);
+                i += span;
+                continue;
+            }
+        }
+
+        if (text[i] == '[' || (text[i] == '!' && text[i + 1] == '[')) {
+            int image = (text[i] == '!');
+            int off = image ? 1 : 0;
+            int label_off = 0, label_len = 0, shortcut = 0;
+
+            span = inline_footnote_ref_len(text + i, &label_off, &label_len);
+            if (!image && span) {
+                ir_inline(out, "footnote_ref", base + i, base + i + span,
+                          lineno, 0, depth, parent);
+                ir_inline_field(out, "label", text + i + label_off, label_len);
+                fputs("}\n", out);
+                i += span;
+                continue;
+            }
+
+            int text_off = 0, text_len = 0;
+            span = inline_link_len(text + i, &text_off, &text_len);
+            if (span) {
+                /* Destination is everything between the '(' and the ')'. */
+                int dest_off = text_off + text_len + 2;
+                int dest_len = span - dest_off - 1;
+                ir_inline(out, image ? "image" : "link", base + i,
+                          base + i + span, lineno, 0, depth, parent);
+                ir_inline_field(out, "text", text + i + text_off, text_len);
+                ir_inline_field(out, "destination", text + i + dest_off,
+                                dest_len > 0 ? dest_len : 0);
+                fputs(",\"form\":\"inline\"}\n", out);
+                i += span;
+                continue;
+            }
+
+            span = inline_ref_link_len(text + i + off, &text_off, &text_len,
+                                       &label_off, &label_len, &shortcut);
+            if (span) {
+                ir_inline(out, image ? "image" : "link", base + i,
+                          base + i + off + span, lineno, 0, depth, parent);
+                ir_inline_field(out, "text", text + i + off + text_off, text_len);
+                ir_inline_field(out, "label", text + i + off + label_off,
+                                label_len);
+                fprintf(out, ",\"form\":\"%s\"}\n",
+                        shortcut ? "shortcut" : "reference");
+                i += off + span;
+                continue;
+            }
+        }
+        i++;
+    }
+}
+
+/*
+ * Inline scan over a range of lines, joined as they are on disk.
+ *
+ * Used for tables: a link or code span in a cell is still a link, and mdlinks
+ * would miss five of the eleven in this repository's own architecture doc
+ * without this. Cell boundaries are not modelled — the records locate the
+ * construct, and a consumer that edits must respect `protected` on the table
+ * record above them.
+ */
+static void emit_inline_lines(FILE *out, int from, int to, int depth)
+{
+    static char chunk[IR_CHUNK];
+    int at = 0;
+    for (int k = from; k <= to && at < IR_CHUNK - 2; k++) {
+        int n = line_bytes[k];
+        if (n > 0 && at + n < IR_CHUNK - 2) {
+            memcpy(chunk + at, lines[k], (size_t)n);
+            at += n;
+        }
+        if (k < to)
+            chunk[at++] = '\n';
+    }
+    chunk[at] = '\0';
+    emit_inline(out, chunk, line_off[from], from + 1, depth, line_off[from]);
+}
+
 static void emit_list_children(FILE *out, int from, int to, long long parent)
 {
     int i = from;
@@ -1698,6 +1971,22 @@ static void emit_list_children(FILE *out, int from, int to, long long parent)
                         "\"line\":%d,\"endLine\":%d,\"protected\":false,"
                         "\"depth\":1,\"parent\":%lld}\n",
                         start, end, run_start + 1, j, parent);
+                    {
+                        static char chunk[IR_CHUNK];
+                        int at = 0;
+                        for (int k = run_start; k < j && at < IR_CHUNK - 2; k++) {
+                            int skip = (k == i) ? marker : 0;
+                            int n = line_bytes[k] - skip;
+                            if (n > 0 && at + n < IR_CHUNK - 2) {
+                                memcpy(chunk + at, lines[k] + skip, (size_t)n);
+                                at += n;
+                            }
+                            if (k < j - 1)
+                                chunk[at++] = '\n';
+                        }
+                        chunk[at] = '\0';
+                        emit_inline(out, chunk, start, run_start + 1, 2, start);
+                    }
                 }
             }
             run_start = -1;
@@ -1775,6 +2064,7 @@ static void emit_ir(FILE *out, const char *source)
                     form = "grid";
                 ir_open(out, "table", i, table_end - 1, 1);
                 fprintf(out, ",\"form\":\"%s\"}\n", form);
+                emit_inline_lines(out, i, table_end - 1, 1);
                 i = table_end - 1;
                 prev_content_type = LT_TABLEBLOCK;
                 had_blank = 0;
@@ -1862,6 +2152,7 @@ static void emit_ir(FILE *out, const char *source)
             if (is_table && end > i) {
                 ir_open(out, "table", i, end, 0);
                 fputs(",\"form\":\"pipe\"}\n", out);
+                emit_inline_lines(out, i, end, 1);
             } else {
                 ir_block(out, "line_block", i, end, 0);
             }
@@ -2020,6 +2311,7 @@ static void emit_ir(FILE *out, const char *source)
                    && is_blockquote_line(lines[j + 1]))
                 j++;
             ir_block(out, "block_quote", i, j, 0);
+            emit_inline_lines(out, i, j, 1);
             i = j;
             prev_content_type = LT_TEXT;
             list_content_col = 0;
@@ -2045,6 +2337,26 @@ static void emit_ir(FILE *out, const char *source)
                 j++;
             }
             ir_block(out, "paragraph", i, j, 0);
+            {
+                /* Static, not stack: a block can be hundreds of kilobytes,
+                 * and emit_ir is not re-entrant. */
+                static char chunk[IR_CHUNK];
+                long long from = line_off[i];
+                long long to = line_off[j] + line_bytes[j];
+                int n = (int)(to - from);
+                if (n > 0 && n < IR_CHUNK) {
+                    /* The block's bytes, joined as they are on disk. */
+                    int at = 0;
+                    for (int k = i; k <= j; k++) {
+                        memcpy(chunk + at, lines[k], (size_t)line_bytes[k]);
+                        at += line_bytes[k];
+                        if (k < j)
+                            chunk[at++] = '\n';
+                    }
+                    chunk[at] = '\0';
+                    emit_inline(out, chunk, from, i + 1, 1, from);
+                }
+            }
             i = j;
             prev_content_type = LT_TEXT;
             list_content_col = 0;
