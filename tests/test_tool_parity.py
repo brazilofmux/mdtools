@@ -91,6 +91,12 @@ CORPUS = {
     "code immediately after a fence": (
         f"```sh\nx\n```\n    code A {ARROW} B\n\nTail A {ARROW} B.\n"
     ),
+    # Spans a blank line, so it needs the opener/closer dash runs rather than
+    # ending at the first blank like the other forms.
+    "multiline table": (
+        f"Prose A {ARROW} B.\n\n----------\n A    B\n----- -----\n 1    2\n"
+        f"\n 3    A {ARROW} B\n 4    5\n----------\n\nTail A {ARROW} B.\n"
+    ),
     # Tabs, not spaces, between the dash groups. mdfix accepted these and
     # prosevary did not, so the same document was a frozen table to one tool
     # and paraphrasable prose to the other. The corpus had no tab fixture, so

@@ -52,6 +52,11 @@ _GRID_ROW = re.compile(r"^ {0,3}\|.*\|\s*$")
 # did not, so the same document was a frozen table to one tool and
 # paraphrasable prose to the other.
 _SIMPLE_DASH_ROW = re.compile(r"^ {0,3}-{2,}(?:[ \t]+-{2,})+[ \t]*$")
+# A multiline table opens and closes with an unbroken dash run. That run is
+# also what a setext underline and a thematic break look like, so it only
+# counts as a table opener when a header and a spaced dash row follow it and a
+# closing run appears later — see _multiline_table_end.
+_FULL_DASH_ROW = re.compile(r"^ {0,3}-{2,}[ \t]*$")
 _BLOCKQUOTE = re.compile(r"^>\s?")
 _LIST = re.compile(r"^(\s*)([-*+]|\d+\.)\s+")
 _HR = re.compile(r"^(\*\s*){3,}$|^(-\s*){3,}$|^(_\s*){3,}$")
@@ -457,6 +462,58 @@ def _is_simple_table_header(raw_lines: Sequence[str], i: int) -> bool:
     return bool(body.strip())
 
 
+def _multiline_table_end(raw_lines: Sequence[str], i: int) -> int:
+    """
+    Index just past a Pandoc multiline table starting at line i, or -1.
+
+    Shape, confirmed with `pandoc -t json`:
+
+        ----------          unbroken dash run (the opener)
+         A    B             one or more header lines
+        ----- -----         spaced dash row
+         1    2             body rows …
+                            … which may include blank lines
+         3    4
+        ----------          unbroken dash run (the closer)
+
+    The opener is what allows blank lines inside: without it the same content
+    ends at the first blank, and the trailing dash run becomes a setext
+    underline instead (`Table Header Para`). A closer is required too —
+    without one pandoc ends the table at the first blank and returns
+    `Table Para Para Para`.
+
+    Those conditions are what keep a lone dash run a thematic break.
+    """
+    n = len(raw_lines)
+    if not _FULL_DASH_ROW.match(raw_lines[i].rstrip("\r\n")):
+        return -1
+
+    j = i + 1
+    saw_header = False
+    while j < n:
+        line = raw_lines[j].rstrip("\r\n")
+        if not line.strip():
+            return -1                      # blank before the column row
+        if _SIMPLE_DASH_ROW.match(line):
+            break
+        if _FULL_DASH_ROW.match(line):
+            return -1                      # two runs with no column row
+        saw_header = True
+        j += 1
+    else:
+        return -1
+    if not saw_header:
+        return -1
+
+    j += 1                                  # past the spaced dash row
+    while j < n:
+        line = raw_lines[j].rstrip("\r\n")
+        if _FULL_DASH_ROW.match(line):
+            return j + 1                    # closer is part of the table
+        j += 1
+    return -1                               # unterminated: not a table
+
+
 def _looks_like_table_row(line: str) -> bool:
     """Any non-empty line containing a pipe — only used after a separator context."""
     return bool(line.strip()) and "|" in line
@@ -621,6 +678,16 @@ def classify_lines(raw_lines: Sequence[str]) -> List[Line]:
         if _HEADING.match(stripped):
             emit(LineKind.HEADING, raw)
             i += 1
+            continue
+
+        # ── Pandoc multiline table: dash-run delimited, spans blank lines ──
+        # Consume from the opener so the closing dash run is never left for
+        # setext to treat as an underline on the last body row.
+        multiline_end = _multiline_table_end(raw_lines, i)
+        if multiline_end > i:
+            while i < multiline_end:
+                emit(LineKind.TABLE, raw_lines[i])
+                i += 1
             continue
 
         # ── Pandoc grid table: borders and rows, ends at the last border ──

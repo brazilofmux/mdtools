@@ -671,8 +671,76 @@ static int is_simple_dash_row(const char *line)
  * unspaced one is a setext underline; treating either as a table would freeze
  * ordinary prose.
  */
+/* An unbroken dash run: the opener and closer of a multiline table. Also what
+ * a setext underline and a thematic break look like, which is why it only
+ * counts as an opener under the conditions in multiline_table_end. */
+static int is_full_dash_row(const char *line)
+{
+    int i = 0;
+    while (i < 3 && line[i] == ' ')
+        i++;
+    int run = 0;
+    while (line[i] == '-') {
+        run++;
+        i++;
+    }
+    if (run < 2)
+        return 0;
+    while (line[i] == ' ' || line[i] == '\t')
+        i++;
+    return line[i] == '\0';
+}
+
+/*
+ * Index just past a Pandoc multiline table starting at line i, or -1.
+ *
+ *     ----------      unbroken dash run (opener)
+ *      A    B         one or more header lines
+ *     ----- -----     spaced dash row
+ *      1    2         body rows, which may include blank lines
+ *
+ *      3    4
+ *     ----------      unbroken dash run (closer)
+ *
+ * The opener is what lets blank lines stay inside: without it the content
+ * ends at the first blank and the trailing run becomes a setext underline.
+ * A closer is required too — pandoc otherwise ends the table at the first
+ * blank. Those conditions keep a lone dash run a thematic break.
+ */
+static int multiline_table_end(int i)
+{
+    if (!is_full_dash_row(lines[i]))
+        return -1;
+
+    int j = i + 1;
+    int saw_header = 0;
+    int found_columns = 0;
+    for (; j < nlines; j++) {
+        if (is_blank(lines[j]))
+            return -1;                  /* blank before the column row */
+        if (is_simple_dash_row(lines[j])) {
+            found_columns = 1;
+            break;
+        }
+        if (is_full_dash_row(lines[j]))
+            return -1;                  /* two runs, no column row */
+        saw_header = 1;
+    }
+    if (!found_columns || !saw_header)
+        return -1;
+
+    for (j++; j < nlines; j++) {
+        if (is_full_dash_row(lines[j]))
+            return j + 1;               /* closer belongs to the table */
+    }
+    return -1;                          /* unterminated: not a table */
+}
+
 static int table_block_end(int i)
 {
+    int multiline = multiline_table_end(i);
+    if (multiline > i)
+        return multiline;
     if (is_grid_border(lines[i])) {
         int j = i;
         while (j < nlines && (is_grid_border(lines[j]) || is_grid_row(lines[j])))
@@ -1841,7 +1909,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 1845 "mdfix.c"
+#line 1913 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -1849,20 +1917,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 1853 "mdfix.c"
+#line 1921 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 2222 "mdfix.rl"
+#line 2290 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 1973 "mdfix.rl"
+#line 2041 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -1902,7 +1970,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 1865 "mdfix.rl"
+#line 1933 "mdfix.rl"
 	{te = p+1;{
                 if (ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -1939,19 +2007,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 1858 "mdfix.rl"
+#line 1926 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 1858 "mdfix.rl"
+#line 1926 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 2157 "mdfix.rl"
+#line 2225 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -1975,7 +2043,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 2202 "mdfix.rl"
+#line 2270 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -1996,7 +2064,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 2180 "mdfix.rl"
+#line 2248 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -2019,13 +2087,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 2222 "mdfix.rl"
+#line 2290 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 2102 "mdfix.rl"
+#line 2170 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -2048,7 +2116,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 2015 "mdfix.rl"
+#line 2083 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_CHAR('.');
@@ -2099,13 +2167,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 2222 "mdfix.rl"
+#line 2290 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 2065 "mdfix.rl"
+#line 2133 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -2143,7 +2211,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 2124 "mdfix.rl"
+#line 2192 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -2177,7 +2245,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 1919 "mdfix.rl"
+#line 1987 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -2186,7 +2254,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 1901 "mdfix.rl"
+#line 1969 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -2196,7 +2264,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 1927 "mdfix.rl"
+#line 1995 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -2205,7 +2273,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 1910 "mdfix.rl"
+#line 1978 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -2215,7 +2283,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 1935 "mdfix.rl"
+#line 2003 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -2254,7 +2322,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 1858 "mdfix.rl"
+#line 1926 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -2267,7 +2335,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 2271 "mdfix.c"
+#line 2339 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -2293,7 +2361,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 2297 "mdfix.c"
+#line 2365 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -2337,7 +2405,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 2341 "mdfix.c"
+#line 2409 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -2386,7 +2454,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 2390 "mdfix.c"
+#line 2458 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -2405,7 +2473,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 2409 "mdfix.c"
+#line 2477 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -2431,7 +2499,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 2435 "mdfix.c"
+#line 2503 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -2480,7 +2548,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 2484 "mdfix.c"
+#line 2552 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -2560,7 +2628,7 @@ case 13:
 
 	}
 
-#line 2229 "mdfix.rl"
+#line 2297 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';
