@@ -51,10 +51,10 @@ Markdown grammar at all.
 Every structural bug so far arrived in pairs. Raw HTML blocks, dash rows
 containing tabs, and the list-context rule each had to be fixed on both sides,
 and the list-context rule was re-derived and re-broken in each new block branch
-until the contract was written down. `tests/test_tool_parity.py` exists solely
-because neither implementation can be trusted to agree with the other, and on
-its first run it caught only two of the three divergences it was written to
-find.
+until the contract was written down. `tests/test_tool_parity.py` existed solely
+because neither implementation could be trusted to agree with the other; on its
+first run it caught only two of the three divergences it was written to find.
+It retired when prosevary cut over to the IR.
 
 ### Target mechanism (reader and applier shipped)
 
@@ -62,7 +62,7 @@ mdfix owns the grammar in both directions:
 
 - **Reader** — `mdfix --emit-ir` parses Markdown and emits the IR as JSONL on
   stdout. A pure function of the input bytes, testable against Pandoc.
-  **Shipped**, schema `mdtools-ir-2`; see [ir-schema.md](ir-schema.md).
+  **Shipped**, schema `mdtools-ir-3`; see [ir-schema.md](ir-schema.md).
 - **Applier** — `mdfix --apply-edits` reads a list of byte-span replacements
   and splices them into the original bytes. **Shipped**, schema
   `mdtools-edits-1`; see [edit-schema.md](edit-schema.md).
@@ -276,7 +276,7 @@ reproduced byte for byte; "prose" means eligible for rewriting.
 | Reference / footnote def | — | structural | protected | ok |
 | Thematic break | `HorizontalRule` | protected | protected | ok |
 | Definition list | `DefinitionList` | prose inside | prose inside | ok, structure survives |
-| **Line block** | `LineBlock` | **leaks — treated as prose** | protected, but misclassified as a table | **gap** |
+| **Line block** | `LineBlock` | **leaks — treated as prose** | protected via IR `line_block` | **gap** (mdfix) |
 | **Display math `$$`** | `Math` | **leaks — rewrites inside** | **leaks — offered to the LLM as a sentence** | **gap** |
 | **Raw LaTeX block** | `RawBlock` | **leaks — rewrites inside** | **leaks** | **gap** |
 | **Hard break (two trailing spaces)** | soft/hard break | **collapsed by `-w`, `--canonical`, `--wrap`, `--technical`** | n/a | **gap** |
@@ -289,10 +289,10 @@ Each was found by running the tools against Pandoc while pinning this profile
 
 1. **Line blocks.** `| text` is `LineBlock`: whitespace inside is significant
    (Pandoc converts leading spaces to non-breaking spaces) and the line count
-   is part of the content. mdfix rewrote `→` to `—` inside one. prosevary
-   protects it only by accident, classifying it as a table because
-   `_TABLE_LEADING` matches a leading `|`. Both need a real `LineBlock` kind.
-   Structure survived in testing, so this is content damage, not corruption.
+   is part of the content. mdfix still rewrites punctuation inside one
+   (`protected: false` on the IR record). prosevary freezes the whole block
+   via IR `line_block` and no longer misclassifies it as a table. Structure
+   survives; the remaining gap is mdfix content damage.
 
 2. **Display math.** `$$ … $$` is verbatim mathematics. mdfix applied the arrow
    pass inside it. prosevary is worse: it hands the entire block to the
@@ -302,8 +302,9 @@ Each was found by running the tools against Pandoc while pinning this profile
    tools treat its contents as prose.
 
 4. **Pipe table cells in mdfix.** Structure is preserved, but punctuation
-   inside cells is rewritten (arrows, Chicago). That is intentional for
-   `|`-delimited cells today and documented in `tests/test_tool_parity.py`;
+   inside cells is rewritten (arrows, Chicago) when editorial/Chicago
+   (or a profile that implies them) runs. That is intentional for
+   `|`-delimited cells today and recorded in [ir-schema.md](ir-schema.md);
    it is still not “protected” in the byte-for-byte sense of this table.
    prosevary freezes the whole row.
 
@@ -351,8 +352,6 @@ In place today:
   (setext underline, thematic break, header-without-body) each pinned against
   `pandoc -t json`.
 - `tests/test_raw_html_blocks.py` — the raw-versus-Markdown asymmetry.
-- `tests/test_tool_parity.py` — the two implementations agree. Retired once
-  §2 is implemented and there is only one implementation to check.
 - `tests/test_span_properties.py` — property tests over span reconstruction.
 - `tests/test_dialect_profile.py` — reads §3's table out of *this document* and
   asserts it against `pandoc --list-extensions=markdown`, so an upstream
@@ -371,9 +370,10 @@ document exists to prevent.
 
 Still needed:
 
-- Consumer migration onto `--apply-edits` (schema `mdtools-edits-1`; see
-  [edit-schema.md](edit-schema.md)) so prosevary can drop its dual grammar
-  and `test_tool_parity.py` can retire.
+- prosevary reconstruct still splices in-process; migrate it onto
+  `--apply-edits` (schema `mdtools-edits-1`; see
+  [edit-schema.md](edit-schema.md)) so edit-lists are the only write path.
+  Dual grammar and `test_tool_parity.py` are already gone.
 - Coverage for the §7 gaps, each with the Pandoc AST (or rendered output)
   as the assertion — including hard-break preservation under `-w` and
   Unicode ellipsis under Chicago.

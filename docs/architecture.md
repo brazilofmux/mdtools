@@ -235,13 +235,14 @@ the failure visible instead of silent.
 resume state.**
 
 Partial edit is what spans are *for*; the L5 applier (`--apply-edits`) that
-makes it true is shipped (see [edit-schema.md](edit-schema.md)). prosevary-local
-reconstruct is still a dual-grammar mechanism until it migrates. Partial parse is a different claim: classification
-depends on fence state, front-matter state, list content column, and open raw
-HTML, and `table_block_end` needs forward lookahead. Starting mid-file without
-carrying that state produces confidently wrong answers. If streaming is wanted
-later, the resume state must be part of the schema; designing it in is cheap
-now and a retrofit later.
+makes it true is shipped (see [edit-schema.md](edit-schema.md)). prosevary
+reconstruct is still an in-process splice of IR pieces and rewritten
+paragraph regions, not an edit-list handed to mdfix. Partial parse is a
+different claim: classification depends on fence state, front-matter state,
+list content column, and open raw HTML, and `table_block_end` needs forward
+lookahead. Starting mid-file without carrying that state produces confidently
+wrong answers. If streaming is wanted later, the resume state must be part of
+the schema; designing it in is cheap now and a retrofit later.
 
 ### Q5. How is I3.1 enforced?
 
@@ -264,8 +265,8 @@ re-creates the dual-implementation problem *inside* mdfix while in flight.
 
 So: build the IR-based path beside the existing one, diff their output over the
 repository and the downstream corpora until byte-identical, and only then
-delete the old path. The same discipline that `test_tool_parity.py` provided for
-the C/Python split, applied to a C/C split.
+delete the old path. The same discipline that the retired dual-grammar parity
+harness provided for the C/Python split, applied to a C/C split.
 
 ### Q7. Where do diagnostics live?
 

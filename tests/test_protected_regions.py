@@ -57,7 +57,7 @@ class ProtectedBlockTests(unittest.TestCase):
         self.assertIn(LineKind.INDENTED_CODE, [l.kind for l in parse(source).lines])
         self.assertEqual(parse(source).reconstruct({}), source)
 
-    def test_html_block_body_not_exposed(self) -> None:
+    def test_div_contents_are_markdown_prose(self) -> None:
         source = (
             "Before.\n"
             "\n"

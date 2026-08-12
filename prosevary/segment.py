@@ -2,18 +2,9 @@
 Segment a Markdown document into paraphrasable prose and everything else.
 
 **This module contains no Markdown grammar.** Block structure comes from
-`mdfix --emit-ir`, which is the boundary in docs/dialect-policy.md §2. What
-remains here is prose logic — splitting a paragraph into sentences, and
-putting back a closing quote a rewrite dropped — which is not Markdown and
-belongs on this side.
-
-It used to contain 685 lines of block grammar restating `mdfix.rl`: fence
-tracking, setext detection, raw-HTML block kinds, the four table forms,
-indented code, list content columns. Every structural bug arrived in pairs,
-and `tests/test_tool_parity.py` existed only because neither copy could be
-trusted to agree with the other. Two rules had already drifted by the time the
-IR could replace them — prosevary accepted an indented setext underline that
-Pandoc reads as a paragraph, and treated `[id]:x` as paraphrasable prose.
+`mdfix --emit-ir` (docs/dialect-policy.md §2). What remains here is prose
+logic — splitting a paragraph into sentences, and restoring a closing quote a
+rewrite dropped — which is not Markdown and belongs on this side.
 
 Only `paragraph` records are offered for rewriting. Headings, lists, block
 quotes, tables, code, raw HTML, front matter and link/footnote definitions are
