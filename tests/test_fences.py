@@ -154,6 +154,48 @@ class UnterminatedFenceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("unterminated code fence", result.stderr)
 
+    def test_unterminated_fence_counter_resets_between_files(self) -> None:
+        # process_file must zero unterminated_fence_warnings per file. Without
+        # that reset, multi-file --canonical-lint fails every subsequent file
+        # after the first unmatched fence, even when those files are clean.
+        bad = "```sh\ncode\n~~~\n"
+        good = "Clean prose with no fences.\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            bad_path = Path(tmp) / "bad.md"
+            good_path = Path(tmp) / "good.md"
+            bad_path.write_text(bad, encoding="utf-8")
+            good_path.write_text(good, encoding="utf-8")
+
+            multi = subprocess.run(
+                [str(MDFIX), "-q", "--canonical-lint", str(bad_path), str(good_path)],
+                capture_output=True, text=True,
+            )
+            alone = subprocess.run(
+                [str(MDFIX), "-q", "--canonical-lint", str(good_path)],
+                capture_output=True, text=True,
+            )
+
+        # Multi-file: overall exit is nonzero because bad.md fails, but the
+        # clean file must not inherit the stale warning count.
+        self.assertNotEqual(multi.returncode, 0)
+        self.assertEqual(alone.returncode, 0, msg=alone.stderr + alone.stdout)
+
+        # Run good.md after bad.md in one process and assert good's summary
+        # is clean (not "unterminated code fence  1" carried over).
+        with tempfile.TemporaryDirectory() as tmp:
+            bad_path = Path(tmp) / "bad.md"
+            good_path = Path(tmp) / "good.md"
+            bad_path.write_text(bad, encoding="utf-8")
+            good_path.write_text(good, encoding="utf-8")
+            result = subprocess.run(
+                [str(MDFIX), "--canonical-lint", str(bad_path), str(good_path)],
+                capture_output=True, text=True,
+            )
+        # good.md is second; its summary line must report clean, not a leak.
+        self.assertIn(f"{good_path}: clean. Nothing to fix.", result.stdout)
+        # And the unterminated warning must only be attributed once (bad.md).
+        self.assertEqual(result.stdout.count("unterminated code fence"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

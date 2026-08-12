@@ -2295,6 +2295,7 @@ static int process_file(const char *input_path, const char *output_path)
     memset(fix_counts, 0, sizeof(fix_counts));
     serial_comma_warnings = 0;
     number_style_warnings = 0;
+    unterminated_fence_warnings = 0;
     npara = 0;
 
     /* ── Read the entire input into memory ── */
