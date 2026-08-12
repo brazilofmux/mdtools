@@ -24,11 +24,20 @@ except ImportError:  # pragma: no cover
 _PATHISH = re.compile(
     r"(?:~/[\w./+-]+|/Users/[\w./+-]+|/(?:tmp|var|usr|home)/[\w./+-]+)"
 )
-# Bare hex-ish commit SHAs (7–40 hex). Require at least one digit so English
-# words like "defaced" are not frozen as SHAs.
-_SHA = re.compile(r"\b(?=[0-9a-f]*\d)[0-9a-f]{7,40}\b")
-# ALL-CAPS tech tokens of length >= 2 (DBT, LLVM, MMIO, W^X is special)
-_SHOUT = re.compile(r"\b[A-Z][A-Z0-9][A-Z0-9+^_-]*\b")
+# Bare hex-ish commit SHAs (7–40 hex): a digit, or 8+ characters.
+#
+# Requiring a digit alone kept English words like "defaced" from freezing, but
+# also dropped the all-letter sentinels this corpus is full of — deadbeef,
+# cafebabe, feedface were frozen before and would not have been. The system
+# dictionary has only two words that are valid 7+ char hex (deedeed,
+# fabaceae), so the length arm costs almost nothing and buys back the
+# constants a compiler/linker book actually quotes.
+_SHA = re.compile(r"\b(?=[0-9a-f]{8,}\b|[0-9a-f]*\d)[0-9a-f]{7,40}\b")
+# ALL-CAPS tech tokens of length >= 2 (DBT, LLVM, MMIO, W^X is special).
+# Must end on an alphanumeric: the old class allowed a trailing separator, so
+# `MMIO-based` yielded the term `MMIO-`, which then counted zero against its
+# own source text and was silently skipped by check().
+_SHOUT = re.compile(r"\b[A-Z][A-Z0-9](?:[A-Z0-9+^_-]*[A-Z0-9])?\b")
 # SLOW-32 and similar product names
 _PRODUCT = re.compile(r"\bSLOW-?\d+\b", re.IGNORECASE)
 # Structural Markdown/Pandoc inline forms: freeze the whole match so a rewrite
@@ -78,19 +87,42 @@ class FreezeSet:
         """
         Return None if candidate preserves freezes, else a short reason string.
 
-        Multiset rules: each protected span/term must appear the same number of
-        times in the candidate as in the original. Presence-only checks let a
-        rewrite drop one of two identical tokens and still pass.
+        Multiset rule: protected content must appear in the candidate at least
+        as often as in the *original*. Presence-only checks let a rewrite drop
+        one of two identical tokens and still pass.
+
+        Two details keep this honest:
+
+        Counts come from `original`, never from the length of `self.spans`.
+        Patterns overlap — `_FOOTNOTE_REF` and `_SHORTCUT_REF` both match
+        `[^1]`, a shortcut ref is a substring of a full link, `/tmp/x` is a
+        prefix of `/tmp/x/y` — so the extraction list holds duplicates and
+        nested pieces. Counting those objects made `check(original, original)`
+        fail, which rejected *every* candidate for any sentence containing a
+        footnote reference and left the run silently doing nothing.
+
+        Counts must match exactly. Dropping a protected token is the loss this
+        guards against, but duplicating a code span or link is its own damage,
+        so an added occurrence is rejected too.
         """
-        need_spans = Counter(s for s in self.spans if s)
-        for span, n in need_spans.items():
+        for span in {s for s in self.spans if s}:
+            need = original.count(span)
             got = candidate.count(span)
-            if got != n:
-                return f"span {span!r}: need {n}, have {got}"
+            if got != need:
+                return f"span {span!r}: need {need}, have {got}"
 
         for term in self.terms:
             n_orig = count_term_occurrences(original, term)
             if n_orig == 0:
+                # Extraction and counting disagreed about this term. Never
+                # skip silently — that is how a droppable `LLVM's` slipped
+                # through. Fall back to substring counts so protection holds
+                # even when the two rules diverge.
+                if term in original and candidate.count(term) != original.count(term):
+                    return (
+                        f"term {term!r}: need {original.count(term)}, "
+                        f"have {candidate.count(term)}"
+                    )
                 continue
             n_cand = count_term_occurrences(candidate, term)
             if n_cand != n_orig:
@@ -114,9 +146,23 @@ def _term_finditer(text: str, term: str):
     Multi-word or punctuated terms match as exact substrings (case-sensitive).
     """
     if _IDENT_TERM.match(term):
-        # Avoid \b: it treats '-' as a boundary, which splits SLOW-32 oddly.
+        # Only word characters block a match, which is what the extraction
+        # patterns already use. Treating `'` as a boundary made `LLVM` count
+        # zero inside `LLVM's` — the term was extracted, counted 0, and got
+        # skipped, so a candidate could drop it entirely. Possessives are
+        # everywhere in this corpus.
+        #
+        # `-` stays permissive, so `run` still matches inside `re-run`. That
+        # over-freezes (a paraphrase dropping only the hyphen is rejected),
+        # which is the safe direction; making `-` a boundary instead would
+        # lose `MMIO` inside `MMIO-based`, which is the unsafe one.
+        #
+        # Inflections are deliberately *not* matched: `relocation` does not
+        # cover `relocations`. Use the glossary's `aliases` for those, so the
+        # freeze set stays something an editor declares rather than something
+        # this regex guesses.
         pat = re.compile(
-            r"(?<![\w'])" + re.escape(term) + r"(?![\w'])",
+            r"(?<!\w)" + re.escape(term) + r"(?!\w)",
             re.UNICODE,
         )
         return pat.finditer(text)

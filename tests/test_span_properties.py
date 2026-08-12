@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import random
 import unittest
+from pathlib import Path
 
+from prosevary.freeze import sentence_freeze
 from prosevary.segment import (
     Document,
     _restore_trailing_closers,
@@ -166,6 +168,60 @@ class ReconstructProperties(unittest.TestCase):
                         {(region.region_id, index): "Something else entirely"}
                     )
                     self.assertIn("Something else entirely" + run, out)
+
+
+class FreezeIdentityProperties(unittest.TestCase):
+    """
+    A sentence must always satisfy its own freeze set.
+
+    Multiset counting was first derived from the extraction list rather than
+    from the original text. Patterns overlap — two of them match `[^1]`, a
+    shortcut ref is a substring of a full link, `/tmp/x` is a prefix of
+    `/tmp/x/y` — so the list holds duplicates and nested pieces, and
+    check(original, original) failed. Every candidate for such a sentence was
+    then rejected, silently, while the run reported healthy reject-freeze
+    counts.
+    """
+
+    MARKUP = [
+        "Note [^1] here.",
+        "See [foo] and [foo](https://x.com) here.",
+        "Path /tmp/x and /tmp/x/y here.",
+        "Use ``a `x` b`` and `x`.",
+        "LLVM's IR is fine.",
+        "MMIO-based access here.",
+        "A link [docs](https://example.com/a_(b)) here.",
+        "An image ![alt](i.png) and <b>bold</b>.",
+        "Commit deadbeef and 1a2b3c4 landed.",
+        "Cite @smith2020 with {#id} and [^2].",
+        "Plain prose with no markup at all.",
+        "SLOW-32 and DBT in one line.",
+    ]
+
+    def test_every_sentence_satisfies_its_own_freeze_set(self) -> None:
+        rnd = random.Random(101)
+        for _ in range(3000):
+            text = " ".join(
+                rnd.choice(self.MARKUP) for _ in range(rnd.randint(1, 4))
+            )
+            fs = sentence_freeze(text, {"run", "relocation", "SLOW-32"})
+            self.assertIsNone(
+                fs.check(text, text),
+                msg=f"sentence rejects itself: {text!r}",
+            )
+
+    def test_identity_holds_for_repo_prose(self) -> None:
+        for path in sorted(Path(".").rglob("*.md")):
+            if ".git" in str(path):
+                continue
+            source = path.read_text(encoding="utf-8")
+            for region in parse(source).regions:
+                for sent in region.sentences:
+                    fs = sentence_freeze(sent.text, set())
+                    self.assertIsNone(
+                        fs.check(sent.text, sent.text),
+                        msg=f"{path}: {sent.text!r}",
+                    )
 
 
 if __name__ == "__main__":
