@@ -96,7 +96,9 @@ Each has an identifier so issues and tests can cite it.
 
 - **I3.1 Non-interference.** For every optional transform, applied alone and
   in every shipped profile, the output still satisfies I2.1 and I2.2. This is
-  a test matrix, not a promise. *(Today false: `-w` destroys two-space hard
+  a test matrix, not a promise — `tests/test_transform_matrix.py` sweeps 13
+  transforms over 12 documents and pins the violations exactly, so both a new
+  one and a fixed one fail. *(Today false: `-w` destroys two-space hard
   breaks; `--wrap` miscounts non-ASCII width, issue #49; Chicago emits ASCII
   `...`, which violates I2.2 for emitted typography.)*
 - **I3.2 Idempotence.** Applying a transform twice equals applying it once.

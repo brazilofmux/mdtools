@@ -277,7 +277,7 @@ reproduced byte for byte; "prose" means eligible for rewriting.
 | **Line block** | `LineBlock` | **leaks — treated as prose** | protected, but misclassified as a table | **gap** |
 | **Display math `$$`** | `Math` | **leaks — rewrites inside** | **leaks — offered to the LLM as a sentence** | **gap** |
 | **Raw LaTeX block** | `RawBlock` | **leaks — rewrites inside** | **leaks** | **gap** |
-| **Hard break (two trailing spaces)** | soft/hard break | **`-w` / `--canonical` collapses to one space** | n/a | **gap** |
+| **Hard break (two trailing spaces)** | soft/hard break | **collapsed by `-w`, `--canonical`, `--wrap`, `--technical`** | n/a | **gap** |
 | **Ellipsis under Chicago** | text | **emits ASCII `...`, not `…`** | n/a | **gap** |
 
 ### Known gaps
@@ -305,14 +305,20 @@ Each was found by running the tools against Pandoc while pinning this profile
    it is still not “protected” in the byte-for-byte sense of this table.
    prosevary freezes the whole row.
 
-5. **Hard breaks under `-w` / `--canonical`.** Profile requires two trailing
-   spaces to mean a hard break. `fix_trailing_ws` collapses any trailing run
-   to one space, so the canonical profile currently turns hard breaks into
-   soft ones.
+5. **Hard breaks under `-w`, `--canonical`, `--wrap` and `--technical`.**
+   Profile requires two trailing spaces to mean a hard break.
+   `fix_trailing_ws` collapses any trailing run to one space, so these turn
+   hard breaks into soft ones. The transform sweep in
+   `tests/test_transform_matrix.py` found this to be wider than first
+   recorded — `--wrap` and `--technical` were not listed — which is the kind
+   of thing a matrix finds and a reviewer does not.
 
-6. **Chicago ellipsis.** Under `--canonical`, spaced or run ellipses become
-   ASCII `...`, which is smart-dependent under Pandoc (see §4). Target is
-   U+2026 `…`.
+6. **Chicago ellipsis.** Under `--chicago-punct`, `--chicago-punct-2`,
+   `--canonical` and `--technical`, spaced or run ellipses become ASCII
+   `...`, which is smart-dependent under Pandoc (see §4). Target is U+2026
+   `…`. An ellipsis the author already wrote as `...` is passed through
+   unchanged and is *not* a violation — §4 constrains what mdtools emits,
+   not what it tolerates.
 
 The first three are cases where a verbatim construct reaches a prose pass —
 the duplication argument in §2 restated as a bug report. Those become
