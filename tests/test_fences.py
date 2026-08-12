@@ -257,7 +257,7 @@ class MdfixTabFenceTests(unittest.TestCase):
             path = Path(tmp) / "in.md"
             path.write_text(source, encoding="utf-8")
             result = subprocess.run(
-                [str(MDFIX), "-n", "-v", str(path)],
+                [str(MDFIX), "-n", "-v", "--editorial", str(path)],
                 capture_output=True, text=True,
             )
             self.assertNotIn("arrow aside", result.stdout + result.stderr)
@@ -268,7 +268,9 @@ class MdfixTabFenceTests(unittest.TestCase):
             path = Path(tmp) / "in.md"
             path.write_text(source, encoding="utf-8")
             result = subprocess.run(
-                [str(MDFIX), "-n", "-v", str(path)],
+                # --editorial: the arrow-aside fix is the probe for "prose
+                # reached the fixer here", and it became opt-in in #60.
+                [str(MDFIX), "-n", "-v", "--editorial", str(path)],
                 capture_output=True, text=True,
             )
             self.assertIn("arrow aside", result.stdout + result.stderr)

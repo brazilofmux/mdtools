@@ -95,9 +95,16 @@ fix-md:
 	$(MDFIX) -i -v --no-arrow-aside *.md
 ```
 
-For the SLOW-32 book series, **always** pass `--no-arrow-aside`. The default
-arrow→em-dash pass is correct for pure prose projects (e.g., mush) and wrong
-for technical notation pipelines (`C → IR → asm`).
+For the SLOW-32 book series, **always** pass `--no-arrow-aside` when the
+editorial bundle is on. The arrow-to-em-dash pass is correct for pure prose
+(e.g., mush) and wrong for technical notation pipelines (`C → IR → asm`).
+
+Since #60 the five editorial fixes need `--editorial` (implied by
+`--canonical` and `--technical`). Profile consumers keep that behavior.
+The bare recipe above does not enable editorial, so it only runs the L2
+required repairs in [docs/transforms.md](docs/transforms.md); add
+`--editorial --no-arrow-aside` if the other four rewrites (bullets, heading
+emphasis, bold colons, blockquote spacing) are still wanted without a profile.
 
 ## Layout
 

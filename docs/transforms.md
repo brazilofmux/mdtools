@@ -1,6 +1,6 @@
 # Transform classification
 
-Status: adopted, 2026-08-12. Answers issue #55 for the required set.
+Status: adopted, 2026-08-12. Answers issues #55 and #60.
 Referenced by [architecture.md](architecture.md) L2 and L3.
 
 Every mdfix transform is **required** or **optional**. The distinction is not a
@@ -67,11 +67,11 @@ without the transform, so applying one is an editorial choice.
 optional transform, alone and in each profile, must still satisfy I2.1 and
 I2.2. The violations it finds are pinned there and in dialect-policy §7.
 
-## Still on by default, and shouldn't be
+## The editorial bundle: `--editorial`
 
-**I3.3** says no optional transform runs unless requested. These predate the
-classification and violate it — they are editorial, not repairs, and Pandoc
-reads the document identically without them:
+Five transforms were always-on since before the classification existed, in
+violation of **I3.3**. Pandoc reads the document identically without each, so
+none is a repair:
 
 | Transform | Pandoc without it |
 |---|---|
@@ -81,7 +81,15 @@ reads the document identically without them:
 | Arrow aside converted to an em dash | A **content** change, applied by default |
 | Space after `>` in a block quote | `>Text` is already a `BlockQuote` |
 
-Turning these off changes the output of every bare `mdfix` invocation
-downstream, and the arrow rule changes prose rather than markup. That is a
-separable decision with its own review — issue #60 — rather than something to
-fold into the required-set change.
+They now require `--editorial`, which **`--canonical` and `--technical`
+imply** — so the profiles downstream actually invokes are unchanged, verified
+byte for byte against the previous binary across the repository.
+
+The arrow rule is the one that most wanted this. It rewrites *prose* rather
+than markup, and it was doing so by default: while this classification was
+being written, the always-on pass rewrote the arrows in the table above.
+`--no-arrow-aside` still overrides it, which the SLOW-32 book pipeline
+depends on.
+
+A bare `mdfix` now performs the three required repairs and nothing else. On
+this repository's own markdown it changes nothing at all.

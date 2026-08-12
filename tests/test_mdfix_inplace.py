@@ -37,7 +37,9 @@ def _require_fresh_binary() -> None:
 
 def _run(args: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [str(MDFIX), *args],
+        # --editorial: the bullet rewrite is this suite's "content changed"
+        # signal, and it became opt-in in #60.
+        [str(MDFIX), "--editorial", *args],
         capture_output=True,
         text=True,
         **kwargs,
@@ -54,7 +56,7 @@ class AtomicInplaceTests(unittest.TestCase):
     def test_mode_bits_are_preserved(self) -> None:
         # Old path: rename aside + fopen("w") created a 0644 file from a 0600.
         path = self.dir / "secret.md"
-        path.write_text("* item\n", encoding="utf-8")  # * → - is always-on fix
+        path.write_text("* item\n", encoding="utf-8")  # * → - under --editorial (_run)
         os.chmod(path, 0o600)
         before_mode = stat.S_IMODE(path.stat().st_mode)
 

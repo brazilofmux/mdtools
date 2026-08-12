@@ -91,14 +91,13 @@ Each has an identifier so issues and tests can cite it.
   opt-in. *(Issue #55: the required set is classified in
   [transforms.md](transforms.md) and runs by default — three repairs, each one
   a construct Pandoc otherwise misreads. `--no-required` disables them for
-  inspection. The converse, I3.3, is not yet true: five editorial transforms
-  are still always-on, tracked in #60.)*
+  inspection.)*
 
 ### L3 — Optional transforms
 
 - **I3.1 Non-interference.** For every optional transform, applied alone and
   in every shipped profile, the output still satisfies I2.1 and I2.2. This is
-  a test matrix, not a promise — `tests/test_transform_matrix.py` sweeps 13
+  a test matrix, not a promise — `tests/test_transform_matrix.py` sweeps 14
   transforms over 12 documents and pins the violations exactly, so both a new
   one and a fixed one fail. *(Today false: `-w`, `--canonical`, `--wrap`, and
   `--technical` destroy two-space hard breaks; Chicago punctuation emits
@@ -106,7 +105,10 @@ Each has an identifier so issues and tests can cite it.
   `--wrap` non-ASCII width — is a wrap-quality bug outside this matrix’s
   I2.1/I2.2 oracle.)*
 - **I3.2 Idempotence.** Applying a transform twice equals applying it once.
-- **I3.3 Opt-in.** No optional transform runs unless requested.
+- **I3.3 Opt-in.** No optional transform runs unless requested. *(Issue #60:
+  the five editorial passes that predated the classification — bullet style,
+  emphasis in headings, bold colons, arrow asides, block quote spacing — now
+  need `--editorial`, which `--canonical` and `--technical` imply.)*
 
 ### L4 — External IR interface
 
@@ -176,8 +178,8 @@ lands.
 | Layer | State |
 |---|---|
 | L1 | Block parsing broad and Pandoc-verified. Inline parsing partial (identifiers only). **No UTF-8 validation, no NFC detection.** Whole-file only; `MAX_LINES` 200000, `MAX_LINE` 8192. |
-| L2 | Required set classified in [transforms.md](transforms.md) and on by default (`--no-required` for inspection). I2.3 holds for those three repairs; I3.3 is still open (five editorial transforms always-on, #60). |
-| L3 | ~20 transforms exist. I3.1 is enforced by `tests/test_transform_matrix.py` and currently false in the pinned §7 cases (hard breaks; Chicago ellipsis). |
+| L2 | Required set classified in [transforms.md](transforms.md) and on by default (`--no-required` for inspection). I2.3 holds for those three repairs. |
+| L3 | ~20 transforms exist. Editorial bundle is opt-in (`--editorial`; implied by `--canonical` / `--technical`), so I3.3 holds. I3.1 matrix in `tests/test_transform_matrix.py`; still false in the pinned §7 cases (hard breaks; Chicago ellipsis). |
 | L4 | Emits IR (`--emit-ir`, schema `mdtools-ir-2`, total). **Cannot accept IR**; no validator; no `--apply-edits`. |
 | L5 | **Absent.** Output is line-based passthrough. Nothing writes from the IR. I5.1–I5.2 untestable without the applier; I5.3 groundwork (reader totality) is in place. |
 | D | English prose on stderr. No IDs, no spans, no machine format. |

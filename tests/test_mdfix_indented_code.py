@@ -36,7 +36,9 @@ class IndentedCodeTests(unittest.TestCase):
         path = self.dir / "in.md"
         path.write_text(source, encoding="utf-8")
         result = subprocess.run(
-            [str(MDFIX), "-n", "-v", *flags, str(path)],
+            # --editorial: these tests use the arrow-aside fix as a probe for
+            # "did prose reach the fixer here". It is opt-in since #60.
+            [str(MDFIX), "-n", "-v", "--editorial", *flags, str(path)],
             capture_output=True, text=True,
         )
         return result.stdout + result.stderr

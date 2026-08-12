@@ -5,13 +5,14 @@
  * instead of just whining about them.
  *
  * Fixes applied:
- *   1. Bullet style normalization (* and + → -)
- *   2. Missing blank line before lists (the pandoc-killer)
- *   3. Missing blank line after lists
- *   4. Bold/italic stripped from headings
+ *   1. Bullet style normalization (* and + → -) (opt-in: --editorial)
+ *   2. Missing blank line before lists (required / L2)
+ *   3. Missing blank line after lists (required / L2)
+ *   4. Bold/italic stripped from headings (opt-in: --editorial)
  *   5. Trailing whitespace normalized (opt-in: -w)
  *
- * Usage: mdfix [-i] [-n] [-v] [-q] [-w] [--chicago-punct] [--chicago-punct-2]
+ * Usage: mdfix [-i] [-n] [-v] [-q] [-w] [--editorial] [--no-required]
+ *              [--chicago-punct] [--chicago-punct-2]
  *              [--serial-comma-lint] [--chicago-abbrev] [--chicago-number-lint]
  *              [--canonical] [--canonical-lint] [--footnote-canonical]
  *              [--heading-canonical] [--fence-canonical] [--pandoc-safe-links]
@@ -181,6 +182,7 @@ static int  opt_pandoc_safe_links = 0;
 static int  opt_scrivener_repair = 0;
 static int  opt_spaced_emdash = 0;
 static int  opt_required   = 1;       /* L2: on unless --no-required */
+static int  opt_editorial  = 0;       /* L3 editorial bundle; --editorial */
 static int  opt_wrap_width = 0;       /* 0 = disabled */
 static int  opt_emit_ir   = 0;        /* structural IR to stdout; never writes */
 
@@ -219,6 +221,9 @@ static int total_issues(void)
 
 static void enable_canonical_profile(void)
 {
+    /* Profiles keep the former always-on editorial bundle so downstream
+     * output is unchanged. */
+    opt_editorial = 1;
     opt_trail_ws = 1;
     opt_chicago_punct = 1;
     opt_chicago_punct2 = 1;
@@ -1729,6 +1734,8 @@ static void emit_ir(FILE *out, const char *source)
 /* Fix 1: Normalize bullet markers to - */
 static int fix_bullet(char *line, int linenum)
 {
+    if (!opt_editorial)
+        return 0;
     /* Spaced "* * *" is a thematic break, not a list item. */
     if (is_thematic_break(line))
         return 0;
@@ -1750,6 +1757,8 @@ static int fix_bullet(char *line, int linenum)
  */
 static int fix_heading_fmt(char *line, int linenum)
 {
+    if (!opt_editorial)
+        return 0;
     if (!is_heading(line))
         return 0;
 
@@ -1804,6 +1813,8 @@ static int fix_heading_fmt(char *line, int linenum)
  */
 static int fix_blockquote_space(char *line, int linenum)
 {
+    if (!opt_editorial)
+        return 0;
     int i = 0;
     while (line[i] == ' ' || line[i] == '\t')
         i++;
@@ -2946,6 +2957,7 @@ struct scan_ctx {
 
     /* Flag copies — set once per line before scanning */
     int    no_arrow_aside;
+    int    editorial;      /* L3 editorial passes: arrow aside, bold colon */
     int    do_chicago_punct;
     int    do_chicago_punct2;
     int    do_chicago_abbrev;
@@ -3022,7 +3034,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
             # Also collapse surrounding spaces if Chicago punct is on,
             # since the old code ran fix_arrow_aside then fix_chicago_emdash.
             0xE2 0x86 0x92 => {
-                if (ctx->no_arrow_aside) {
+                if (!ctx->editorial || ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
                      * lowering-fn mappings), not prose asides. Pass through. */
                     EMIT_DATA(ts, te);
@@ -3058,36 +3070,52 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 
             # ── Bold-colon: "** : " → ":** " ──
             '** : ' => {
-                EMIT_CHAR(':');
-                EMIT_CHAR('*');
-                EMIT_CHAR('*');
-                EMIT_CHAR(' ');
-                BUMP(FIX_BOLD_COLON);
+                if (!ctx->editorial) {
+                    EMIT_DATA(ts, te);
+                } else {
+                    EMIT_CHAR(':');
+                    EMIT_CHAR('*');
+                    EMIT_CHAR('*');
+                    EMIT_CHAR(' ');
+                    BUMP(FIX_BOLD_COLON);
+                }
             };
 
             # ── Bold-colon: "**: " → ":** " ──
             '**: ' => {
-                EMIT_CHAR(':');
-                EMIT_CHAR('*');
-                EMIT_CHAR('*');
-                EMIT_CHAR(' ');
-                BUMP(FIX_BOLD_COLON);
+                if (!ctx->editorial) {
+                    EMIT_DATA(ts, te);
+                } else {
+                    EMIT_CHAR(':');
+                    EMIT_CHAR('*');
+                    EMIT_CHAR('*');
+                    EMIT_CHAR(' ');
+                    BUMP(FIX_BOLD_COLON);
+                }
             };
 
             # ── Bold-colon: "** :" → ":**" ──
             '** :' => {
-                EMIT_CHAR(':');
-                EMIT_CHAR('*');
-                EMIT_CHAR('*');
-                BUMP(FIX_BOLD_COLON);
+                if (!ctx->editorial) {
+                    EMIT_DATA(ts, te);
+                } else {
+                    EMIT_CHAR(':');
+                    EMIT_CHAR('*');
+                    EMIT_CHAR('*');
+                    BUMP(FIX_BOLD_COLON);
+                }
             };
 
             # ── Bold-colon: "**:" → ":**" ──
             '**:' => {
-                EMIT_CHAR(':');
-                EMIT_CHAR('*');
-                EMIT_CHAR('*');
-                BUMP(FIX_BOLD_COLON);
+                if (!ctx->editorial) {
+                    EMIT_DATA(ts, te);
+                } else {
+                    EMIT_CHAR(':');
+                    EMIT_CHAR('*');
+                    EMIT_CHAR('*');
+                    BUMP(FIX_BOLD_COLON);
+                }
             };
 
             # ── Chicago em-dash: "--" between word-ish chars ──
@@ -3397,6 +3425,7 @@ static int apply_scanner(char *line, int linenum)
     memset(&ctx, 0, sizeof(ctx));
 
     ctx.no_arrow_aside    = opt_no_arrow_aside;
+    ctx.editorial         = opt_editorial;
     ctx.do_chicago_punct  = opt_chicago_punct;
     ctx.do_chicago_punct2 = opt_chicago_punct2;
     ctx.do_chicago_abbrev = opt_chicago_abbrev;
@@ -3918,6 +3947,10 @@ static void usage(const char *prog)
         "        Enable full canonical Markdown profile (safe passes)\n"
         "  --canonical-lint\n"
         "        Canonical gate mode: fail if file is not canonical\n"
+        "  --editorial\n"
+        "        Editorial passes: bullet style, emphasis in headings,\n"
+        "        bold colons, arrow asides, blockquote spacing.\n"
+        "        Implied by --canonical and --technical\n"
         "  --no-required\n"
         "        Disable the required (L2) repairs. Output is then not\n"
         "        guaranteed Pandoc-readable; for inspection, not for writing\n"
@@ -3952,7 +3985,7 @@ static void usage(const char *prog)
         "  R3. Space after the ATX marker     (#Title is a paragraph,\n"
         "                                      not a heading)\n"
         "\n"
-        "Fixes (always on; editorial, see issue #60):\n"
+        "Fixes (opt-in with --editorial):\n"
         "  1. Bullet markers normalized to -  (linter: list_bullet_style)\n"
         "  2. Bold/italic stripped from heads  (linter: header_formatting)\n"
         "  3. Bold colons moved inside tags   (**Term**: → **Term:**)\n"
@@ -4007,7 +4040,7 @@ static void usage(const char *prog)
         "     Skips headings, lists, tables, code blocks, blockquotes\n"
         "\n"
         "Profile:\n"
-        "  --canonical enables: -w, --chicago-punct, --chicago-punct-2,\n"
+        "  --canonical enables: --editorial, -w, --chicago-punct, --chicago-punct-2,\n"
         "  --chicago-abbrev, --footnote-canonical,\n"
         "  --heading-canonical, --fence-canonical\n"
         "  --technical enables: --canonical, --spaced-emdash, --wrap=78\n"
@@ -4498,6 +4531,11 @@ int main(int argc, char *argv[])
         }
         if (strcmp(argv[argi], "--canonical-lint") == 0) {
             opt_canonical_lint = 1;
+            argi++;
+            continue;
+        }
+        if (strcmp(argv[argi], "--editorial") == 0) {
+            opt_editorial = 1;
             argi++;
             continue;
         }

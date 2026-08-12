@@ -154,6 +154,59 @@ class OptionalIsGenuinelyOptionalTests(RequiredTestCase):
         self.assertIn("Link", fixed)
 
 
+class EditorialIsOptInTests(RequiredTestCase):
+    """
+    I3.3 (issue #60): the five editorial passes no longer run unasked.
+
+    Each rewrites something Pandoc already read correctly, and the arrow rule
+    rewrites prose rather than markup — a surprising thing for a default.
+    """
+
+    EDITORIAL = {
+        "bullet style": ("* item\n", "- item\n"),
+        "emphasis in a heading": ("# **Bold** Head\n", "# Bold Head\n"),
+        "bold colon": ("**Term**: x\n", "**Term:** x\n"),
+        "block quote spacing": (">Quote\n", "> Quote\n"),
+        "arrow aside": ("Arrow \u2192 aside.\n", "Arrow \u2014 aside.\n"),
+    }
+
+    def test_bare_run_leaves_them_alone(self) -> None:
+        for name, (source, _) in self.EDITORIAL.items():
+            with self.subTest(transform=name):
+                self.assertEqual(self._fix(source), source)
+
+    def test_editorial_flag_applies_them(self) -> None:
+        for name, (source, expected) in self.EDITORIAL.items():
+            with self.subTest(transform=name):
+                self.assertEqual(self._fix(source, "--editorial"), expected)
+
+    def test_canonical_still_implies_editorial(self) -> None:
+        # The profiles downstream actually invokes must be unchanged.
+        # Exact output is not compared for the arrow: --canonical also runs
+        # Chicago spacing, which collapses the spaces around the em dash.
+        for name, (source, _) in self.EDITORIAL.items():
+            with self.subTest(transform=name):
+                self.assertNotEqual(self._fix(source, "--canonical"), source)
+        self.assertNotIn("\u2192", self._fix("Arrow \u2192 aside.\n", "--canonical"))
+
+    def test_no_arrow_aside_still_wins_under_editorial(self) -> None:
+        # The SLOW-32 book pipeline depends on this: arrows are notation.
+        source = "Pipeline C \u2192 IR \u2192 asm.\n"
+        self.assertEqual(
+            self._fix(source, "--editorial", "--no-arrow-aside"), source)
+
+    def test_repository_markdown_is_untouched_by_a_bare_run(self) -> None:
+        # The whole point: a default run now changes nothing that Pandoc
+        # was already reading correctly.
+        for name in ("README.md", "docs/transforms.md", "docs/architecture.md"):
+            path = ROOT / name
+            if not path.is_file():
+                continue
+            with self.subTest(document=name):
+                text = path.read_text(encoding="utf-8")
+                self.assertEqual(self._fix(text), text)
+
+
 class ClassificationDocumentTests(unittest.TestCase):
     """The document is the classification; keep the two in step."""
 
@@ -170,10 +223,11 @@ class ClassificationDocumentTests(unittest.TestCase):
         # justification, which is what the document is for.
         self.assertEqual(len(REQUIRED_REPAIRS), 3)
 
-    def test_still_on_by_default_is_recorded(self) -> None:
-        # I3.3 is not yet true; the document says so rather than implying the
-        # classification is finished.
-        self.assertIn("Still on by default", DOC.read_text(encoding="utf-8"))
+    def test_the_editorial_bundle_is_documented(self) -> None:
+        text = DOC.read_text(encoding="utf-8")
+        self.assertIn("--editorial", text)
+        # The section admitting I3.3 was unmet should be gone now that it is.
+        self.assertNotIn("Still on by default", text)
 
 
 if __name__ == "__main__":
