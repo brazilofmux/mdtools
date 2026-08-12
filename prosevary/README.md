@@ -243,6 +243,6 @@ sharp edges:
   freeze check vetted a rewrite. The CLI says so and warns before writing.
 - No glossary is loaded by default, so terms of art (`fixup`, `relocation`)
   are unprotected unless `glossary_terms.yaml` is found. See the field notes.
-- No test suite. `make test` only checks that both tools start. The
-  round-trip property — unaccepted sentences must reconstruct byte-identical —
-  is verified ad hoc and should be pinned before `-i` is trusted.
+- The first shared regression fixture covers delimiter-aware fenced blocks and
+  byte-exact prosevary reconstruction. Broader round-trip, idempotence, inline
+  syntax, and failure-path coverage is still needed before `-i` is trusted.

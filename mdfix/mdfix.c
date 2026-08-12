@@ -164,13 +164,15 @@ static int  opt_wrap_width = 0;       /* 0 = disabled */
 
 static int  serial_comma_warnings = 0;
 static int  number_style_warnings = 0;
+static int  unterminated_fence_warnings = 0;
 
 static char *lines[MAX_LINES];
 static int   nlines = 0;
 
 static int total_issues(void)
 {
-    int total = serial_comma_warnings + number_style_warnings;
+    int total = serial_comma_warnings + number_style_warnings
+              + unterminated_fence_warnings;
     for (int i = 0; i < NUM_FIXES; i++)
         total += fix_counts[i];
     return total;
@@ -251,14 +253,97 @@ static int is_heading(const char *line)
     return (line[i] == ' ' || line[i] == '\0');
 }
 
-/* ``` or ~~~ (with optional leading whitespace) */
+struct fence_state {
+    int  active;
+    char marker;
+    int  length;
+    int  indent;
+    int  open_line;   /* 1-based, for the unterminated-fence diagnostic */
+};
+
+/*
+ * Parse the indentation and marker run shared by openers and closers.
+ *
+ * max_indent is the deepest indentation accepted, or -1 for any. Openers and
+ * closers differ here on purpose:
+ *
+ *   Openers pass -1. A fence inside an ordered list item sits at content
+ *   column 4+, which is a real fence in CommonMark/GFM. mdfix does not track
+ *   list-content indentation, so it cannot tell that from an indented code
+ *   block — and capping the indent drops real fences, handing shell commands
+ *   to the prose pipeline to be reflowed. Being permissive is the safe side.
+ *
+ *   Closers pass the opening fence's indent + 3, which is the CommonMark rule
+ *   relative to the container. Being permissive here would be the unsafe
+ *   side: a deeper-indented delimiter *inside* the block is content, and
+ *   treating it as a closer would truncate the block.
+ */
+static int fence_prefix(
+    const char *line,
+    int max_indent,
+    int *indent,
+    char *marker,
+    int *run_length,
+    const char **rest)
+{
+    int i = 0;
+    while (line[i] == ' ' || line[i] == '\t')
+        i++;
+    if (max_indent >= 0 && i > max_indent)
+        return 0;
+
+    char c = line[i];
+    if (c != '`' && c != '~')
+        return 0;
+    int start = i;
+    while (line[i] == c)
+        i++;
+    if (i - start < 3)
+        return 0;
+
+    *indent = start;
+    *marker = c;
+    *run_length = i - start;
+    *rest = line + i;
+    return 1;
+}
+
+/* CommonMark/Pandoc fence opener. Backtick info strings cannot contain `. */
+static int parse_fence_opener(const char *line, struct fence_state *fence)
+{
+    const char *rest;
+    int indent, run_length;
+    char marker;
+    if (!fence_prefix(line, -1, &indent, &marker, &run_length, &rest))
+        return 0;
+    if (marker == '`' && strchr(rest, '`') != NULL)
+        return 0;
+
+    fence->active = 1;
+    fence->marker = marker;
+    fence->length = run_length;
+    fence->indent = indent;
+    return 1;
+}
+
+static int is_fence_closer(const char *line, const struct fence_state *fence)
+{
+    const char *rest;
+    int indent, run_length;
+    char marker;
+    if (!fence_prefix(line, fence->indent + 3, &indent, &marker, &run_length, &rest))
+        return 0;
+    if (marker != fence->marker || run_length < fence->length)
+        return 0;
+    while (*rest == ' ' || *rest == '\t')
+        rest++;
+    return *rest == '\0';
+}
+
 static int is_code_fence(const char *line)
 {
-    const char *p = line;
-    while (*p == ' ' || *p == '\t')
-        p++;
-    return (p[0] == '`' && p[1] == '`' && p[2] == '`')
-        || (p[0] == '~' && p[1] == '~' && p[2] == '~');
+    struct fence_state fence;
+    return parse_fence_opener(line, &fence);
 }
 
 /* YAML frontmatter delimiter: exactly "---" then whitespace/EOL */
@@ -630,39 +715,34 @@ static int fix_heading_canonical(char *line, int linenum)
 
 /*
  * Fence canonicalization:
- * - Opening: keep marker char, force exactly 3 chars, trim info spacing.
- * - Closing: keep marker char, force exactly 3 chars with no trailing text.
+ * - Preserve the marker run length; shortening it can expose fenced content.
+ * - Opening: trim spacing before the info string.
+ * - Closing: remove trailing whitespace.
  */
 static int fix_fence_canonical(char *line, int linenum, int is_opening)
 {
     if (!opt_fence_canonical)
         return 0;
 
-    int i = 0;
-    while (line[i] == ' ' || line[i] == '\t')
-        i++;
-    char c = line[i];
-    if (!((c == '`' || c == '~') && line[i + 1] == c && line[i + 2] == c))
+    const char *rest;
+    int indent, run_length;
+    char marker;
+    if (!fence_prefix(line, -1, &indent, &marker, &run_length, &rest))
         return 0;
-
-    int j = i;
-    while (line[j] == c)
-        j++;
-    while (line[j] == ' ' || line[j] == '\t')
-        j++;
 
     char buf[MAX_LINE];
     int bi = 0;
-    for (int k = 0; k < i && bi < MAX_LINE - 1; k++)
+    for (int k = 0; k < indent && bi < MAX_LINE - 1; k++)
         buf[bi++] = line[k];
-    if (bi < MAX_LINE - 1) buf[bi++] = c;
-    if (bi < MAX_LINE - 1) buf[bi++] = c;
-    if (bi < MAX_LINE - 1) buf[bi++] = c;
+    for (int k = 0; k < run_length && bi < MAX_LINE - 1; k++)
+        buf[bi++] = marker;
 
-    if (is_opening && line[j] != '\0') {
-        while (line[j] != '\0' && bi < MAX_LINE - 1)
-            buf[bi++] = line[j++];
-        while (bi > 0 && buf[bi - 1] == ' ')
+    if (is_opening) {
+        while (*rest == ' ' || *rest == '\t')
+            rest++;
+        while (*rest != '\0' && bi < MAX_LINE - 1)
+            buf[bi++] = *rest++;
+        while (bi > 0 && (buf[bi - 1] == ' ' || buf[bi - 1] == '\t'))
             bi--;
     }
     buf[bi] = '\0';
@@ -1400,7 +1480,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 1404 "mdfix.c"
+#line 1484 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -1408,20 +1488,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 1412 "mdfix.c"
+#line 1492 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 1781 "mdfix.rl"
+#line 1861 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 1532 "mdfix.rl"
+#line 1612 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -1461,7 +1541,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 1424 "mdfix.rl"
+#line 1504 "mdfix.rl"
 	{te = p+1;{
                 if (ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -1498,19 +1578,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 1417 "mdfix.rl"
+#line 1497 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 1417 "mdfix.rl"
+#line 1497 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 1716 "mdfix.rl"
+#line 1796 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -1534,7 +1614,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 1761 "mdfix.rl"
+#line 1841 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -1555,7 +1635,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 1739 "mdfix.rl"
+#line 1819 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -1578,13 +1658,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 1781 "mdfix.rl"
+#line 1861 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 1661 "mdfix.rl"
+#line 1741 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -1607,7 +1687,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 1574 "mdfix.rl"
+#line 1654 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_CHAR('.');
@@ -1658,13 +1738,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 1781 "mdfix.rl"
+#line 1861 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 1624 "mdfix.rl"
+#line 1704 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -1702,7 +1782,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 1683 "mdfix.rl"
+#line 1763 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -1736,7 +1816,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 1478 "mdfix.rl"
+#line 1558 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -1745,7 +1825,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 1460 "mdfix.rl"
+#line 1540 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -1755,7 +1835,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 1486 "mdfix.rl"
+#line 1566 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -1764,7 +1844,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 1469 "mdfix.rl"
+#line 1549 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -1774,7 +1854,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 1494 "mdfix.rl"
+#line 1574 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -1813,7 +1893,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 1417 "mdfix.rl"
+#line 1497 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -1826,7 +1906,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 1830 "mdfix.c"
+#line 1910 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -1852,7 +1932,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 1856 "mdfix.c"
+#line 1936 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -1896,7 +1976,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 1900 "mdfix.c"
+#line 1980 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -1945,7 +2025,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 1949 "mdfix.c"
+#line 2029 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -1964,7 +2044,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 1968 "mdfix.c"
+#line 2048 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -1990,7 +2070,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 1994 "mdfix.c"
+#line 2074 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -2039,7 +2119,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 2043 "mdfix.c"
+#line 2123 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -2119,7 +2199,7 @@ case 13:
 
 	}
 
-#line 1788 "mdfix.rl"
+#line 1868 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';
@@ -2168,7 +2248,7 @@ static void process(FILE *out)
     int in_frontmatter     = 0;
     int frontmatter_opened = 0;   /* have we seen the opening --- ? */
     int frontmatter_closed = 0;   /* have we seen the closing --- ? */
-    int in_code_block      = 0;
+    struct fence_state fence = {0, 0, 0, 0, 0};
 
     enum linetype prev_content_type = LT_BLANK;
     int prev_was_list_ctx = 0;    /* was previous content in a list context? */
@@ -2182,7 +2262,7 @@ static void process(FILE *out)
          * Only the very first line can open frontmatter.
          * The next --- closes it.  After that, --- is a thematic break.
          */
-        if (type == LT_FMATTER && !in_code_block) {
+        if (type == LT_FMATTER && !fence.active) {
             if (!frontmatter_opened && i == 0) {
                 frontmatter_opened = 1;
                 in_frontmatter = 1;
@@ -2212,20 +2292,28 @@ static void process(FILE *out)
             continue;
         }
 
-        /* ── Code fence toggle ── */
-        if (type == LT_CODEFENCE) {
-            fix_fence_canonical(line, i + 1, !in_code_block);
-            in_code_block = !in_code_block;
+        /* ── Inside code block: hands off ── */
+        if (fence.active) {
+            if (is_fence_closer(line, &fence)) {
+                fix_fence_canonical(line, i + 1, 0);
+                fence.active = 0;
+                fix_trailing_ws(line, i + 1);
+            }
+            fprintf(out, "%s\n", line);
+            continue;
+        }
+
+        /* ── Opening code fence ── */
+        struct fence_state opener;
+        if (parse_fence_opener(line, &opener)) {
+            flush_paragraph(out);
+            fix_fence_canonical(line, i + 1, 1);
+            opener.open_line = i + 1;
+            fence = opener;
             fix_trailing_ws(line, i + 1);
             fprintf(out, "%s\n", line);
             prev_content_type = LT_TEXT;
             had_blank = 0;
-            continue;
-        }
-
-        /* ── Inside code block: hands off ── */
-        if (in_code_block) {
-            fprintf(out, "%s\n", line);
             continue;
         }
 
@@ -2334,6 +2422,23 @@ static void process(FILE *out)
         had_blank = 0;
     }
 
+    /*
+     * A fence whose closer never matched swallows the rest of the file: every
+     * later line is emitted verbatim and no pass ever sees it. Silence here
+     * made --canonical-lint report a clean exit 0 on a file it had largely
+     * skipped, so a CI gate stopped covering anything past the first
+     * mismatched delimiter. Count it as an issue so the gate fails.
+     */
+    if (fence.active) {
+        unterminated_fence_warnings++;
+        if (!opt_quiet) {
+            fprintf(stderr,
+                "  warning: unterminated code fence opened at line %d "
+                "(%d '%c'); rest of file left unchecked\n",
+                fence.open_line, fence.length, fence.marker);
+        }
+    }
+
     flush_paragraph(out);
 }
 
@@ -2347,7 +2452,8 @@ static void print_summary(const char *path)
     for (int i = 0; i < NUM_FIXES; i++)
         total += fix_counts[i];
 
-    if (total == 0 && serial_comma_warnings == 0 && number_style_warnings == 0) {
+    if (total == 0 && serial_comma_warnings == 0 && number_style_warnings == 0
+        && unterminated_fence_warnings == 0) {
         printf("%s: clean. Nothing to fix.\n", path);
         return;
     }
@@ -2368,6 +2474,11 @@ static void print_summary(const char *path)
         printf("  %-40s %d\n",
             "number style warnings (lint-only)",
             number_style_warnings);
+    }
+    if (unterminated_fence_warnings > 0) {
+        printf("  %-40s %d\n",
+            "unterminated code fence",
+            unterminated_fence_warnings);
     }
 }
 
@@ -2519,6 +2630,7 @@ static int process_file(const char *input_path, const char *output_path)
     memset(fix_counts, 0, sizeof(fix_counts));
     serial_comma_warnings = 0;
     number_style_warnings = 0;
+    unterminated_fence_warnings = 0;
     npara = 0;
 
     /* ── Read the entire input into memory ── */
