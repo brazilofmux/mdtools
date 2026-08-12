@@ -681,8 +681,8 @@ def classify_lines(raw_lines: Sequence[str]) -> List[Line]:
             continue
 
         # ── Pandoc multiline table: dash-run delimited, spans blank lines ──
-        # Checked before the setext branch, which would otherwise read the
-        # closing dash run as an underline for the last body row.
+        # Consume from the opener so the closing dash run is never left for
+        # setext to treat as an underline on the last body row.
         multiline_end = _multiline_table_end(raw_lines, i)
         if multiline_end > i:
             while i < multiline_end:
