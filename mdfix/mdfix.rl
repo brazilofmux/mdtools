@@ -183,6 +183,7 @@ static int  opt_scrivener_repair = 0;
 static int  opt_spaced_emdash = 0;
 static int  opt_required   = 1;       /* L2: on unless --no-required */
 static int  opt_editorial  = 0;       /* L3 editorial bundle; --editorial */
+static int  opt_apply_edits = 0;      /* L5 applier; reads JSONL on stdin */
 static int  opt_wrap_width = 0;       /* 0 = disabled */
 static int  opt_emit_ir   = 0;        /* structural IR to stdout; never writes */
 
@@ -3916,6 +3917,513 @@ static void print_summary(const char *path)
     }
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+ * L5 applier — architecture.md I4.2, I4.3, I5.1, I5.2
+ *
+ * `mdfix --apply-edits file.md` reads byte-span replacements as JSONL on
+ * stdin and splices them into the original bytes. Splicing rather than
+ * serializing is the whole design: untouched regions keep their exact bytes,
+ * so a one-sentence change produces a one-sentence diff and an empty edit
+ * list reproduces the file.
+ *
+ * Incoming edits are validated, never repaired (I4.3). An edit that would
+ * leave the document needing a required repair is refused with a diagnostic
+ * rather than silently fixed, because fixing would touch bytes the consumer
+ * never edited and destroy the minimal-diff guarantee it came for.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/* Defined with the other write-path helpers, below. */
+static void fsync_parent_dir(const char *path);
+static int  finalize_output(FILE **out_slot, const char *tmp_path);
+static int  write_inplace_buf(const char *input_path,
+                             const char *buf, size_t buflen);
+
+#define EDITS_SCHEMA "mdtools-edits-1"
+#define MAX_EDITS    100000
+
+struct edit {
+    long long start;
+    long long end;
+    char     *replacement;   /* owned */
+    char     *rule;          /* owned, may be NULL */
+    char     *expect;        /* owned, may be NULL: original bytes as seen */
+};
+
+static struct edit edits[MAX_EDITS];
+static int nedits = 0;
+
+static void free_edits(void)
+{
+    for (int i = 0; i < nedits; i++) {
+        free(edits[i].replacement);
+        free(edits[i].rule);
+        free(edits[i].expect);
+    }
+    nedits = 0;
+}
+
+/*
+ * A deliberately small JSON reader: flat objects of string, integer, boolean
+ * and null. That is the whole edit record, and a general parser would be more
+ * code to audit than the format needs. Anything nested is refused rather than
+ * skipped, so an unsupported record fails loudly instead of half-parsing.
+ */
+static const char *json_skip_ws(const char *p)
+{
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')
+        p++;
+    return p;
+}
+
+static int json_hex4(const char *p, unsigned *out)
+{
+    unsigned v = 0;
+    for (int i = 0; i < 4; i++) {
+        char c = p[i];
+        v <<= 4;
+        if (c >= '0' && c <= '9')       v |= (unsigned)(c - '0');
+        else if (c >= 'a' && c <= 'f')  v |= (unsigned)(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F')  v |= (unsigned)(c - 'A' + 10);
+        else return 0;
+    }
+    *out = v;
+    return 1;
+}
+
+static int utf8_encode(unsigned cp, char *out)
+{
+    if (cp < 0x80)    { out[0] = (char)cp; return 1; }
+    if (cp < 0x800)   { out[0] = (char)(0xC0 | (cp >> 6));
+                        out[1] = (char)(0x80 | (cp & 0x3F)); return 2; }
+    if (cp < 0x10000) { out[0] = (char)(0xE0 | (cp >> 12));
+                        out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                        out[2] = (char)(0x80 | (cp & 0x3F)); return 3; }
+    out[0] = (char)(0xF0 | (cp >> 18));
+    out[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+    out[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+    out[3] = (char)(0x80 | (cp & 0x3F));
+    return 4;
+}
+
+/* Parse a JSON string into a fresh buffer. Returns the position after the
+ * closing quote, or NULL. */
+static const char *json_string(const char *p, char **out)
+{
+    if (*p != '"')
+        return NULL;
+    p++;
+    size_t cap = 64, n = 0;
+    char *buf = malloc(cap);
+    if (!buf)
+        return NULL;
+    while (*p && *p != '"') {
+        if (n + 5 >= cap) {
+            cap *= 2;
+            char *bigger = realloc(buf, cap);
+            if (!bigger) { free(buf); return NULL; }
+            buf = bigger;
+        }
+        if (*p != '\\') {
+            buf[n++] = *p++;
+            continue;
+        }
+        p++;
+        switch (*p) {
+        case '"':  buf[n++] = '"';  p++; break;
+        case '\\': buf[n++] = '\\'; p++; break;
+        case '/':  buf[n++] = '/';  p++; break;
+        case 'b':  buf[n++] = '\b'; p++; break;
+        case 'f':  buf[n++] = '\f'; p++; break;
+        case 'n':  buf[n++] = '\n'; p++; break;
+        case 'r':  buf[n++] = '\r'; p++; break;
+        case 't':  buf[n++] = '\t'; p++; break;
+        case 'u': {
+            unsigned cp;
+            if (!json_hex4(p + 1, &cp)) { free(buf); return NULL; }
+            p += 5;
+            if (cp >= 0xD800 && cp <= 0xDBFF && p[0] == '\\' && p[1] == 'u') {
+                unsigned lo;
+                if (json_hex4(p + 2, &lo) && lo >= 0xDC00 && lo <= 0xDFFF) {
+                    cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                    p += 6;
+                }
+            }
+            if (cp >= 0xD800 && cp <= 0xDFFF) { free(buf); return NULL; }
+            n += (size_t)utf8_encode(cp, buf + n);
+            break;
+        }
+        default: free(buf); return NULL;
+        }
+    }
+    if (*p != '"') { free(buf); return NULL; }
+    buf[n] = '\0';
+    *out = buf;
+    return p + 1;
+}
+
+/* One flat JSON object. Recognized keys are stored; unknown keys are skipped
+ * so the format can grow, per I4.4. */
+static int parse_edit_object(const char *line, struct edit *e,
+                             char **kind, long long *bytes, char **schema)
+{
+    const char *p = json_skip_ws(line);
+    if (*p != '{')
+        return 0;
+    p = json_skip_ws(p + 1);
+    if (*p == '}')
+        return 1;
+
+    for (;;) {
+        char *key = NULL;
+        p = json_string(p, &key);
+        if (!p) return 0;
+        p = json_skip_ws(p);
+        if (*p != ':') { free(key); return 0; }
+        p = json_skip_ws(p + 1);
+
+        if (*p == '"') {
+            char *val = NULL;
+            p = json_string(p, &val);
+            if (!p) { free(key); return 0; }
+            char **slot = NULL;
+            if (e && strcmp(key, "replacement") == 0) slot = &e->replacement;
+            else if (e && strcmp(key, "rule") == 0)   slot = &e->rule;
+            else if (e && strcmp(key, "expect") == 0) slot = &e->expect;
+            else if (kind && strcmp(key, "kind") == 0)     slot = kind;
+            else if (schema && strcmp(key, "schema") == 0) slot = schema;
+            if (slot) { free(*slot); *slot = val; } else free(val);
+        } else if ((*p >= '0' && *p <= '9') || *p == '-') {
+            char *endp = NULL;
+            long long v = strtoll(p, &endp, 10);
+            if (endp == p) { free(key); return 0; }
+            if (e && strcmp(key, "start") == 0)      e->start = v;
+            else if (e && strcmp(key, "end") == 0)   e->end = v;
+            else if (bytes && strcmp(key, "bytes") == 0) *bytes = v;
+            p = endp;
+        } else if (strncmp(p, "true", 4) == 0)  { p += 4; }
+        else if (strncmp(p, "false", 5) == 0)   { p += 5; }
+        else if (strncmp(p, "null", 4) == 0)    { p += 4; }
+        else { free(key); return 0; }   /* nested values are refused */
+
+        free(key);
+        p = json_skip_ws(p);
+        if (*p == ',') { p = json_skip_ws(p + 1); continue; }
+        if (*p == '}') return 1;
+        return 0;
+    }
+}
+
+static char *read_stream(FILE *fp, long long *out_len)
+{
+    size_t cap = 65536, n = 0;
+    char *buf = malloc(cap);
+    if (!buf)
+        return NULL;
+    size_t got;
+    while ((got = fread(buf + n, 1, cap - n - 1, fp)) > 0) {
+        n += got;
+        if (n + 1 >= cap) {
+            cap *= 2;
+            char *bigger = realloc(buf, cap);
+            if (!bigger) { free(buf); return NULL; }
+            buf = bigger;
+        }
+    }
+    buf[n] = '\0';
+    *out_len = (long long)n;
+    return buf;
+}
+
+/*
+ * Load an edit list from stdin. Returns 0 on success.
+ *
+ * An optional header record carries the schema and the size the consumer saw.
+ * Checking that size is cheap staleness detection: if the file changed since
+ * `--emit-ir` ran, every span is wrong and splicing would corrupt the
+ * document rather than fail.
+ */
+static int load_edits(const char *path, long long file_len)
+{
+    long long len = 0;
+    char *text = read_stream(stdin, &len);
+    if (!text) {
+        fprintf(stderr, "error: reading edits: out of memory\n");
+        return 1;
+    }
+
+    int rc = 0;
+    int lineno = 0;
+    char *save = text;
+    for (char *line = text; line && *line; ) {
+        char *nl = strchr(line, '\n');
+        if (nl) *nl = '\0';
+        lineno++;
+        const char *trimmed = json_skip_ws(line);
+        if (*trimmed == '\0') {
+            line = nl ? nl + 1 : NULL;
+            continue;
+        }
+
+        if (nedits >= MAX_EDITS) {
+            fprintf(stderr, "error: more than %d edits\n", MAX_EDITS);
+            rc = 1;
+            break;
+        }
+
+        struct edit e = {0, 0, NULL, NULL, NULL};
+        char *kind = NULL, *schema = NULL;
+        long long bytes = -1;
+        if (!parse_edit_object(trimmed, &e, &kind, &bytes, &schema)) {
+            fprintf(stderr, "error: edit line %d is not a flat JSON object\n",
+                    lineno);
+            free(e.replacement); free(e.rule); free(e.expect);
+            free(kind); free(schema);
+            rc = 1;
+            break;
+        }
+
+        if (kind && strcmp(kind, "edits") == 0) {
+            if (schema && strcmp(schema, EDITS_SCHEMA) != 0) {
+                fprintf(stderr,
+                    "error: edit schema '%s' is not '%s'\n",
+                    schema, EDITS_SCHEMA);
+                rc = 1;
+            } else if (bytes >= 0 && bytes != file_len) {
+                fprintf(stderr,
+                    "error: edits were computed against %lld bytes but %s is "
+                    "%lld bytes. The file changed; re-run --emit-ir.\n",
+                    bytes, path, file_len);
+                rc = 1;
+            }
+            free(e.replacement); free(e.rule); free(e.expect);
+            free(kind); free(schema);
+            if (rc) break;
+            line = nl ? nl + 1 : NULL;
+            continue;
+        }
+        free(kind);
+        free(schema);
+
+        if (!e.replacement)
+            e.replacement = strdup("");
+        if (!e.replacement) { rc = 1; break; }
+        edits[nedits++] = e;
+        line = nl ? nl + 1 : NULL;
+    }
+    free(save);
+    return rc;
+}
+
+static int edit_cmp(const void *a, const void *b)
+{
+    const struct edit *x = a, *y = b;
+    if (x->start < y->start) return -1;
+    if (x->start > y->start) return 1;
+    if (x->end   < y->end)   return -1;
+    if (x->end   > y->end)   return 1;
+    return 0;
+}
+
+/* I4.2: bounds, ordering, overlap, encoding, and staleness. */
+static int validate_edits(const char *src, long long len)
+{
+    qsort(edits, (size_t)nedits, sizeof edits[0], edit_cmp);
+
+    long long prev_end = 0;
+    for (int i = 0; i < nedits; i++) {
+        struct edit *e = &edits[i];
+        if (e->start < 0 || e->end < e->start || e->end > len) {
+            fprintf(stderr,
+                "error: edit %d spans [%lld,%lld), outside the file's %lld "
+                "bytes\n", i + 1, e->start, e->end, len);
+            return 1;
+        }
+        if (i > 0 && e->start < prev_end) {
+            fprintf(stderr,
+                "error: edit %d starts at %lld, inside the previous edit "
+                "which ends at %lld. Overlapping edits are refused.\n",
+                i + 1, e->start, prev_end);
+            return 1;
+        }
+        const char *why = NULL;
+        if (utf8_first_bad(e->replacement, (int)strlen(e->replacement), &why) >= 0) {
+            fprintf(stderr, "error: edit %d replacement is not valid UTF-8: "
+                    "%s\n", i + 1, why);
+            return 1;
+        }
+        if (e->expect) {
+            long long n = (long long)strlen(e->expect);
+            if (n != e->end - e->start
+                || memcmp(src + e->start, e->expect, (size_t)n) != 0) {
+                fprintf(stderr,
+                    "error: edit %d expected different bytes at [%lld,%lld). "
+                    "The file changed since the spans were computed.\n",
+                    i + 1, e->start, e->end);
+                return 1;
+            }
+        }
+        prev_end = e->end;
+    }
+    return 0;
+}
+
+static void splice_edits(FILE *out, const char *src, long long len)
+{
+    long long cursor = 0;
+    for (int i = 0; i < nedits; i++) {
+        if (edits[i].start > cursor)
+            fwrite(src + cursor, 1, (size_t)(edits[i].start - cursor), out);
+        fputs(edits[i].replacement, out);
+        cursor = edits[i].end;
+    }
+    if (cursor < len)
+        fwrite(src + cursor, 1, (size_t)(len - cursor), out);
+}
+
+/*
+ * I4.3: validate, do not repair.
+ *
+ * Splicing a consumer's edit can leave the document needing a required repair
+ * — a replacement that ends in a list marker with no blank line before it, say.
+ * Applying the repair here would touch bytes the consumer never edited and
+ * destroy the minimal-diff guarantee it came for, so the edit is refused and
+ * the consumer fixes its own output.
+ *
+ * The check is the required set run over the result: if it would change
+ * anything, the result is not L2-clean.
+ */
+static int result_needs_required_repairs(const char *text, long long len)
+{
+    FILE *mem = fmemopen((void *)text, (size_t)len, "r");
+    if (!mem)
+        return 0;               /* cannot check; do not block the write */
+
+    int saved_editorial = opt_editorial, saved_ws = opt_trail_ws;
+    int saved_wrap = opt_wrap_width, saved_quiet = opt_quiet;
+    int saved_verbose = opt_verbose;
+    opt_editorial = 0;
+    opt_trail_ws = 0;
+    opt_wrap_width = 0;
+    opt_quiet = 1;
+    opt_verbose = 0;
+    memset(fix_counts, 0, sizeof fix_counts);
+
+    int dirty = 0;
+    if (read_all(mem) == 0) {
+        FILE *sink = fopen("/dev/null", "w");
+        if (sink) {
+            process(sink);
+            fclose(sink);
+            for (int i = 0; i < NUM_FIXES; i++)
+                dirty += fix_counts[i];
+        }
+        free_lines();
+    }
+    fclose(mem);
+
+    opt_editorial = saved_editorial;
+    opt_trail_ws = saved_ws;
+    opt_wrap_width = saved_wrap;
+    opt_quiet = saved_quiet;
+    opt_verbose = saved_verbose;
+    memset(fix_counts, 0, sizeof fix_counts);
+    return dirty;
+}
+
+static int apply_edits_file(const char *input_path, const char *output_path)
+{
+    FILE *in = fopen(input_path, "rb");
+    if (!in) {
+        fprintf(stderr, "Can't open '%s': ", input_path);
+        perror(NULL);
+        return 1;
+    }
+    long long len = 0;
+    char *src = read_stream(in, &len);
+    fclose(in);
+    if (!src) {
+        fprintf(stderr, "error: reading %s: out of memory\n", input_path);
+        return 1;
+    }
+
+    /* L1 still applies to the applier: the same encoding contract as #53. */
+    const char *why = NULL;
+    long long bad = utf8_first_bad(src, (int)len, &why);
+    if (bad >= 0) {
+        fprintf(stderr,
+            "error: %s is not valid UTF-8 at byte offset %lld: %s.\n",
+            input_path, bad, why);
+        free(src);
+        return 1;
+    }
+
+    nedits = 0;
+    if (load_edits(input_path, len) != 0 || validate_edits(src, len) != 0) {
+        free_edits();
+        free(src);
+        return 1;
+    }
+
+    /* Splice into memory so the result can be checked before anything is
+     * written. A write that has to be undone is a write that should not have
+     * happened. */
+    char *tmpbuf = NULL;
+    size_t tmplen = 0;
+    FILE *mem = open_memstream(&tmpbuf, &tmplen);
+    if (!mem) {
+        fprintf(stderr, "error: cannot buffer the result\n");
+        free_edits();
+        free(src);
+        return 1;
+    }
+    splice_edits(mem, src, len);
+    fclose(mem);
+
+    if (result_needs_required_repairs(tmpbuf, (long long)tmplen)) {
+        fprintf(stderr,
+            "error: applying these edits would leave %s needing a required "
+            "repair, so they are refused rather than silently fixed "
+            "(architecture I4.3). Run mdfix on the result to see what.\n",
+            input_path);
+        free(tmpbuf);
+        free_edits();
+        free(src);
+        return 1;
+    }
+
+    int rc = 0;
+    if (opt_inplace) {
+        rc = write_inplace_buf(input_path, tmpbuf, tmplen);
+    } else if (output_path) {
+        FILE *out = fopen(output_path, "w");
+        if (!out) {
+            fprintf(stderr, "Can't open output '%s': ", output_path);
+            perror(NULL);
+            rc = 1;
+        } else {
+            fwrite(tmpbuf, 1, tmplen, out);
+            if (finalize_output(&out, output_path) != 0)
+                rc = 1;
+        }
+    } else {
+        fwrite(tmpbuf, 1, tmplen, stdout);
+        if (fflush(stdout) != 0) {
+            fprintf(stderr, "error writing result: ");
+            perror(NULL);
+            rc = 1;
+        }
+    }
+
+    if (!opt_quiet && rc == 0)
+        fprintf(stderr, "%s: applied %d edit%s\n",
+                input_path, nedits, nedits == 1 ? "" : "s");
+
+    free(tmpbuf);
+    free_edits();
+    free(src);
+    return rc;
+}
+
 static void usage(const char *prog)
 {
     fprintf(stderr,
@@ -3947,6 +4455,10 @@ static void usage(const char *prog)
         "        Enable full canonical Markdown profile (safe passes)\n"
         "  --canonical-lint\n"
         "        Canonical gate mode: fail if file is not canonical\n"
+        "  --apply-edits\n"
+        "        Read byte-span edits as JSONL on stdin and splice them into\n"
+        "        the file. Untouched bytes are preserved exactly; overlapping\n"
+        "        or out-of-range edits are refused. See docs/edit-schema.md\n"
         "  --editorial\n"
         "        Editorial passes: bullet style, emphasis in headings,\n"
         "        bold colons, arrow asides, blockquote spacing.\n"
@@ -4172,7 +4684,14 @@ static int finalize_output(FILE **out_slot, const char *tmp_path)
  *   5. Else rename original → collision-safe .bak, then temp → original.
  *      If the second rename fails, restore original from .bak.
  */
-static int write_inplace(const char *input_path)
+/*
+ * In-place write. `buf` non-NULL writes those bytes instead of running the
+ * fixers, which is how --apply-edits reuses this: mode and ownership
+ * preservation, the .bak, the atomic rename and the directory fsync are all
+ * hard-won and should exist once, not twice.
+ */
+static int write_inplace_buf(const char *input_path,
+                             const char *buf, size_t buflen)
 {
     struct stat st;
     char tmp_path[4096];
@@ -4226,7 +4745,10 @@ static int write_inplace(const char *input_path)
         return 1;
     }
 
-    process(out);
+    if (buf)
+        fwrite(buf, 1, buflen, out);
+    else
+        process(out);
     if (finalize_output(&out, tmp_path) != 0)
         return 1;
 
@@ -4369,6 +4891,11 @@ static int run_canonical_lint(const char *input_path)
     return 0;
 }
 
+static int write_inplace(const char *input_path)
+{
+    return write_inplace_buf(input_path, NULL, 0);
+}
+
 static int process_file(const char *input_path, const char *output_path)
 {
     /* Reset per-file state */
@@ -4377,6 +4904,9 @@ static int process_file(const char *input_path, const char *output_path)
     number_style_warnings = 0;
     unterminated_fence_warnings = 0;
     npara = 0;
+
+    if (opt_apply_edits)
+        return apply_edits_file(input_path, output_path);
 
     /* ── Read the entire input into memory ── */
     FILE *in = fopen(input_path, "r");
@@ -4534,6 +5064,11 @@ int main(int argc, char *argv[])
             argi++;
             continue;
         }
+        if (strcmp(argv[argi], "--apply-edits") == 0) {
+            opt_apply_edits = 1;
+            argi++;
+            continue;
+        }
         if (strcmp(argv[argi], "--editorial") == 0) {
             opt_editorial = 1;
             argi++;
@@ -4644,6 +5179,27 @@ int main(int argc, char *argv[])
         fprintf(stderr,
             "--canonical-lint is no-write gate mode. Omit -i.\n");
         return 1;
+    }
+
+    if (opt_apply_edits && opt_canonical_lint) {
+        fprintf(stderr,
+            "--apply-edits writes a document; --canonical-lint is a gate. "
+            "Pick one.\n");
+        return 1;
+    }
+    if (opt_apply_edits && opt_emit_ir) {
+        fprintf(stderr, "--apply-edits and --emit-ir are opposite halves; "
+                        "run them separately.\n");
+        return 1;
+    }
+    if (opt_apply_edits && npos > 1 && !opt_inplace) {
+        fprintf(stderr,
+            "--apply-edits reads one file's edits from stdin. With two names "
+            "the second is the OUTPUT file.\n");
+    }
+    if (opt_apply_edits && !opt_inplace && npos == 1) {
+        /* Result goes to stdout; no output file is needed. */
+        return process_file(pos[0], NULL);
     }
 
     if (opt_emit_ir && (opt_inplace || opt_canonical_lint)) {

@@ -63,9 +63,10 @@ mdfix owns the grammar in both directions:
   stdout. A pure function of the input bytes, testable against Pandoc.
   **Shipped**, schema `mdtools-ir-2`; see [ir-schema.md](ir-schema.md).
 - **Applier** — `mdfix --apply-edits` reads a list of byte-span replacements
-  and splices them into the original bytes. **Not shipped** — issue #12.
+  and splices them into the original bytes. **Shipped**, schema
+  `mdtools-edits-1`; see [edit-schema.md](edit-schema.md).
 
-Until the applier lands and consumers migrate, prosevary still carries its own
+Both halves now exist. Until consumers migrate, prosevary still carries its own
 block classifier and `tests/test_tool_parity.py` is the dual-grammar safety
 net. The IR under-reports structure in a handful of places (setext headings,
 definition lists, math, raw LaTeX), all recorded in ir-schema.md and pinned by
