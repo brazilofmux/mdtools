@@ -2112,11 +2112,12 @@ static void process(FILE *out)
         struct fence_state opener;
         if (parse_fence_opener(line, &opener)) {
             /*
-             * A fence at or left of the enclosing item's content column ends
-             * the list; an indented one is inside the item and leaves it
-             * standing. Without this the list context leaked past the fenced
-             * block, so a later four-column code block was measured against a
-             * stale threshold and went back to being rewritten as prose.
+             * A fence strictly left of the enclosing item's content column
+             * (indent < list_content_col) ends the list; one at or past that
+             * column is inside the item and leaves it standing. Without this
+             * the list context leaked past the fenced block, so a later
+             * four-column code block was measured against a stale threshold
+             * and went back to being rewritten as prose.
              */
             if (indent_columns(line, NULL) < list_content_col) {
                 prev_was_list_ctx = 0;
@@ -2128,7 +2129,8 @@ static void process(FILE *out)
             fence = opener;
             fix_trailing_ws(line, i + 1);
             fprintf(out, "%s\n", line);
-            prev_content_type = LT_TEXT;
+            /* Not LT_TEXT: indented code may follow a fence with no blank. */
+            prev_content_type = LT_CODEFENCE;
             had_blank = 0;
             continue;
         }
@@ -2183,10 +2185,10 @@ static void process(FILE *out)
 
         /*
          * Determine if we're in a "list context" — the previous content
-         * was a list item or a continuation of one (indented text).
+         * was a list item, or a continuation / nested block that left the
+         * list flag standing (text, fence, or indented code inside an item).
          */
-        int in_list_context = is_list_type(prev_content_type)
-            || (prev_content_type == LT_TEXT && prev_was_list_ctx);
+        int in_list_context = is_list_type(prev_content_type) || prev_was_list_ctx;
 
         /*
          * Fix 2: Insert blank line BEFORE list.
@@ -2260,7 +2262,16 @@ static void process(FILE *out)
             if (content_col >= 0)
                 list_content_col = content_col;
         } else if (type == LT_TEXT && is_list_continuation(line)) {
-            prev_was_list_ctx = prev_was_list_ctx; /* preserve */
+            prev_was_list_ctx = 1;
+            /*
+             * A nested item raises list_content_col; an outdented continuation
+             * of the outer item must restore the outer content column, or
+             * later nested code is measured against the inner threshold and
+             * rewritten as prose.
+             */
+            int cont_col = indent_columns(line, NULL);
+            if (cont_col < list_content_col)
+                list_content_col = cont_col;
         } else {
             prev_was_list_ctx = 0;
             /* Left the list: indented code is measured from the margin again. */

@@ -100,6 +100,37 @@ class IndentedCodeTests(unittest.TestCase):
         # it is only two columns past the item's content column.
         self.assertIn("arrow aside", self._fixes(f"- item\n\n    A {ARROW} B\n"))
 
+    def test_code_immediately_after_a_fence_is_protected(self) -> None:
+        # Fences are not paragraphs; CommonMark allows indented code with no
+        # blank after the closer. prev_content_type must not stay LT_TEXT.
+        source = f"```\nx\n```\n    A {ARROW} B\n"
+        self.assertNotIn("arrow aside", self._fixes(source))
+        self.assertEqual(self._canonical(source), source)
+
+    def test_code_immediately_after_list_fence_is_protected(self) -> None:
+        source = f"- item\n\n  ```\n  x\n  ```\n      A {ARROW} B\n"
+        self.assertNotIn("arrow aside", self._fixes(source))
+        self.assertEqual(self._canonical(source), source)
+
+    def test_outer_list_code_after_nested_item_is_protected(self) -> None:
+        # Nested item raises the content column; an outdented outer
+        # continuation must restore it so six-column code is protected.
+        source = (
+            f"- outer\n  - inner\n\n  outer continues A {ARROW} Z\n\n"
+            f"      code {ARROW} here\n"
+        )
+        report = self._fixes(source)
+        self.assertNotIn("line 6: arrow aside", report)
+        once = self._canonical(source)
+        self.assertIn(f"code {ARROW} here", once)
+        self.assertNotIn(f"A {ARROW} Z", once)
+
+    def test_six_spaces_after_nested_item_alone_is_not_code(self) -> None:
+        # Without an outer continuation, six spaces stay under the inner
+        # item (content col 4) and remain prose — matches Pandoc.
+        source = f"- outer\n  - inner\n\n      A {ARROW} B\n"
+        self.assertIn("arrow aside", self._fixes(source))
+
     # --- wrapping and round trips -------------------------------------------
 
     def test_technical_does_not_reflow_indented_code(self) -> None:
