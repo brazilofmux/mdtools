@@ -91,6 +91,14 @@ CORPUS = {
     "code immediately after a fence": (
         f"```sh\nx\n```\n    code A {ARROW} B\n\nTail A {ARROW} B.\n"
     ),
+    # Tabs, not spaces, between the dash groups. mdfix accepted these and
+    # prosevary did not, so the same document was a frozen table to one tool
+    # and paraphrasable prose to the other. The corpus had no tab fixture, so
+    # the harness could not see it.
+    "simple table with tabs": (
+        f"Prose A {ARROW} B.\n\nRight\tLeft\n----\t----\n"
+        f"12\tA {ARROW} B\n\nTail A {ARROW} B.\n"
+    ),
     "simple table": (
         f"Prose A {ARROW} B.\n\nRight     Left\n-------   -------\n"
         f"12        A {ARROW} B\n\nTail A {ARROW} B.\n"
@@ -205,6 +213,42 @@ class ToolParityTests(unittest.TestCase):
                             f"left it untouched: {line!r}"
                         ),
                     )
+
+    def test_dash_row_grammar_agrees_across_tools(self) -> None:
+        """
+        The two implementations must classify the same dash rows the same way.
+
+        End-to-end fixtures only catch a grammar divergence if someone thought
+        to write a fixture using the divergent syntax — the tab case sat
+        unnoticed because the corpus used spaces throughout. This enumerates
+        the separator forms instead, so a widening on one side and not the
+        other fails here rather than in review.
+        """
+        rows = [
+            "----   ----",      # spaces
+            "----\t----",       # tab
+            "---- \t ----",     # mixed
+            "-- -- --",         # three groups
+            "-------",          # setext underline, not a table
+            "--- - ---",        # a single-dash group is not a dash row
+        ]
+        for row in rows:
+            with self.subTest(row=row):
+                source = f"Head\tSecond\n{row}\n12\tA {ARROW} B\n\nTail A {ARROW} B.\n"
+                prosevary_says_table = any(
+                    line.kind is LineKind.TABLE for line in parse(source).lines
+                )
+                body = f"12\tA {ARROW} B"
+                mdfix_froze_body = body in self._mdfix(source)
+                self.assertEqual(
+                    prosevary_says_table, mdfix_froze_body,
+                    msg=(
+                        f"dash row {row!r}: prosevary "
+                        f"{'sees' if prosevary_says_table else 'does not see'} a "
+                        f"table, mdfix "
+                        f"{'froze' if mdfix_froze_body else 'rewrote'} the body"
+                    ),
+                )
 
     def test_corpus_actually_exercises_both_sides(self) -> None:
         # A parity harness whose fixtures contain no verbatim regions, or no
