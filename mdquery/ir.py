@@ -146,6 +146,18 @@ def _records(paths: Iterable[Path], mdfix: Optional[str] = None) -> List[dict]:
     return out
 
 
+def raw_records(paths: Iterable[Path],
+                mdfix: Optional[str] = None) -> List[dict]:
+    """
+    Every record as mdfix emitted it, `gap` records included.
+
+    `load` drops gaps because a query for "the blocks in this file" means the
+    content ones. A caller that has to reproduce the file — prosevary's
+    reconstruct, or any serializer — needs the whole total sequence.
+    """
+    return _records(paths, mdfix)
+
+
 def load(paths: Iterable[Path], mdfix: Optional[str] = None) -> List[Document]:
     """
     Parse `mdfix --emit-ir` output into one Document per input file.
