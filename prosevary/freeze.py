@@ -45,6 +45,14 @@ _INLINE_REF_LINK = re.compile(r"(?<!!)" + _LABEL + r"\[[^\]]*\]")
 # break the link and orphan a definition promised to stay byte-identical.
 _SHORTCUT_REF = re.compile(r"(?<!!)\[[^\]\n]+\](?![\(\[:])")
 _AUTOLINK = re.compile(r"<https?://[^>\s]+>|<mailto:[^>\s]+>", re.IGNORECASE)
+# Raw inline HTML tags: <b>, </b>, <img src=…>, <br/>. Only the tag is frozen,
+# never the text it wraps, so prose inside <b>…</b> can still vary while the
+# markup around it cannot be dropped or reworded.
+#
+# The tag name must be followed by whitespace, "/" or ">", which keeps this
+# from also matching an autolink like <https://x> (":" follows the name there)
+# and from firing on comparisons such as "a < b".
+_INLINE_HTML_TAG = re.compile(r"</?[a-zA-Z][\w-]*(?:\s[^<>]*)?/?>")
 _FOOTNOTE_REF = re.compile(r"\[\^[^\]]+\]")
 _CITATION = re.compile(r"(?<![A-Za-z0-9])@[\w:-]+")
 _PANDOC_ATTR = re.compile(r"\{[#.][^}]*\}")
@@ -102,6 +110,7 @@ def sentence_freeze(text: str, glossary: Iterable[str]) -> FreezeSet:
         _INLINE_LINK,
         _INLINE_REF_LINK,
         _AUTOLINK,
+        _INLINE_HTML_TAG,
         _FOOTNOTE_REF,
         _PANDOC_ATTR,
         _CITATION,

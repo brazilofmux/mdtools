@@ -253,6 +253,45 @@ class InlineFreezeReviewTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 self.assertIsNotNone(fs.check(text, bad))
 
+    def test_raw_inline_html_tags_are_frozen(self) -> None:
+        # A paraphrase could previously drop or rename inline markup and pass.
+        text = "Some text with <b>bold</b> and <sub>x</sub> markup."
+        fs = sentence_freeze(text, set())
+        self.assertEqual(fs.spans, ["<b>", "</b>", "<sub>", "</sub>"])
+        for bad in (
+            "Some text with bold and <sub>x</sub> markup.",
+            "Some text with <i>bold</i> and <sub>x</sub> markup.",
+            "Some text with <b>bold</b> and x markup.",
+        ):
+            with self.subTest(bad=bad):
+                self.assertIsNotNone(fs.check(text, bad))
+
+    def test_inline_html_freeze_leaves_wrapped_prose_variable(self) -> None:
+        # Only the tag is frozen, never the text it wraps.
+        text = "Some text with <b>bold</b> markup."
+        fs = sentence_freeze(text, set())
+        self.assertIsNone(fs.check(text, "Some prose with <b>bold</b> markup."))
+
+    def test_inline_html_pattern_does_not_over_match(self) -> None:
+        # An autolink is claimed by _AUTOLINK alone (":" follows the name), and
+        # a comparison is not a tag at all.
+        self.assertEqual(
+            sentence_freeze("See <https://example.com> now.", set()).spans,
+            ["<https://example.com>"],
+        )
+        self.assertEqual(
+            sentence_freeze("Compare a < b and c > d here.", set()).spans, []
+        )
+
+    def test_void_and_self_closing_tags_frozen(self) -> None:
+        text = 'Line<br/>break and <img src="x.png"> here.'
+        fs = sentence_freeze(text, set())
+        self.assertIn("<br/>", fs.spans)
+        self.assertIn('<img src="x.png">', fs.spans)
+        self.assertIsNotNone(
+            fs.check(text, 'Line break and <img src="y.png"> here.')
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
