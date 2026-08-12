@@ -2279,7 +2279,29 @@ static void process(FILE *out)
 
     enum linetype prev_content_type = LT_BLANK;
     int prev_was_list_ctx = 0;    /* was previous content in a list context? */
-    int list_content_col = 0;     /* content column of the enclosing list item */
+    /*
+     * Content column of the enclosing list item, and the indented-code
+     * threshold: a line is code at list_content_col + 4, not at 4.
+     *
+     * CONTRACT FOR NEW BLOCK BRANCHES. Every branch below that consumes a
+     * block and `continue`s must decide what happens to this, and the rule is
+     * the same for all of them:
+     *
+     *     clear it only when the block starts strictly LEFT of
+     *     list_content_col — that is what leaving the list item means.
+     *     A block at or past that column is nested inside the item and must
+     *     leave the value standing.
+     *
+     * This has now been got wrong three times, each in a newly added branch:
+     * fenced code leaked a stale column past the block, and the grid/simple
+     * table branch cleared unconditionally. Both made a later list
+     * continuation look like margin indented code, so it was frozen instead
+     * of fixed as prose. Blank lines deliberately keep the column, so a
+     * blank inside an item does not reset nested-code detection.
+     *
+     * Multiline tables will add one more such branch.
+     */
+    int list_content_col = 0;
     int had_blank = 1;            /* start-of-file counts as separation */
 
     for (int i = 0; i < nlines; i++) {
