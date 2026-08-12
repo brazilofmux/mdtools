@@ -267,8 +267,10 @@ def _strip_reasoning(raw: str) -> str:
 
 def _parse_string_list(raw: str, k: int) -> List[str]:
     raw = _strip_reasoning(raw)
-    # strip ```json fences if the model misbehaves
-    raw = re.sub(r"^```(?:json)?\s*", "", raw)
+    # Strip ```json fences if the model misbehaves. Case-insensitive: a ```JSON
+    # fence otherwise left the bare word behind, and the line fallback then fed
+    # the literal string "JSON" into the pipeline as a paraphrase candidate.
+    raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
     raw = re.sub(r"\s*```$", "", raw)
     try:
         data = json.loads(raw)
@@ -308,6 +310,36 @@ def _verdict_from_mapping(data: dict) -> Optional[JudgeResult]:
     )
 
 
+def _json_objects(raw: str) -> List[dict]:
+    """
+    Every JSON object embedded in raw, outermost-first, in source order.
+
+    A regex cannot do this. `\\{[^{}]*\\}` fails on an object containing a
+    nested object or a brace inside a string, so a judge answering
+    `Final: {"accept": true, "meta": {"n": 1}}` was read as unparseable and
+    rejected. raw_decode parses from each '{' and reports where the value
+    ended, which handles nesting and quoted braces for free.
+    """
+    decoder = json.JSONDecoder()
+    found: List[dict] = []
+    idx = 0
+    while True:
+        start = raw.find("{", idx)
+        if start < 0:
+            return found
+        try:
+            obj, end = decoder.raw_decode(raw, start)
+        except ValueError:
+            # Not the start of a valid value — step past it and keep looking.
+            idx = start + 1
+            continue
+        if isinstance(obj, dict):
+            found.append(obj)
+            idx = end  # skip its interior; we want outermost objects
+        else:
+            idx = start + 1
+
+
 def _parse_judge(raw: str) -> JudgeResult:
     """
     Parse a judge reply. Accept only a JSON object whose accept field is the
@@ -344,14 +376,7 @@ def _parse_judge(raw: str) -> JudgeResult:
     # Not top-level JSON. A reasoning model often wraps the object in prose;
     # take the last {...} that carries an accept field, under the same type
     # rules. Ambiguous prose without a typed object always rejects.
-    objs = re.findall(r"\{[^{}]*\}", raw, re.DOTALL)
-    for blob in reversed(objs):
-        try:
-            candidate = json.loads(blob)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(candidate, dict):
-            continue
+    for candidate in reversed(_json_objects(raw)):
         verdict = _verdict_from_mapping(candidate)
         if verdict is not None:
             return verdict
