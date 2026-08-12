@@ -189,6 +189,7 @@ static int  opt_pandoc_safe_links = 0;
 static int  opt_scrivener_repair = 0;
 static int  opt_spaced_emdash = 0;
 static int  opt_required   = 1;       /* L2: on unless --no-required */
+static int  opt_editorial  = 0;       /* L3 editorial bundle; --editorial */
 static int  opt_wrap_width = 0;       /* 0 = disabled */
 static int  opt_emit_ir   = 0;        /* structural IR to stdout; never writes */
 
@@ -227,6 +228,9 @@ static int total_issues(void)
 
 static void enable_canonical_profile(void)
 {
+    /* The editorial passes were always-on before I3.3; --canonical and
+     * --technical keep them so downstream output is unchanged. */
+    opt_editorial = 1;
     opt_trail_ws = 1;
     opt_chicago_punct = 1;
     opt_chicago_punct2 = 1;
@@ -1737,6 +1741,8 @@ static void emit_ir(FILE *out, const char *source)
 /* Fix 1: Normalize bullet markers to - */
 static int fix_bullet(char *line, int linenum)
 {
+    if (!opt_editorial)
+        return 0;
     /* Spaced "* * *" is a thematic break, not a list item. */
     if (is_thematic_break(line))
         return 0;
@@ -1758,6 +1764,8 @@ static int fix_bullet(char *line, int linenum)
  */
 static int fix_heading_fmt(char *line, int linenum)
 {
+    if (!opt_editorial)
+        return 0;
     if (!is_heading(line))
         return 0;
 
@@ -1812,6 +1820,8 @@ static int fix_heading_fmt(char *line, int linenum)
  */
 static int fix_blockquote_space(char *line, int linenum)
 {
+    if (!opt_editorial)
+        return 0;
     int i = 0;
     while (line[i] == ' ' || line[i] == '\t')
         i++;
@@ -2954,6 +2964,7 @@ struct scan_ctx {
 
     /* Flag copies — set once per line before scanning */
     int    no_arrow_aside;
+    int    editorial;      /* L3 editorial passes: arrow aside, bold colon */
     int    do_chicago_punct;
     int    do_chicago_punct2;
     int    do_chicago_abbrev;
@@ -3000,7 +3011,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 3004 "mdfix.c"
+#line 3015 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -3008,20 +3019,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 3012 "mdfix.c"
+#line 3023 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 3381 "mdfix.rl"
+#line 3410 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 3132 "mdfix.rl"
+#line 3161 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -3061,11 +3072,13 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 3024 "mdfix.rl"
+#line 3035 "mdfix.rl"
 	{te = p+1;{
-                if (ctx->no_arrow_aside) {
+                if (!ctx->editorial || ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
-                     * lowering-fn mappings), not prose asides. Pass through. */
+                     * lowering-fn mappings), not prose asides. Pass through.
+                     * Also the default: rewriting prose is an editorial
+                     * choice, so it waits for --editorial (I3.3). */
                     EMIT_DATA(ts, te);
                 } else if (ctx->do_chicago_punct) {
                     int prev = ctx->oi - 1;
@@ -3098,19 +3111,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 3017 "mdfix.rl"
+#line 3028 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 3017 "mdfix.rl"
+#line 3028 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 3316 "mdfix.rl"
+#line 3345 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -3134,7 +3147,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 3361 "mdfix.rl"
+#line 3390 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -3155,7 +3168,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 3339 "mdfix.rl"
+#line 3368 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -3178,13 +3191,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 3381 "mdfix.rl"
+#line 3410 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 3261 "mdfix.rl"
+#line 3290 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -3207,7 +3220,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 3174 "mdfix.rl"
+#line 3203 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_CHAR('.');
@@ -3258,13 +3271,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 3381 "mdfix.rl"
+#line 3410 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 3224 "mdfix.rl"
+#line 3253 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -3302,7 +3315,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 3283 "mdfix.rl"
+#line 3312 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -3336,45 +3349,61 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 3078 "mdfix.rl"
+#line 3099 "mdfix.rl"
 	{te = p;p--;{
-                EMIT_CHAR(':');
-                EMIT_CHAR('*');
-                EMIT_CHAR('*');
-                BUMP(FIX_BOLD_COLON);
+                if (!ctx->editorial) {
+                    EMIT_DATA(ts, te);
+                } else {
+                    EMIT_CHAR(':');
+                    EMIT_CHAR('*');
+                    EMIT_CHAR('*');
+                    BUMP(FIX_BOLD_COLON);
+                }
             }}
 	goto st14;
 tr36:
-#line 3060 "mdfix.rl"
+#line 3073 "mdfix.rl"
 	{te = p+1;{
-                EMIT_CHAR(':');
-                EMIT_CHAR('*');
-                EMIT_CHAR('*');
-                EMIT_CHAR(' ');
-                BUMP(FIX_BOLD_COLON);
+                if (!ctx->editorial) {
+                    EMIT_DATA(ts, te);
+                } else {
+                    EMIT_CHAR(':');
+                    EMIT_CHAR('*');
+                    EMIT_CHAR('*');
+                    EMIT_CHAR(' ');
+                    BUMP(FIX_BOLD_COLON);
+                }
             }}
 	goto st14;
 tr37:
-#line 3086 "mdfix.rl"
+#line 3111 "mdfix.rl"
 	{te = p;p--;{
-                EMIT_CHAR(':');
-                EMIT_CHAR('*');
-                EMIT_CHAR('*');
-                BUMP(FIX_BOLD_COLON);
+                if (!ctx->editorial) {
+                    EMIT_DATA(ts, te);
+                } else {
+                    EMIT_CHAR(':');
+                    EMIT_CHAR('*');
+                    EMIT_CHAR('*');
+                    BUMP(FIX_BOLD_COLON);
+                }
             }}
 	goto st14;
 tr38:
-#line 3069 "mdfix.rl"
+#line 3086 "mdfix.rl"
 	{te = p+1;{
-                EMIT_CHAR(':');
-                EMIT_CHAR('*');
-                EMIT_CHAR('*');
-                EMIT_CHAR(' ');
-                BUMP(FIX_BOLD_COLON);
+                if (!ctx->editorial) {
+                    EMIT_DATA(ts, te);
+                } else {
+                    EMIT_CHAR(':');
+                    EMIT_CHAR('*');
+                    EMIT_CHAR('*');
+                    EMIT_CHAR(' ');
+                    BUMP(FIX_BOLD_COLON);
+                }
             }}
 	goto st14;
 tr39:
-#line 3094 "mdfix.rl"
+#line 3123 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -3413,7 +3442,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 3017 "mdfix.rl"
+#line 3028 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -3426,7 +3455,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 3430 "mdfix.c"
+#line 3459 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -3452,7 +3481,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 3456 "mdfix.c"
+#line 3485 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -3496,7 +3525,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 3500 "mdfix.c"
+#line 3529 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -3545,7 +3574,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 3549 "mdfix.c"
+#line 3578 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -3564,7 +3593,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 3568 "mdfix.c"
+#line 3597 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -3590,7 +3619,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 3594 "mdfix.c"
+#line 3623 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -3639,7 +3668,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 3643 "mdfix.c"
+#line 3672 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -3719,7 +3748,7 @@ case 13:
 
 	}
 
-#line 3388 "mdfix.rl"
+#line 3417 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';
@@ -3732,6 +3761,7 @@ static int apply_scanner(char *line, int linenum)
     memset(&ctx, 0, sizeof(ctx));
 
     ctx.no_arrow_aside    = opt_no_arrow_aside;
+    ctx.editorial         = opt_editorial;
     ctx.do_chicago_punct  = opt_chicago_punct;
     ctx.do_chicago_punct2 = opt_chicago_punct2;
     ctx.do_chicago_abbrev = opt_chicago_abbrev;
@@ -4253,6 +4283,10 @@ static void usage(const char *prog)
         "        Enable full canonical Markdown profile (safe passes)\n"
         "  --canonical-lint\n"
         "        Canonical gate mode: fail if file is not canonical\n"
+        "  --editorial\n"
+        "        Editorial passes: bullet style, emphasis in headings,\n"
+        "        bold colons, arrow asides, blockquote spacing.\n"
+        "        Implied by --canonical and --technical\n"
         "  --no-required\n"
         "        Disable the required (L2) repairs. Output is then not\n"
         "        guaranteed Pandoc-readable; for inspection, not for writing\n"
@@ -4287,7 +4321,7 @@ static void usage(const char *prog)
         "  R3. Space after the ATX marker     (#Title is a paragraph,\n"
         "                                      not a heading)\n"
         "\n"
-        "Fixes (always on; editorial, see issue #60):\n"
+        "Fixes (opt-in with --editorial):\n"
         "  1. Bullet markers normalized to -  (linter: list_bullet_style)\n"
         "  2. Bold/italic stripped from heads  (linter: header_formatting)\n"
         "  3. Bold colons moved inside tags   (**Term**: → **Term:**)\n"
@@ -4342,7 +4376,7 @@ static void usage(const char *prog)
         "     Skips headings, lists, tables, code blocks, blockquotes\n"
         "\n"
         "Profile:\n"
-        "  --canonical enables: -w, --chicago-punct, --chicago-punct-2,\n"
+        "  --canonical enables: --editorial, -w, --chicago-punct, --chicago-punct-2,\n"
         "  --chicago-abbrev, --footnote-canonical,\n"
         "  --heading-canonical, --fence-canonical\n"
         "  --technical enables: --canonical, --spaced-emdash, --wrap=78\n"
@@ -4833,6 +4867,11 @@ int main(int argc, char *argv[])
         }
         if (strcmp(argv[argi], "--canonical-lint") == 0) {
             opt_canonical_lint = 1;
+            argi++;
+            continue;
+        }
+        if (strcmp(argv[argi], "--editorial") == 0) {
+            opt_editorial = 1;
             argi++;
             continue;
         }

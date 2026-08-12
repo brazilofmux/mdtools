@@ -37,7 +37,9 @@ def _require_fresh_binary() -> None:
 
 def _run(args: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [str(MDFIX), *args],
+        # --editorial: the bullet rewrite is this suite's "content changed"
+        # signal, and it became opt-in in #60.
+        [str(MDFIX), "--editorial", *args],
         capture_output=True,
         text=True,
         **kwargs,

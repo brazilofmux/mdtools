@@ -91,8 +91,7 @@ Each has an identifier so issues and tests can cite it.
   opt-in. *(Issue #55: the required set is classified in
   [transforms.md](transforms.md) and runs by default — three repairs, each one
   a construct Pandoc otherwise misreads. `--no-required` disables them for
-  inspection. The converse, I3.3, is not yet true: five editorial transforms
-  are still always-on, tracked in #60.)*
+  inspection.)*
 
 ### L3 — Optional transforms
 
@@ -106,7 +105,10 @@ Each has an identifier so issues and tests can cite it.
   `--wrap` non-ASCII width — is a wrap-quality bug outside this matrix’s
   I2.1/I2.2 oracle.)*
 - **I3.2 Idempotence.** Applying a transform twice equals applying it once.
-- **I3.3 Opt-in.** No optional transform runs unless requested.
+- **I3.3 Opt-in.** No optional transform runs unless requested. *(Issue #60:
+  the five editorial passes that predated the classification — bullet style,
+  emphasis in headings, bold colons, arrow asides, block quote spacing — now
+  need `--editorial`, which `--canonical` and `--technical` imply.)*
 
 ### L4 — External IR interface
 
