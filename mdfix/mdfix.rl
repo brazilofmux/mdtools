@@ -62,6 +62,7 @@
 #include <string.h>
 #include <strings.h>   /* strncasecmp */
 #include <ctype.h>
+#include "vendor/utf_width.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -3201,32 +3202,80 @@ static int fix_trailing_ws(char *line, int linenum)
 static const char *para_lines_buf[MAX_LINES];
 static int npara = 0;
 
+/*
+ * Wrap to display columns — issue #49.
+ *
+ * This measured bytes, so Greek and Cyrillic prose wrapped at about 35
+ * columns instead of 78 (two bytes per letter) and unspaced CJK could not
+ * break at all. A column is what a reader sees, and for East Asian wide
+ * characters that is two of them.
+ *
+ * Width comes from the vendored libutf table (vendor/utf_width.c), which is
+ * Unicode 16.0 East Asian Width plus combining-mark detection. A combining
+ * mark costs zero, so a decomposed accent no longer eats a column.
+ */
+static int utf8_char_len(unsigned char c)
+{
+    if (c < 0x80) return 1;
+    if (c < 0xE0) return 2;
+    if (c < 0xF0) return 3;
+    return 4;
+}
+
+/* Display columns spanned by [from, to). */
+static int display_columns(const char *text, int from, int to)
+{
+    int cols = 0;
+    for (int i = from; i < to; ) {
+        int n = utf8_char_len((unsigned char)text[i]);
+        if (i + n > to)
+            break;
+        cols += mdfix_display_width((const unsigned char *)text + i);
+        i += n;
+    }
+    return cols;
+}
+
 static void emit_wrapped(FILE *out, const char *text, int width)
 {
     int len = (int)strlen(text);
     int pos = 0;
 
     while (pos < len) {
-        if (len - pos <= width) {
+        if (display_columns(text, pos, len) <= width) {
             fprintf(out, "%s\n", text + pos);
             return;
         }
 
-        /* Find last space at or before pos + width */
+        /*
+         * Last space that still leaves the line within `width` columns.
+         * Advancing by code point rather than by byte is the fix: the old
+         * loop counted `i - pos` bytes against a column budget.
+         */
         int break_at = -1;
-        for (int i = pos; i <= pos + width && i < len; i++) {
-            if (text[i] == ' ')
+        int cols = 0;
+        for (int i = pos; i < len; ) {
+            if (text[i] == ' ' && cols <= width)
                 break_at = i;
+            cols += mdfix_display_width((const unsigned char *)text + i);
+            if (cols > width)
+                break;
+            i += utf8_char_len((unsigned char)text[i]);
         }
 
         if (break_at <= pos) {
-            /* No space within width — find next space (long word) */
-            break_at = pos + width;
+            /* No space within the budget — run on to the next one rather
+             * than splitting a word, which is what this always did. */
+            break_at = pos;
             while (break_at < len && text[break_at] != ' ')
-                break_at++;
+                break_at += utf8_char_len((unsigned char)text[break_at]);
+            if (break_at >= len) {
+                fprintf(out, "%s\n", text + pos);
+                return;
+            }
         }
 
-        fwrite(text + pos, 1, break_at - pos, out);
+        fwrite(text + pos, 1, (size_t)(break_at - pos), out);
         fputc('\n', out);
         pos = break_at;
         while (pos < len && text[pos] == ' ')

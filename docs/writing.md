@@ -243,9 +243,12 @@ and `--technical` all collapse them, turning the hard break into a soft one
 (dialect-policy §7 gap 5). Until hard-break preservation is fixed, use an
 explicit `<br>` if the break matters.
 
-**`--wrap` measures bytes, not display columns.** Greek and Cyrillic prose
-wraps at about 35 columns instead of 78, and unspaced CJK cannot break at all.
-Avoid `--wrap` on non-Latin manuscripts for now (#49).
+**Unspaced CJK will not wrap.** `--wrap` measures display columns, so Greek,
+Cyrillic and mixed scripts fill the line properly and a wide character counts
+as two. But a run of CJK with no spaces offers nowhere to break: Pandoc's
+`east_asian_line_breaks` is off in the pinned profile, so mdtools does not
+invent a break opportunity it would not recognize. Such a paragraph is left on
+one long line.
 
 **A pipe anywhere in a line following a table makes it a table row.** A pipe
 table runs to the first line with *no* pipe, which is what Pandoc does — so

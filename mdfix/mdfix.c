@@ -64,6 +64,7 @@
 #include <string.h>
 #include <strings.h>   /* strncasecmp */
 #include <ctype.h>
+#include "vendor/utf_width.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -71,14 +72,14 @@
 #include <unistd.h>
 
 
-#line 75 "mdfix.c"
+#line 76 "mdfix.c"
 static const int mdfix_scanner_start = 14;
 static const int mdfix_scanner_error = -1;
 
 static const int mdfix_scanner_en_main = 14;
 
 
-#line 74 "mdfix.rl"
+#line 75 "mdfix.rl"
 
 
 #define MAX_LINE  8192
@@ -3209,32 +3210,80 @@ static int fix_trailing_ws(char *line, int linenum)
 static const char *para_lines_buf[MAX_LINES];
 static int npara = 0;
 
+/*
+ * Wrap to display columns — issue #49.
+ *
+ * This measured bytes, so Greek and Cyrillic prose wrapped at about 35
+ * columns instead of 78 (two bytes per letter) and unspaced CJK could not
+ * break at all. A column is what a reader sees, and for East Asian wide
+ * characters that is two of them.
+ *
+ * Width comes from the vendored libutf table (vendor/utf_width.c), which is
+ * Unicode 16.0 East Asian Width plus combining-mark detection. A combining
+ * mark costs zero, so a decomposed accent no longer eats a column.
+ */
+static int utf8_char_len(unsigned char c)
+{
+    if (c < 0x80) return 1;
+    if (c < 0xE0) return 2;
+    if (c < 0xF0) return 3;
+    return 4;
+}
+
+/* Display columns spanned by [from, to). */
+static int display_columns(const char *text, int from, int to)
+{
+    int cols = 0;
+    for (int i = from; i < to; ) {
+        int n = utf8_char_len((unsigned char)text[i]);
+        if (i + n > to)
+            break;
+        cols += mdfix_display_width((const unsigned char *)text + i);
+        i += n;
+    }
+    return cols;
+}
+
 static void emit_wrapped(FILE *out, const char *text, int width)
 {
     int len = (int)strlen(text);
     int pos = 0;
 
     while (pos < len) {
-        if (len - pos <= width) {
+        if (display_columns(text, pos, len) <= width) {
             fprintf(out, "%s\n", text + pos);
             return;
         }
 
-        /* Find last space at or before pos + width */
+        /*
+         * Last space that still leaves the line within `width` columns.
+         * Advancing by code point rather than by byte is the fix: the old
+         * loop counted `i - pos` bytes against a column budget.
+         */
         int break_at = -1;
-        for (int i = pos; i <= pos + width && i < len; i++) {
-            if (text[i] == ' ')
+        int cols = 0;
+        for (int i = pos; i < len; ) {
+            if (text[i] == ' ' && cols <= width)
                 break_at = i;
+            cols += mdfix_display_width((const unsigned char *)text + i);
+            if (cols > width)
+                break;
+            i += utf8_char_len((unsigned char)text[i]);
         }
 
         if (break_at <= pos) {
-            /* No space within width — find next space (long word) */
-            break_at = pos + width;
+            /* No space within the budget — run on to the next one rather
+             * than splitting a word, which is what this always did. */
+            break_at = pos;
             while (break_at < len && text[break_at] != ' ')
-                break_at++;
+                break_at += utf8_char_len((unsigned char)text[break_at]);
+            if (break_at >= len) {
+                fprintf(out, "%s\n", text + pos);
+                return;
+            }
         }
 
-        fwrite(text + pos, 1, break_at - pos, out);
+        fwrite(text + pos, 1, (size_t)(break_at - pos), out);
         fputc('\n', out);
         pos = break_at;
         while (pos < len && text[pos] == ' ')
@@ -3592,7 +3641,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 3596 "mdfix.c"
+#line 3645 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -3600,20 +3649,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 3604 "mdfix.c"
+#line 3653 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 3989 "mdfix.rl"
+#line 4038 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 3740 "mdfix.rl"
+#line 3789 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -3653,7 +3702,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 3616 "mdfix.rl"
+#line 3665 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial || ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -3690,19 +3739,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 3609 "mdfix.rl"
+#line 3658 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 3609 "mdfix.rl"
+#line 3658 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 3924 "mdfix.rl"
+#line 3973 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -3726,7 +3775,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 3969 "mdfix.rl"
+#line 4018 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -3747,7 +3796,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 3947 "mdfix.rl"
+#line 3996 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -3770,13 +3819,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 3989 "mdfix.rl"
+#line 4038 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 3869 "mdfix.rl"
+#line 3918 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -3799,7 +3848,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 3782 "mdfix.rl"
+#line 3831 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_CHAR('.');
@@ -3850,13 +3899,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 3989 "mdfix.rl"
+#line 4038 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 3832 "mdfix.rl"
+#line 3881 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -3894,7 +3943,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 3891 "mdfix.rl"
+#line 3940 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -3928,7 +3977,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 3678 "mdfix.rl"
+#line 3727 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -3941,7 +3990,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 3652 "mdfix.rl"
+#line 3701 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -3955,7 +4004,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 3690 "mdfix.rl"
+#line 3739 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -3968,7 +4017,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 3665 "mdfix.rl"
+#line 3714 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -3982,7 +4031,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 3702 "mdfix.rl"
+#line 3751 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -4021,7 +4070,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 3609 "mdfix.rl"
+#line 3658 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -4034,7 +4083,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 4038 "mdfix.c"
+#line 4087 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -4060,7 +4109,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 4064 "mdfix.c"
+#line 4113 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -4104,7 +4153,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 4108 "mdfix.c"
+#line 4157 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -4153,7 +4202,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 4157 "mdfix.c"
+#line 4206 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -4172,7 +4221,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 4176 "mdfix.c"
+#line 4225 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -4198,7 +4247,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 4202 "mdfix.c"
+#line 4251 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -4247,7 +4296,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 4251 "mdfix.c"
+#line 4300 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -4327,7 +4376,7 @@ case 13:
 
 	}
 
-#line 3996 "mdfix.rl"
+#line 4045 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';

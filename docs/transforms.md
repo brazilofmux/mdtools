@@ -59,7 +59,7 @@ without the transform, so applying one is an editorial choice.
 | `--scrivener-repair` | Rejoin emphasis split across blocks | A repair, but of an authoring accident, not of a dialect misread |
 | `--spaced-emdash` | Preserve `word — word` | Typographic preference |
 | `-w` | Collapse trailing whitespace | **Breaks I2.1** — see §7 gap 5 |
-| `--wrap[=N]` | Hard-wrap paragraphs | Presentation; **breaks I2.1** via `-w`, and miscounts non-ASCII width (#49) |
+| `--wrap[=N]` | Hard-wrap paragraphs | Presentation; **breaks I2.1** via `-w` |
 | `--canonical` | Profile: the above minus wrap | Convenience bundle |
 | `--technical` | Profile: `--canonical` + spaced em-dash + wrap 78 | Convenience bundle |
 
