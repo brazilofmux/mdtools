@@ -63,7 +63,7 @@ def load(path: Path) -> List[Term]:
         if not isinstance(entry, dict):
             raise GlossaryError(f"{path}: entry {n} is not a mapping")
         name = entry.get("term")
-        if not name:
+        if name is None or str(name) == "":
             raise GlossaryError(f"{path}: entry {n} has no `term`")
         name = str(name)
         if name.lower() in seen:
@@ -71,10 +71,24 @@ def load(path: Path) -> List[Term]:
                 f"{path}: `{name}` is defined twice (also line-ish entry "
                 f"{seen[name.lower()]})")
         seen[name.lower()] = n
+        aliases: List[str] = []
+        for a in entry.get("aliases") or []:
+            s = str(a)
+            if not s:
+                raise GlossaryError(
+                    f"{path}: entry {n} has an empty alias spelling")
+            aliases.append(s)
+        forbidden: List[str] = []
+        for f in entry.get("forbidden") or []:
+            s = str(f)
+            if not s:
+                raise GlossaryError(
+                    f"{path}: entry {n} has an empty forbidden spelling")
+            forbidden.append(s)
         term = Term(
             term=name,
-            aliases=[str(a) for a in entry.get("aliases") or []],
-            forbidden=[str(f) for f in entry.get("forbidden") or []],
+            aliases=aliases,
+            forbidden=forbidden,
             case_sensitive=bool(entry.get("case_sensitive", True)),
         )
         # A spelling cannot be both tolerated and forbidden; that would make

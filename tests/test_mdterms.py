@@ -94,19 +94,22 @@ class BoundaryTests(unittest.TestCase):
     """dialect-policy §2, the same rule mdquery is held to."""
 
     FORBIDDEN = ("```", "~~~", "^#", "|---", "+---", "<!--", "$$")
-    # One documented exception: check._code_spans looks for backtick runs so
-    # a term inside inline code is reported but never auto-fixed. Scoped to
-    # that function, as in mdquery.
-    EXEMPT = {"check.py": "_code_spans"}
+    # Documented exception: inline protected-span helpers (code spans, links)
+    # so a term inside `` `SLOW32` `` or a URL is reported but never auto-fixed.
+    EXEMPT_FUNCS = ("_code_spans", "_protected_spans")
 
     def _code(self, path: Path) -> str:
         text = path.read_text(encoding="utf-8")
-        exempt = self.EXEMPT.get(path.name)
-        if exempt:
-            match = re.search(rf"\ndef {exempt}\(.*?(?=\ndef |\nclass |\Z)",
-                              text, re.S)
-            self.assertIsNotNone(match, f"{path.name}: {exempt} is gone")
-            text = text.replace(match.group(0), "\n")
+        if path.name == "check.py":
+            for name in self.EXEMPT_FUNCS:
+                match = re.search(
+                    rf"\ndef {name}\(.*?(?=\ndef |\nclass |\Z)", text, re.S)
+                self.assertIsNotNone(match, f"{path.name}: {name} is gone")
+                text = text.replace(match.group(0), "\n")
+            # Module-level inline patterns are the same safety concession.
+            text = re.sub(
+                r"^_LABEL = .*?\n_STRUCTURAL_INLINE = \(.*?\n\)\n",
+                "\n", text, count=1, flags=re.S | re.M)
         return "\n".join(
             line.split("#", 1)[0]
             for line in text.splitlines()
@@ -162,6 +165,13 @@ class GlossaryTests(TermsTestCase):
         with self.assertRaises(GlossaryError):
             load(path)
 
+    def test_empty_forbidden_spelling_is_refused(self) -> None:
+        path = self.dir / "empty.yaml"
+        path.write_text(
+            "terms:\n  - term: A\n    forbidden: ['']\n", encoding="utf-8")
+        with self.assertRaises(GlossaryError):
+            load(path)
+
 
 class ScanTests(TermsTestCase):
     def test_prose_and_headings_are_checked(self) -> None:
@@ -186,6 +196,36 @@ class ScanTests(TermsTestCase):
         inline = [f for f in findings if f.line == 15]
         self.assertEqual(len(inline), 1)
         self.assertFalse(inline[0].fixable)
+
+    def test_unclosed_ticks_do_not_hide_later_code_spans(self) -> None:
+        # An unclosed opener must not make a later closed span look fixable.
+        path = self._doc("before `` unfinished then `SLOW32` after.\n")
+        findings = scan(path, self._terms())
+        self.assertEqual(len(findings), 1)
+        self.assertFalse(findings[0].fixable)
+
+    def test_link_destination_is_not_auto_fixed(self) -> None:
+        path = self._doc("[see SLOW32](https://example.com/SLOW32)\n")
+        findings = scan(path, self._terms())
+        self.assertTrue(findings)
+        edits = edits_for(findings)
+        data = path.read_bytes()
+        for edit in edits:
+            span = data[edit["start"]:edit["end"]]
+            self.assertNotIn(b"example.com", data[max(0, edit["start"] - 20):
+                                                   edit["end"] + 20])
+            self.assertEqual(span, b"SLOW32")
+        # Destination occurrence must not appear as a fixable edit.
+        self.assertFalse(
+            any(b"https://example.com/SLOW32" in
+                data[max(0, e["start"] - 30):e["end"] + 30]
+                and e["expect"] == "SLOW32"
+                for e in edits))
+        # At least the label hit may be fixable; URL must not be.
+        url_hits = [f for f in findings
+                    if f.start >= data.index(b"https://")]
+        self.assertTrue(url_hits)
+        self.assertTrue(all(not f.fixable for f in url_hits))
 
     def test_spans_are_byte_offsets_into_the_file(self) -> None:
         path = self._doc()
@@ -213,7 +253,28 @@ class EditTests(TermsTestCase):
     def test_only_fixable_findings_become_edits(self) -> None:
         findings = scan(self._doc(), self._terms())
         edits = edits_for(findings)
-        self.assertEqual(len(edits), len([f for f in findings if f.fixable]))
+        # Overlaps are dropped as a cluster, so the count can be lower than
+        # the fixable set when two patterns claim the same span.
+        self.assertLessEqual(
+            len(edits), len([f for f in findings if f.fixable]))
+        for edit in edits:
+            self.assertTrue(any(
+                f.fixable and f.start == edit["start"] and f.end == edit["end"]
+                for f in findings))
+
+    def test_overlapping_findings_drop_the_whole_cluster(self) -> None:
+        # Two forbidden patterns covering the same bytes: keep neither.
+        path = self.dir / "ov.yaml"
+        path.write_text(
+            "terms:\n"
+            "  - term: AB\n    forbidden: [ABC]\n"
+            "  - term: BC\n    forbidden: [ABC]\n",
+            encoding="utf-8")
+        doc = self._doc("See ABC here.\n")
+        findings = scan(doc, load(path))
+        fixable = [f for f in findings if f.fixable]
+        self.assertGreaterEqual(len(fixable), 2)
+        self.assertEqual(edits_for(findings), [])
 
     def test_edits_carry_expect(self) -> None:
         # The staleness guard the applier checks.
@@ -277,6 +338,7 @@ class CliTests(TermsTestCase):
         for row in rows:
             self.assertEqual(row["kind"], "diagnostic")
             self.assertEqual(row["rule"], "terms.forbidden")
+            self.assertEqual(row["severity"], "warning")
             for field in ("path", "line", "start", "end", "severity"):
                 self.assertIn(field, row)
 
@@ -299,6 +361,20 @@ class CliTests(TermsTestCase):
 
     def test_edits_refuses_several_files(self) -> None:
         a, b = self._doc(name="a.md"), self._doc(name="b.md")
+        rc, _, err = self._run("--edits", str(a), str(b))
+        self.assertEqual(rc, 2)
+        self.assertIn("one file at a time", err)
+
+    def test_edits_refuses_multi_file_even_when_one_is_clean(self) -> None:
+        dirty = self._doc(name="dirty.md")
+        clean = self._doc("Only SLOW-32 here.\n", name="clean.md")
+        rc, _, err = self._run("--edits", str(dirty), str(clean))
+        self.assertEqual(rc, 2)
+        self.assertIn("one file at a time", err)
+
+    def test_edits_refuses_multi_file_when_both_clean(self) -> None:
+        a = self._doc("Only SLOW-32.\n", name="a.md")
+        b = self._doc("Also SLOW-32.\n", name="b.md")
         rc, _, err = self._run("--edits", str(a), str(b))
         self.assertEqual(rc, 2)
         self.assertIn("one file at a time", err)

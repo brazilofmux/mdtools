@@ -44,6 +44,7 @@ Import took (1). Downstream trees should install from here instead of vendoring.
 
 - **mdfix:** `cc`, optionally `ragel` (to regenerate `mdfix.c` from `mdfix.rl`)
 - **mdquery:** Python 3.10+ (stdlib only; needs a built `mdfix`)
+- **mdterms:** Python 3.10+, `PyYAML`; needs a built `mdfix`
 - **prosevary:** Python 3.10+, `PyYAML`; optional Ollama / sentence-transformers
 
 ### Install to `~/.local`

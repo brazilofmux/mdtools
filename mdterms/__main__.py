@@ -75,6 +75,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not args.files:
         print("mdterms: no input files", file=sys.stderr)
         return 2
+    # One file at a time for --edits: the applier reads a single document and
+    # its `bytes` header is that document's size. Refuse before scanning so
+    # clean files and unfixable-only results are not a silent multi-file path.
+    if args.edits and len(args.files) != 1:
+        print("mdterms: --edits takes one file at a time, because "
+              "`mdfix --apply-edits` applies to one document",
+              file=sys.stderr)
+        return 2
     missing = [p for p in args.files if not p.is_file()]
     for path in missing:
         print(f"mdterms: {path}: not a file", file=sys.stderr)
@@ -92,14 +100,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.edits:
         edits = edits_for(findings)
         if edits:
-            # One file at a time: the applier reads a single document, and its
-            # `bytes` header is that document's size.
-            if len({f.path for f in findings}) > 1:
-                print("mdterms: --edits takes one file at a time, because "
-                      "`mdfix --apply-edits` applies to one document",
-                      file=sys.stderr)
-                return 2
-            path = Path(findings[0].path)
+            path = Path(args.files[0])
             print(json.dumps({"kind": "edits", "schema": "mdtools-edits-1",
                               "source": str(path),
                               "bytes": path.stat().st_size}))
@@ -113,8 +114,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 1 if findings else 0
 
     for finding in findings:
-        marker = "" if finding.fixable else "  [not auto-fixable]"
-        print(f"{finding.path}:{finding.line}: {finding.message}{marker}")
+        print(f"{finding.path}:{finding.line}: {finding.message}")
     if findings:
         fixable = sum(1 for f in findings if f.fixable)
         print(f"\n{len(findings)} finding(s), {fixable} fixable. "

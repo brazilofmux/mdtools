@@ -33,6 +33,10 @@ changes its anchor, so links to it need updating.
 Prose nested in a list item is checked too, which needed schema 3 — before
 nested records, a term inside a bullet was unreachable.
 
+**Block quotes are not checked.** Schema 3 does not emit nested quote prose,
+so the whole quote is one opaque IR span. That is deliberate until quote
+nesting lands; quoted manuscript text with product names is left alone.
+
 ## The glossary
 
 Extends the schema prosevary already reads, so one file serves both:
@@ -70,15 +74,16 @@ document and its `bytes` header is that document's size.
 
 ## What is not fixed automatically
 
-**Matches inside inline code.** A term inside `` `SLOW32` `` is a literal, and
-rewriting it would change what the code says. These are reported with
-`[not auto-fixable]` and never appear in an edit list. This is the one place
-mdterms looks at inline syntax, scoped to a single function and asserted by
+**Matches inside protected inlines.** A term inside `` `SLOW32` ``, a link or
+image destination, an autolink, or a raw HTML tag is reported and never
+auto-fixed — rewriting those would change a literal or a URL. The message
+says `(inside a protected span; not fixed automatically)`. This is the one
+place mdterms looks at inline syntax, scoped to `check.py` and asserted by
 the boundary test; proper handling needs inline records in the IR.
 
-**Overlapping findings.** Dropped rather than resolved — the applier refuses
-an overlapping list, and silently picking a winner would make the result
-depend on glossary order.
+**Overlapping findings.** The whole overlapping cluster is dropped — not
+“keep the first.” Silently picking a winner would make the result depend on
+glossary order, and the applier refuses overlapping edits anyway.
 
 ## Not yet
 

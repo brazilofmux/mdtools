@@ -8,6 +8,11 @@ Find terminology violations in prose, and turn them into edits.
 Only prose is searched. A forbidden spelling inside a code block, a table
 cell, a link definition or front matter is left alone, because the IR says
 those are not paragraphs — which is the whole reason the boundary exists.
+
+Within a prose span, matches inside inline code, links, images, autolinks
+and raw HTML tags are reported but never auto-fixed: rewriting those would
+change literals or destinations. That is the one inline concession, scoped
+here until the IR carries inline records.
 """
 
 from __future__ import annotations
@@ -28,7 +33,23 @@ from .glossary import Term
 # leaving it out would pass a document titled with the forbidden spelling.
 # Note that fixing one changes its anchor, so links to it must be updated —
 # mdterms reports the finding either way and only rewrites on --edits.
+#
+# Block quotes are not searched: schema 3 does not emit nested quote prose,
+# and the whole quote is one opaque IR span.
 PROSE_KINDS = frozenset({"paragraph", "heading"})
+
+# Structural inlines whose interiors must not be auto-fixed (destinations,
+# markup). Same shapes prosevary freezes; listed here so mdterms does not
+# depend on that package for a write path.
+_LABEL = r"\[(?:[^\[\]]|\[[^\[\]]*\])*\]"
+_DEST = r"\((?:[^()\s]|\([^()]*\))*(?:\s+(?:\"[^\"]*\"|'[^']*'))?\)"
+_STRUCTURAL_INLINE = (
+    re.compile(r"!" + _LABEL + _DEST),
+    re.compile(r"(?<!!)" + _LABEL + _DEST),
+    re.compile(r"(?<!!)" + _LABEL + r"\[[^\]]*\]"),
+    re.compile(r"<https?://[^>\s]+>|<mailto:[^>\s]+>", re.IGNORECASE),
+    re.compile(r"</?[a-zA-Z][\w-]*(?:\s[^<>]*)?/?>"),
+)
 
 
 @dataclass
@@ -74,6 +95,8 @@ def _word_pattern(spelling: str, case_sensitive: bool) -> re.Pattern:
     begins with punctuation — so the boundary is asserted only on the sides
     where the spelling itself is word-ish.
     """
+    if not spelling:
+        raise ValueError("empty spelling")
     left = r"(?<![\w-])" if re.match(r"[\w]", spelling[0]) else ""
     right = r"(?![\w-])" if re.search(r"[\w]$", spelling) else ""
     flags = 0 if case_sensitive else re.IGNORECASE
@@ -82,24 +105,54 @@ def _word_pattern(spelling: str, case_sensitive: bool) -> re.Pattern:
 
 def _code_spans(text: str) -> List[tuple]:
     """
-    Backtick-delimited runs within a prose span.
+    Backtick-delimited runs with matching opener/closer lengths (CommonMark).
 
-    The one inline concession in this package, and it is a safety measure
-    rather than a feature: a term inside `` `SLOW32` `` is a code span, and
-    rewriting it would change a literal. Matches inside one are reported and
-    never auto-fixed. Proper handling needs inline records in the IR; until
-    then this errs toward leaving text alone.
+    An unclosed opener is skipped so later well-formed spans are still found.
+    Matches inside these runs are reported and never auto-fixed.
     """
-    spans = []
-    for match in re.finditer(r"`+", text):
-        run = match.group(0)
-        closer = text.find(run, match.end())
-        if closer < 0:
-            break
-        spans.append((match.start(), closer + len(run)))
+    spans: List[tuple] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] != "`":
+            i += 1
+            continue
+        j = i
+        while j < n and text[j] == "`":
+            j += 1
+        open_len = j - i
+        k = j
+        found = False
+        while k < n:
+            if text[k] != "`":
+                k += 1
+                continue
+            end = k
+            while end < n and text[end] == "`":
+                end += 1
+            if end - k == open_len:
+                spans.append((i, end))
+                i = end
+                found = True
+                break
+            k = end
+        if not found:
+            i = j
+    return spans
+
+
+def _protected_spans(text: str) -> List[tuple]:
+    """Code spans plus link/image/autolink/HTML — report-only interiors."""
+    spans = list(_code_spans(text))
+    for pat in _STRUCTURAL_INLINE:
+        for match in pat.finditer(text):
+            spans.append((match.start(), match.end()))
+    spans.sort()
     merged: List[tuple] = []
     for start, end in spans:
         if merged and start < merged[-1][1]:
+            if end > merged[-1][1]:
+                merged[-1] = (merged[-1][0], end)
             continue
         merged.append((start, end))
     return merged
@@ -119,7 +172,7 @@ def scan(path: Path, terms: Sequence[Term],
         if record.get("kind") not in PROSE_KINDS:
             continue
         chunk = data[record["start"]:record["end"]].decode("utf-8", "replace")
-        code = _code_spans(chunk)
+        protected = _protected_spans(chunk)
 
         for term in terms:
             for bad in term.forbidden:
@@ -129,11 +182,11 @@ def scan(path: Path, terms: Sequence[Term],
                     prefix = chunk[:match.start()].encode("utf-8")
                     found = match.group(0)
                     start = record["start"] + len(prefix)
-                    fixable = not _in_span(match.start(), code)
+                    fixable = not _in_span(match.start(), protected)
                     findings.append(Finding(
                         path=str(path),
                         rule="terms.forbidden",
-                        severity="error",
+                        severity="warning",
                         line=record["line"] + chunk[:match.start()].count("\n"),
                         start=start,
                         end=start + len(found.encode("utf-8")),
@@ -141,26 +194,33 @@ def scan(path: Path, terms: Sequence[Term],
                         expected=term.term,
                         fixable=fixable,
                         message=(f"{found!r} should be {term.term!r}"
-                                 + ("" if fixable else " (inside a code span; "
+                                 + ("" if fixable else
+                                    " (inside a protected span; "
                                     "not fixed automatically)")),
                     ))
-    findings.sort(key=lambda f: f.start)
+    findings.sort(key=lambda f: (f.start, f.end))
     return findings
 
 
 def edits_for(findings: Iterable[Finding]) -> List[dict]:
     """
-    Edits for the findings that can be applied unambiguously.
+    Edits for findings that can be applied unambiguously.
 
-    Overlaps are dropped rather than resolved: the applier refuses an
-    overlapping list, and silently picking a winner would make the result
-    depend on glossary order.
+    Any fixable finding that overlaps another fixable finding is dropped with
+    its whole cluster — not resolved by keeping the first. Order-dependent
+    winners would make the result depend on the glossary, not the document.
     """
-    out: List[dict] = []
-    last_end = -1
-    for finding in findings:
-        if not finding.fixable or finding.start < last_end:
-            continue
-        out.append(finding.to_edit())
-        last_end = finding.end
-    return out
+    fixable = sorted(
+        (f for f in findings if f.fixable),
+        key=lambda f: (f.start, f.end),
+    )
+    drop: set[int] = set()
+    for i, a in enumerate(fixable):
+        for j in range(i + 1, len(fixable)):
+            b = fixable[j]
+            if b.start >= a.end:
+                break
+            if b.start < a.end:
+                drop.add(i)
+                drop.add(j)
+    return [f.to_edit() for i, f in enumerate(fixable) if i not in drop]
