@@ -27,7 +27,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from mdquery import __main__ as cli
-from mdquery.ir import IRError, load
+from mdquery.ir import SCHEMA, IRError, load
 from mdquery.query import annotate, filter_blocks, outline, section_span
 from mdquery.slug import assign_slugs, slugify
 
@@ -520,6 +520,16 @@ class NestedContainerWarningTests(MdqueryTestCase):
 
 
 class IRPlumbingTests(MdqueryTestCase):
+    def test_gaps_are_dropped_on_load(self) -> None:
+        # Schema 2 is total; mdquery still answers "what content is here"
+        # and leaves totality to mdfix's tests.
+        path = self.dir / "g.md"
+        path.write_text("# A\n\npara\n", encoding="utf-8")
+        document = load([path])[0]
+        self.assertFalse(any(b.kind == "gap" for b in document.blocks))
+        self.assertEqual([b.kind for b in document.blocks],
+                         ["heading", "paragraph"])
+
     def test_schema_mismatch_is_refused(self) -> None:
         # Guessing at an unknown schema is how a consumer reports wrong spans
         # silently, so the header record exists to make it refusable.
@@ -536,7 +546,6 @@ class IRPlumbingTests(MdqueryTestCase):
         with self.assertRaises(IRError) as caught:
             load([path], mdfix=str(fake))
         self.assertIn("mdtools-ir-99", str(caught.exception))
-
     def test_mdfix_failure_is_reported_not_swallowed(self) -> None:
         fake = self.dir / "failing-mdfix"
         fake.write_text('#!/bin/sh\necho "boom" >&2\nexit 3\n', encoding="utf-8")
@@ -561,7 +570,7 @@ class IRPlumbingTests(MdqueryTestCase):
         path.write_text("# A\n", encoding="utf-8")
         with unittest_env(MDFIX=str(MDFIX)):
             document = load([path])[0]
-        self.assertEqual(document.schema, "mdtools-ir-1")
+        self.assertEqual(document.schema, SCHEMA)
 
     def test_bad_mdfix_override_is_rejected(self) -> None:
         with unittest_env(MDFIX=str(self.dir / "nothing")):

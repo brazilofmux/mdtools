@@ -153,9 +153,9 @@ class BomTests(EncodingTestCase):
         path = self._write(self.BOM + b"# Title\n\nBody.\n")
         records = [json.loads(line) for line
                    in self._run("--emit-ir", str(path)).stdout.splitlines()]
-        self.assertEqual([r["kind"] for r in records[1:]],
-                         ["heading", "paragraph"])
-        self.assertEqual(records[1]["text"], "Title")
+        content = [r for r in records[1:] if r["kind"] != "gap"]
+        self.assertEqual([r["kind"] for r in content], ["heading", "paragraph"])
+        self.assertEqual(content[0]["text"], "Title")
 
     def test_spans_still_address_the_file_on_disk(self) -> None:
         # I1.3: skipping the BOM must not shift offsets off the real bytes.
@@ -163,6 +163,8 @@ class BomTests(EncodingTestCase):
         path = self._write(data)
         for record in [json.loads(line) for line in
                        self._run("--emit-ir", str(path)).stdout.splitlines()][1:]:
+            if record["kind"] == "gap":
+                continue
             segment = data[record["start"]:record["end"]]
             self.assertFalse(segment.startswith(self.BOM))
         self.assertEqual(data[3:10], b"# Title")

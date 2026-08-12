@@ -61,7 +61,7 @@ mdfix owns the grammar in both directions:
 
 - **Reader** — `mdfix --emit-ir` parses Markdown and emits the IR as JSONL on
   stdout. A pure function of the input bytes, testable against Pandoc.
-  **Shipped**, schema `mdtools-ir-1`; see [ir-schema.md](ir-schema.md).
+  **Shipped**, schema `mdtools-ir-2`; see [ir-schema.md](ir-schema.md).
 - **Applier** — `mdfix --apply-edits` reads a list of byte-span replacements
   and splices them into the original bytes. **Not shipped** — issue #12.
 

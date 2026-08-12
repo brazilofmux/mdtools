@@ -17,11 +17,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, List, Optional
 
-SCHEMA = "mdtools-ir-1"
+SCHEMA = "mdtools-ir-2"
 
-# Flat parents that can hide nested blocks (schema 1 has no nesting). Used by
+# Flat parents that can hide nested blocks (no nesting yet). Used by
 # under-report warnings; an unknown kind is still opaque-but-located.
 CONTAINER_KINDS = frozenset({"list", "block_quote"})
+
+# Schema 2 attributes every byte, so the runs between blocks arrive as `gap`
+# records. They are structure, not content: a query for "the blocks in this
+# file" means the content ones, so they are dropped on load and the totality
+# guarantee is exercised by mdfix's own tests rather than carried into every
+# consumer.
+STRUCTURAL_KINDS = frozenset({"gap"})
 
 
 class IRError(RuntimeError):
@@ -169,6 +176,8 @@ def load(paths: Iterable[Path], mdfix: Optional[str] = None) -> List[Document]:
             continue
         if current is None:
             raise IRError("IR began with a block record, before any document")
+        if kind in STRUCTURAL_KINDS:
+            continue
         current.blocks.append(Block(
             kind=kind or "unknown",
             start=record["start"],

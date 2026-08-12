@@ -1,5 +1,5 @@
 """
-The structural IR emitted by `mdfix --emit-ir` (issue #15, schema mdtools-ir-1).
+The structural IR emitted by `mdfix --emit-ir` (issue #15, schema mdtools-ir-2).
 
 This is the reader half of the boundary in docs/dialect-policy.md §2: consumers
 locate and edit Markdown through these spans instead of re-deriving the
@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MDFIX = ROOT / "mdfix" / "mdfix"
 SCHEMA_DOC = ROOT / "docs" / "ir-schema.md"
 PANDOC = shutil.which("pandoc")
-SCHEMA = "mdtools-ir-1"
+SCHEMA = "mdtools-ir-2"
 
 SAMPLE = """\
 ---
@@ -90,7 +90,8 @@ class IRTestCase(unittest.TestCase):
         path.write_bytes(data.encode("utf-8") if isinstance(data, str) else data)
         return path
 
-    def _ir(self, data: bytes | str, name: str = "t.md") -> list[dict]:
+    def _ir_raw(self, data: bytes | str, name: str = "t.md") -> list[dict]:
+        """Every record, gaps included. Totality tests need these."""
         path = self._write(data, name)
         result = subprocess.run(
             [str(MDFIX), "--emit-ir", str(path)],
@@ -98,6 +99,11 @@ class IRTestCase(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         return [json.loads(line) for line in result.stdout.splitlines()]
+
+    def _ir(self, data: bytes | str, name: str = "t.md") -> list[dict]:
+        """Header plus content records. `gap` records carry the runs between
+        blocks (schema 2) and are structure rather than content."""
+        return [r for r in self._ir_raw(data, name) if r["kind"] != "gap"]
 
     def _kinds(self, data: bytes | str) -> list[str]:
         return [r["kind"] for r in self._ir(data)[1:]]
@@ -198,6 +204,91 @@ class SpanGuaranteeTests(IRTestCase):
         self.assertTrue(result.stdout.endswith("\n"))
         for line in result.stdout.splitlines():
             self.assertIsInstance(json.loads(line), dict)
+
+
+class TotalityTests(IRTestCase):
+    """
+    I5.3 groundwork (issue #56): every byte belongs to exactly one record.
+
+    Schema 1 covered the blocks and nothing else — terminators, blank runs, a
+    leading BOM and trailing bytes belonged to no record. A serializer built on
+    that would silently normalize all of them: one blank line where the author
+    left three, a lost hard break, a rewritten line ending.
+    """
+
+    CASES = {
+        "lf": b"# A\n\npara\n",
+        "crlf": b"# A\r\n\r\npara\r\n",
+        "cr-only": b"# A\r\rpara\r",
+        "no final newline": b"# A\n\npara",
+        "bom": b"\xef\xbb\xbf# A\n\npara\n",
+        "many blanks": b"\n\n\n# A\n\n\n\npara\n\n\n",
+        "only blanks": b"\n\n\n",
+        "empty": b"",
+        "hard break": b"line one  \nline two\n",
+        "trailing spaces": b"# A   \n\npara \n",
+        "tabs": b"# A\n\n\tcode\n",
+    }
+
+    def test_records_reproduce_the_file(self) -> None:
+        for name, data in self.CASES.items():
+            with self.subTest(case=name):
+                records = self._ir_raw(data)[1:]
+                joined = b"".join(data[r["start"]:r["end"]] for r in records)
+                self.assertEqual(joined, data)
+
+    def test_records_are_contiguous(self) -> None:
+        # Stronger than non-overlapping: no byte is skipped either.
+        for name, data in self.CASES.items():
+            with self.subTest(case=name):
+                cursor = 0
+                for record in self._ir_raw(data)[1:]:
+                    self.assertEqual(record["start"], cursor, record)
+                    cursor = record["end"]
+                self.assertEqual(cursor, len(data))
+
+    def test_hard_breaks_are_inside_a_record(self) -> None:
+        # dialect-policy §7 gap 5: two trailing spaces are a hard break, and
+        # a serializer must be able to see them to preserve them.
+        data = b"line one  \nline two\n"
+        records = self._ir_raw(data)[1:]
+        joined = b"".join(data[r["start"]:r["end"]] for r in records)
+        self.assertIn(b"  \n", joined)
+
+    def test_blank_run_length_is_preserved(self) -> None:
+        # One blank line versus three is a real difference; both must survive.
+        for blanks in (1, 2, 5):
+            with self.subTest(blanks=blanks):
+                data = b"# A\n" + b"\n" * blanks + b"para\n"
+                records = self._ir_raw(data)[1:]
+                joined = b"".join(data[r["start"]:r["end"]] for r in records)
+                self.assertEqual(joined, data)
+
+    def test_gaps_are_not_protected(self) -> None:
+        # mdfix's list-spacing fixes insert and remove blank lines, so a gap
+        # is not reproduced byte for byte and must not claim to be.
+        gaps = [r for r in self._ir_raw(b"# A\n\npara\n") if r["kind"] == "gap"]
+        self.assertTrue(gaps)
+        self.assertFalse(any(g["protected"] for g in gaps))
+
+    def test_gap_line_numbers_stay_in_document_range(self) -> None:
+        # Terminator-only gaps used to report line nlines+1.
+        for data in (b"# A\npara\n", b"# A\n\npara\n", b"# A\n", b"\xef\xbb\xbf# A\n"):
+            with self.subTest(data=data):
+                records = self._ir_raw(data)
+                nlines = records[0]["lines"]
+                for r in records[1:]:
+                    self.assertGreaterEqual(r["line"], 1)
+                    self.assertLessEqual(r["endLine"], max(nlines, 1))
+                    self.assertLessEqual(r["line"], r["endLine"])
+
+    def test_a_leading_bom_is_its_own_gap(self) -> None:
+        records = self._ir_raw(b"\xef\xbb\xbf# A\n")[1:]
+        self.assertEqual(records[0]["kind"], "gap")
+        self.assertEqual((records[0]["start"], records[0]["end"]), (0, 3))
+
+    def test_schema_is_declared(self) -> None:
+        self.assertEqual(self._ir_raw(b"# A\n")[0]["schema"], SCHEMA)
 
 
 class ReadOnlyTests(IRTestCase):
