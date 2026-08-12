@@ -127,5 +127,9 @@ name, which the header record makes detectable.
   exists to prevent — so this is the next thing to add, not a permanent shape.
 - **Nesting.** Records are a flat sequence. A list is one record, not a tree of
   items, and blocks nested inside list items or block quotes are not emitted
-  separately. Tight versus loose lists are not represented.
+  separately. Tight versus loose lists are not represented. **`protected` on a
+  flat parent is therefore not a byte-level freeze map for nested verbatim
+  constructs** (fenced code, raw HTML, grid tables inside a list item still
+  freeze in `process()` but are invisible as separate IR records). Do not
+  treat `list.protected == false` as “everything under this span is rewritable.”
 - **The applier half.** `--apply-edits` and the edit schema are issue #12.

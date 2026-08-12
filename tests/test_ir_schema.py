@@ -343,9 +343,21 @@ class ProtectedFlagTests(IRTestCase):
             ("grid", "+---+\n| a |\n+---+\n"),
             ("raw html", "<!-- c -->\n"),
             ("frontmatter", "---\na: 1\n---\n"),
+            # Mid-document so "---" is not YAML front matter.
+            ("hr dashes", "Para.\n\n---\n\nAfter.\n"),
+            ("hr stars tight", "Para.\n\n***\n\nAfter.\n"),
+            ("hr stars spaced", "Para.\n\n* * *\n\nAfter.\n"),
+            ("hr underscores", "Para.\n\n_ _ _\n\nAfter.\n"),
+            ("hr dashes spaced", "Para.\n\n- - -\n\nAfter.\n"),
         ):
             with self.subTest(case=name):
-                self.assertTrue(all(r["protected"] for r in self._ir(source)[1:]))
+                records = self._ir(source)[1:]
+                if name.startswith("hr "):
+                    hrs = [r for r in records if r["kind"] == "thematic_break"]
+                    self.assertEqual(len(hrs), 1, msg=records)
+                    self.assertTrue(hrs[0]["protected"])
+                else:
+                    self.assertTrue(all(r["protected"] for r in records))
 
     def test_prose_constructs_are_not_protected(self) -> None:
         for name, source in (
@@ -353,6 +365,8 @@ class ProtectedFlagTests(IRTestCase):
             ("heading", "# text\n"),
             ("list", "- text\n"),
             ("block quote", "> text\n"),
+            # Plus is not a thematic-break marker; this is a list.
+            ("plus list", "+ + +\n"),
         ):
             with self.subTest(case=name):
                 self.assertFalse(any(r["protected"] for r in self._ir(source)[1:]))
@@ -363,6 +377,14 @@ class ProtectedFlagTests(IRTestCase):
         table = self._ir("| a | b |\n|---|---|\n| 1 | 2 |\n")[1]
         self.assertEqual(table["form"], "pipe")
         self.assertFalse(table["protected"])
+
+    def test_spaced_star_hr_is_not_a_list(self) -> None:
+        # The honesty bug: "* * *" matched find_bullet and process rewrote
+        # the first marker while the IR claimed a protected thematic_break.
+        records = self._ir("* * *\n\nPara.\n")[1:]
+        self.assertEqual(records[0]["kind"], "thematic_break")
+        self.assertTrue(records[0]["protected"])
+        self.assertNotEqual(records[0]["kind"], "list")
 
     def test_protected_flag_matches_what_mdfix_does(self) -> None:
         # The flag is a claim about behavior, so check it against behavior:
@@ -377,7 +399,11 @@ class ProtectedFlagTests(IRTestCase):
             # inside a span the IR promised was untouched.
             f"| a | b |\n|---|---|\n| {arrow} | 2 |\n\n"
             f"<!-- {arrow} comment -->\n\n"
-            f"    indented {arrow} code\n"
+            f"    indented {arrow} code\n\n"
+            f"* * *\n\n"
+            f"***\n\n"
+            f"- - -\n\n"
+            f"_ _ _\n"
         )
         src = self._write(source, "in.md")
         out = self.dir / "out.md"
@@ -390,8 +416,11 @@ class ProtectedFlagTests(IRTestCase):
         for record in self._ir(source, "in.md")[1:]:
             if not record["protected"]:
                 continue
-            with self.subTest(kind=record["kind"]):
+            with self.subTest(kind=record["kind"], start=record["start"]):
                 self.assertIn(raw[record["start"]:record["end"]], fixed)
+        # Explicit pin: spaced star HR must not become "- * *".
+        self.assertIn(b"* * *", fixed)
+        self.assertNotIn(b"- * *", fixed)
 
 
 @unittest.skipUnless(PANDOC, "pandoc not installed")

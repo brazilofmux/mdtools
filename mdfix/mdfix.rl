@@ -1209,6 +1209,9 @@ static void emit_ir(FILE *out, const char *source)
 /* Fix 1: Normalize bullet markers to - */
 static int fix_bullet(char *line, int linenum)
 {
+    /* Spaced "* * *" is a thematic break, not a list item. */
+    if (is_thematic_break(line))
+        return 0;
     int pos = find_bullet(line);
     if (pos < 0 || line[pos] == '-')
         return 0;
@@ -2918,6 +2921,23 @@ static void process(FILE *out)
                 had_blank = 0;
                 continue;
             }
+        }
+
+        /*
+         * ── Thematic break ──
+         * Must beat list handling: "* * *" is both is_thematic_break and
+         * find_bullet. Without this, fix_bullet rewrote the first marker to
+         * "-" while --emit-ir reported a protected thematic_break — the IR
+         * claimed a protection process() did not provide.
+         */
+        if (is_thematic_break(line)) {
+            flush_paragraph(out);
+            fprintf(out, "%s\n", line);
+            prev_was_list_ctx = 0;
+            list_content_col = 0;
+            prev_content_type = LT_TEXT;
+            had_blank = 0;
+            continue;
         }
 
         /* ── Blank line ── */
