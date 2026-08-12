@@ -27,6 +27,35 @@ _SHA = re.compile(r"\b[0-9a-f]{7,40}\b")
 _SHOUT = re.compile(r"\b[A-Z][A-Z0-9][A-Z0-9+^_-]*\b")
 # SLOW-32 and similar product names
 _PRODUCT = re.compile(r"\bSLOW-?\d+\b", re.IGNORECASE)
+# Structural Markdown/Pandoc inline forms: freeze the whole match so a rewrite
+# cannot drop a destination, image target, citation, attribute, or footnote ref.
+# Destination-aware patterns keep the full construct, not just the label text.
+# Label may nest one level of brackets so an image inside a link
+# (`[![alt](img)](url)`) is captured whole rather than as a broken fragment.
+_LABEL = r"\[(?:[^\[\]]|\[[^\[\]]*\])*\]"
+# Destination may contain one level of balanced parens, as Wikipedia URLs do
+# (`.../Foo_(bar)`); `[^)]+` stopped at the inner paren and left the trailing
+# `)` outside the frozen span, where a rewrite could drop it.
+_DEST = r"\((?:[^()\s]|\([^()]*\))*(?:\s+(?:\"[^\"]*\"|'[^']*'))?\)"
+_INLINE_IMAGE = re.compile(r"!" + _LABEL + _DEST)
+_INLINE_LINK = re.compile(r"(?<!!)" + _LABEL + _DEST)
+_INLINE_REF_LINK = re.compile(r"(?<!!)" + _LABEL + r"\[[^\]]*\]")
+# Shortcut reference link `[foo]` — no destination, no second bracket pair.
+# Its definition is frozen as a block, so leaving the label rewritable would
+# break the link and orphan a definition promised to stay byte-identical.
+_SHORTCUT_REF = re.compile(r"(?<!!)\[[^\]\n]+\](?![\(\[:])")
+_AUTOLINK = re.compile(r"<https?://[^>\s]+>|<mailto:[^>\s]+>", re.IGNORECASE)
+# Raw inline HTML tags: <b>, </b>, <img src=…>, <br/>. Only the tag is frozen,
+# never the text it wraps, so prose inside <b>…</b> can still vary while the
+# markup around it cannot be dropped or reworded.
+#
+# The tag name must be followed by whitespace, "/" or ">", which keeps this
+# from also matching an autolink like <https://x> (":" follows the name there)
+# and from firing on comparisons such as "a < b".
+_INLINE_HTML_TAG = re.compile(r"</?[a-zA-Z][\w-]*(?:\s[^<>]*)?/?>")
+_FOOTNOTE_REF = re.compile(r"\[\^[^\]]+\]")
+_CITATION = re.compile(r"(?<![A-Za-z0-9])@[\w:-]+")
+_PANDOC_ATTR = re.compile(r"\{[#.][^}]*\}")
 
 
 @dataclass
@@ -75,6 +104,22 @@ def sentence_freeze(text: str, glossary: Iterable[str]) -> FreezeSet:
     fs = FreezeSet()
     for m in _INLINE_CODE.finditer(text):
         fs.spans.append(m.group(0))
+    # Structural inlines before looser token patterns so destinations stay whole.
+    for pat in (
+        _INLINE_IMAGE,
+        _INLINE_LINK,
+        _INLINE_REF_LINK,
+        _AUTOLINK,
+        _INLINE_HTML_TAG,
+        _FOOTNOTE_REF,
+        _PANDOC_ATTR,
+        _CITATION,
+        # Last: only labels no earlier pattern already claimed as a full
+        # link, image, ref-link, or footnote reference.
+        _SHORTCUT_REF,
+    ):
+        for m in pat.finditer(text):
+            fs.spans.append(m.group(0))
     for m in _PATHISH.finditer(text):
         fs.spans.append(m.group(0))
     for m in _SHA.finditer(text):
