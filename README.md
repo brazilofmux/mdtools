@@ -13,6 +13,9 @@ This repo is the source of truth.
 Read [docs/dialect-policy.md](docs/dialect-policy.md) before adding a pass or a
 tool. It fixes the input dialects, the single canonical output profile, and the
 rule that Markdown grammar lives in exactly one implementation.
+[docs/ir-schema.md](docs/ir-schema.md) is the interface that rule implies:
+`mdfix --emit-ir` reports block structure with byte spans, so a consumer never
+has to re-derive the grammar.
 
 ## Canonical history (mdfix)
 

@@ -55,21 +55,23 @@ because neither implementation can be trusted to agree with the other, and on
 its first run it caught only two of the three divergences it was written to
 find.
 
-### Target mechanism (not yet implemented)
+### Target mechanism (reader shipped, applier not)
 
-mdfix will own the grammar in both directions:
+mdfix owns the grammar in both directions:
 
-- **Reader** — `mdfix --emit-ir` parses Markdown and emits the IR as JSON on
+- **Reader** — `mdfix --emit-ir` parses Markdown and emits the IR as JSONL on
   stdout. A pure function of the input bytes, testable against Pandoc.
+  **Shipped**, schema `mdtools-ir-1`; see [ir-schema.md](ir-schema.md).
 - **Applier** — `mdfix --apply-edits` reads a list of byte-span replacements
-  and splices them into the original bytes.
+  and splices them into the original bytes. **Not shipped** — issue #12.
 
-Those flags are **not shipped yet**. Until they are, prosevary still carries
-its own block classifier and `tests/test_tool_parity.py` is the dual-grammar
-safety net. The rest of this section is the adopted design, not a description
-of today's CLI.
+Until the applier lands and consumers migrate, prosevary still carries its own
+block classifier and `tests/test_tool_parity.py` is the dual-grammar safety
+net. The IR under-reports structure in a handful of places (setext headings,
+definition lists, math, raw LaTeX), all recorded in ir-schema.md and pinned by
+tests; those are fixed in `mdfix.rl`, never in a consumer.
 
-Consumers will speak to mdfix over a **wire format, not an ABI**. That
+Consumers speak to mdfix over a **wire format, not an ABI**. That
 distinction is the whole point: a JSON protocol over a subprocess needs no
 compiler in the install path, adds no refcounting to a codebase that has
 already produced one heap overflow, is inspectable by hand, is versionable,
@@ -354,10 +356,16 @@ The document is the source of truth for that test, deliberately. Pinning the
 set in Python instead would let the two drift, which is the failure a policy
 document exists to prevent.
 
+- `tests/test_ir_schema.py` — the reader half of §2: spans slice the source
+  exactly across LF/CRLF/no-final-newline, the block taxonomy, and a Pandoc
+  oracle over the repository's own documentation. The `paragraph`-shaped
+  divergences are pinned so closing one is deliberate.
+
 Still needed:
 
-- Implement §2: `--emit-ir` / `--apply-edits`, the JSON wire schema, and
-  byte offsets on every IR node.
+- The applier half of §2: `--apply-edits` and the edit schema (#12). The
+  reader half shipped as `mdfix --emit-ir`; see
+  [ir-schema.md](ir-schema.md).
 - Round-trip identity for the span applier: an empty edit list must produce
   byte-identical output; then retire dual grammar and `test_tool_parity.py`.
 - Coverage for the §7 gaps, each with the Pandoc AST (or rendered output)

@@ -186,6 +186,7 @@ static int  opt_pandoc_safe_links = 0;
 static int  opt_scrivener_repair = 0;
 static int  opt_spaced_emdash = 0;
 static int  opt_wrap_width = 0;       /* 0 = disabled */
+static int  opt_emit_ir   = 0;        /* structural IR to stdout; never writes */
 
 static int  serial_comma_warnings = 0;
 static int  number_style_warnings = 0;
@@ -193,6 +194,23 @@ static int  unterminated_fence_warnings = 0;
 
 static char *lines[MAX_LINES];
 static int   nlines = 0;
+
+/*
+ * Where each line came from in the *original* file.
+ *
+ * read_all strips line terminators and normalizes CRLF, so lines[] alone
+ * cannot locate anything: a CRLF file and its LF twin produce identical
+ * lines[] and different byte offsets, and a missing final newline is
+ * invisible. The structural IR promises spans that slice the source exactly,
+ * which is the one guarantee that lets a consumer edit without re-parsing —
+ * so the offsets are captured at read time, before any of that is lost.
+ *
+ * line_off is the offset of the line's first byte; line_bytes is its length
+ * with the terminator excluded, so [off, off + bytes) is the line's text.
+ */
+static long long line_off[MAX_LINES];
+static int       line_bytes[MAX_LINES];
+static long long src_bytes = 0;   /* total size of the input, terminators included */
 
 static int total_issues(void)
 {
@@ -799,6 +817,397 @@ static int is_wrappable(const char *line, enum linetype type)
     if (is_thematic_break(line))
         return 0;
     return 1;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Structural IR — see docs/ir-schema.md
+ *
+ * `--emit-ir` writes one JSON object per line (JSONL): a header record, then
+ * one record per block, in source order. Every record carries byte offsets
+ * that slice the original file exactly, so a consumer can locate and edit a
+ * region without re-deriving the grammar. That is the whole point of the
+ * boundary in docs/dialect-policy.md §2.
+ *
+ * This walk deliberately mirrors the branch order in process(). The IR
+ * describes what mdfix *actually does*, not an idealized parse: each record
+ * carries "protected", which is true when mdfix reproduces the block byte for
+ * byte and false when prose passes may rewrite inside it. A consumer that
+ * needs to know whether a fixer will touch a region can read it off the IR
+ * rather than rediscover §7's compatibility table by experiment.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+#define IR_SCHEMA "mdtools-ir-1"
+
+/*
+ * A pipe-table delimiter row: `|---|---|`, `--|--`, `|:--|--:|`.
+ *
+ * This is the whole difference between a table and a line block, both of
+ * which begin with '|'. Verified with `pandoc -t json`:
+ *
+ *     | a | b | / |---|---| / | 1 | 2 |   -> Table
+ *     | a | b | / | 1 | 2 |               -> LineBlock
+ *
+ * Requires a '|' as well as a '-', so a thematic break or a multiline-table
+ * dash run is never mistaken for one.
+ */
+static int is_pipe_delim_row(const char *line)
+{
+    int i = 0;
+    while (i < 3 && line[i] == ' ')
+        i++;
+    int dash = 0, bar = 0;
+    for (; line[i]; i++) {
+        switch (line[i]) {
+        case '-': dash = 1; break;
+        case '|': bar = 1;  break;
+        case ':': case ' ': case '\t': break;
+        default: return 0;
+        }
+    }
+    return dash && bar;
+}
+
+static void ir_json_string(FILE *out, const char *s)
+{
+    fputc('"', out);
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        switch (*p) {
+        case '"':  fputs("\\\"", out); break;
+        case '\\': fputs("\\\\", out); break;
+        case '\b': fputs("\\b", out);  break;
+        case '\f': fputs("\\f", out);  break;
+        case '\n': fputs("\\n", out);  break;
+        case '\r': fputs("\\r", out);  break;
+        case '\t': fputs("\\t", out);  break;
+        default:
+            /* UTF-8 passes through as raw bytes, which is valid JSON. Only
+             * C0 controls need escaping, and they cannot appear mid-sequence. */
+            if (*p < 0x20)
+                fprintf(out, "\\u%04x", *p);
+            else
+                fputc(*p, out);
+        }
+    }
+    fputc('"', out);
+}
+
+/*
+ * Common fields. `end` excludes the line terminator, so source[start:end] is
+ * the block's text and nothing else — a consumer splicing a replacement never
+ * has to guess whether it owns the newline.
+ */
+static void ir_open(FILE *out, const char *kind, int i0, int i1, int protectd)
+{
+    fprintf(out,
+        "{\"kind\":\"%s\",\"start\":%lld,\"end\":%lld,"
+        "\"line\":%d,\"endLine\":%d,\"protected\":%s",
+        kind,
+        line_off[i0],
+        line_off[i1] + line_bytes[i1],
+        i0 + 1, i1 + 1,
+        protectd ? "true" : "false");
+}
+
+static void ir_block(FILE *out, const char *kind, int i0, int i1, int protectd)
+{
+    ir_open(out, kind, i0, i1, protectd);
+    fputs("}\n", out);
+}
+
+/* Heading level and the text after the marker, trailing '#' run removed. */
+static void ir_emit_heading(FILE *out, int i)
+{
+    const char *line = lines[i];
+    int p = 0;
+    while (p < 3 && line[p] == ' ')
+        p++;
+    int level = 0;
+    while (line[p] == '#') {
+        level++;
+        p++;
+    }
+    while (line[p] == ' ' || line[p] == '\t')
+        p++;
+
+    int end = (int)strlen(line);
+    while (end > p && (line[end - 1] == ' ' || line[end - 1] == '\t'))
+        end--;
+    int hashes = end;
+    while (hashes > p && line[hashes - 1] == '#')
+        hashes--;
+    /* A closing run only counts when whitespace separates it from the text,
+     * so `# C#` keeps its '#' while `# Title ###` does not. */
+    if (hashes < end
+        && (hashes == p || line[hashes - 1] == ' ' || line[hashes - 1] == '\t')) {
+        end = hashes;
+        while (end > p && (line[end - 1] == ' ' || line[end - 1] == '\t'))
+            end--;
+    }
+
+    char text[MAX_LINE];
+    int n = end - p;
+    if (n < 0)
+        n = 0;
+    memcpy(text, line + p, (size_t)n);
+    text[n] = '\0';
+
+    ir_open(out, "heading", i, i, 0);
+    fprintf(out, ",\"level\":%d,\"text\":", level);
+    ir_json_string(out, text);
+    fputs("}\n", out);
+}
+
+static const char *ir_raw_html_name(enum raw_html_kind kind)
+{
+    switch (kind) {
+    case RAW_HTML_COMMENT: return "comment";
+    case RAW_HTML_CDATA:   return "cdata";
+    case RAW_HTML_PI:      return "processing-instruction";
+    case RAW_HTML_DECL:    return "declaration";
+    case RAW_HTML_TYPE1:   return "element";
+    default:               return "unknown";
+    }
+}
+
+static void emit_ir(FILE *out, const char *source)
+{
+    /* The source path is part of the header so several files can share one
+     * JSONL stream and stay tellable apart. */
+    fputs("{\"kind\":\"document\",\"schema\":\"" IR_SCHEMA "\",\"source\":", out);
+    ir_json_string(out, source ? source : "");
+    fprintf(out, ",\"bytes\":%lld,\"lines\":%d}\n", src_bytes, nlines);
+
+    struct fence_state fence = {0, 0, 0, 0, 0};
+    enum linetype prev_content_type = LT_BLANK;
+    int list_content_col = 0;
+    int had_blank = 1;
+    int i = 0;
+
+    /* Front matter: only the very first line can open it, and an unclosed
+     * block runs to EOF — both exactly as process() treats it. */
+    if (nlines > 0 && is_fmatter_delim(lines[0])) {
+        int j = 1;
+        while (j < nlines && !is_fmatter_delim(lines[j]))
+            j++;
+        int end = (j < nlines) ? j : nlines - 1;
+        ir_block(out, "frontmatter", 0, end, 1);
+        i = end + 1;
+        prev_content_type = LT_TEXT;
+        had_blank = 0;
+    }
+
+    for (; i < nlines; i++) {
+        const char *line = lines[i];
+        enum linetype type = classify(line);
+
+        /* ── Code fence ── */
+        if (parse_fence_opener(line, &fence)) {
+            if (indent_columns(line, NULL) < list_content_col) {
+                list_content_col = 0;
+            }
+            int j = i + 1;
+            while (j < nlines && !is_fence_closer(lines[j], &fence))
+                j++;
+            int end = (j < nlines) ? j : nlines - 1;
+            ir_open(out, "code_fence", i, end, 1);
+            fprintf(out, ",\"unterminated\":%s",
+                    (j < nlines) ? "false" : "true");
+            fputs("}\n", out);
+            i = end;
+            prev_content_type = LT_CODEFENCE;
+            had_blank = 0;
+            continue;
+        }
+
+        /* ── Pandoc grid / simple / multiline table ── */
+        {
+            int table_end = table_block_end(i);
+            if (table_end > i) {
+                if (indent_columns(line, NULL) < list_content_col) {
+                    list_content_col = 0;
+                }
+                const char *form = "simple";
+                if (multiline_table_end(i) > i)
+                    form = "multiline";
+                else if (is_grid_border(line))
+                    form = "grid";
+                ir_open(out, "table", i, table_end - 1, 1);
+                fprintf(out, ",\"form\":\"%s\"}\n", form);
+                i = table_end - 1;
+                prev_content_type = LT_TABLEBLOCK;
+                had_blank = 0;
+                continue;
+            }
+        }
+
+        /* ── Raw HTML block ── */
+        {
+            enum raw_html_kind kind = raw_html_open_kind(line);
+            if (kind != RAW_HTML_NONE) {
+                const char *lt = strchr(line, '<');
+                const char *after = lt ? lt + 1 : line + 1;
+                int end = i;
+                if (!raw_html_line_has_end(after, kind)) {
+                    int j = i + 1;
+                    while (j < nlines && !raw_html_line_has_end(lines[j], kind))
+                        j++;
+                    end = (j < nlines) ? j : nlines - 1;
+                }
+                ir_open(out, "raw_html", i, end, 1);
+                fprintf(out, ",\"htmlKind\":\"%s\"}\n", ir_raw_html_name(kind));
+                i = end;
+                prev_content_type = LT_RAWHTML;
+                had_blank = 0;
+                continue;
+            }
+        }
+
+        /* ── Blank ── */
+        if (type == LT_BLANK) {
+            had_blank = 1;
+            continue;
+        }
+
+        /* ── Indented code ──
+         * Same threshold and same paragraph-interruption rule as process().
+         * Interior blank lines stay inside the block (Pandoc keeps them), so
+         * the run is consumed greedily and then trimmed back. */
+        if (indent_columns(line, NULL) >= list_content_col + 4
+            && (had_blank || prev_content_type != LT_TEXT))
+        {
+            int j = i;
+            int last = i;
+            while (j < nlines
+                   && (is_blank(lines[j])
+                       || indent_columns(lines[j], NULL) >= list_content_col + 4))
+            {
+                if (!is_blank(lines[j]))
+                    last = j;
+                j++;
+            }
+            ir_block(out, "code_indented", i, last, 1);
+            i = last;
+            prev_content_type = LT_INDENTCODE;
+            had_blank = 0;
+            continue;
+        }
+
+        /* ── Pipe table, or the line block it would otherwise be mistaken for ──
+         * The delimiter row is the discriminator; see is_pipe_delim_row.
+         * Neither is byte-protected by mdfix today (dialect-policy §7 gaps
+         * 1 and 4), which is what "protected": false records. */
+        if (is_table_line(line)) {
+            int j = i;
+            while (j < nlines && is_table_line(lines[j]))
+                j++;
+            int end = j - 1;
+            if (end > i && is_pipe_delim_row(lines[i + 1])) {
+                ir_open(out, "table", i, end, 0);
+                fputs(",\"form\":\"pipe\"}\n", out);
+            } else {
+                ir_block(out, "line_block", i, end, 0);
+            }
+            i = end;
+            prev_content_type = LT_TEXT;
+            list_content_col = 0;
+            had_blank = 0;
+            continue;
+        }
+
+        /* ── Heading ── */
+        if (type == LT_HEADING) {
+            ir_emit_heading(out, i);
+            prev_content_type = type;
+            list_content_col = 0;
+            had_blank = 0;
+            continue;
+        }
+
+        /* ── Thematic break ── */
+        if (is_thematic_break(line)) {
+            ir_block(out, "thematic_break", i, i, 1);
+            prev_content_type = LT_TEXT;
+            list_content_col = 0;
+            had_blank = 0;
+            continue;
+        }
+
+        /* ── List ──
+         * One record per list, not per item: a run of markers, their
+         * continuation lines, and the blank lines between them. Tight versus
+         * loose is not represented in schema 1. */
+        if (is_list_type(type)) {
+            int j = i;
+            int last = i;
+            int col = list_content_column(lines[i]);
+            if (col >= 0)
+                list_content_col = col;
+            for (j = i + 1; j < nlines; j++) {
+                if (is_blank(lines[j]))
+                    continue;
+                enum linetype t = classify(lines[j]);
+                if (is_list_type(t)) {
+                    int c = list_content_column(lines[j]);
+                    if (c >= 0)
+                        list_content_col = c;
+                    last = j;
+                    continue;
+                }
+                if (is_list_continuation(lines[j])) {
+                    int c = indent_columns(lines[j], NULL);
+                    if (c < list_content_col)
+                        list_content_col = c;
+                    last = j;
+                    continue;
+                }
+                break;
+            }
+            ir_block(out, "list", i, last, 0);
+            i = last;
+            prev_content_type = LT_BULLET;
+            had_blank = 0;
+            continue;
+        }
+
+        /* ── Block quote ── */
+        if (is_blockquote_line(line)) {
+            int j = i;
+            while (j + 1 < nlines
+                   && !is_blank(lines[j + 1])
+                   && is_blockquote_line(lines[j + 1]))
+                j++;
+            ir_block(out, "block_quote", i, j, 0);
+            i = j;
+            prev_content_type = LT_TEXT;
+            list_content_col = 0;
+            had_blank = 0;
+            continue;
+        }
+
+        /* ── Paragraph: to the next blank or the next block opener ── */
+        {
+            int j = i;
+            while (j + 1 < nlines) {
+                const char *next = lines[j + 1];
+                if (is_blank(next) || is_blockquote_line(next)
+                    || is_table_line(next) || is_thematic_break(next)
+                    || classify(next) == LT_HEADING
+                    || is_list_type(classify(next))
+                    || raw_html_open_kind(next) != RAW_HTML_NONE
+                    || table_block_end(j + 1) > j + 1)
+                    break;
+                struct fence_state probe;
+                if (parse_fence_opener(next, &probe))
+                    break;
+                j++;
+            }
+            ir_block(out, "paragraph", i, j, 0);
+            i = j;
+            prev_content_type = LT_TEXT;
+            list_content_col = 0;
+            had_blank = 0;
+        }
+    }
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1778,8 +2187,14 @@ static int read_all(FILE *fp)
     size_t cap = 0;
     ssize_t nread;
     nlines = 0;
+    src_bytes = 0;
 
     while ((nread = getline(&buf, &cap, fp)) != -1) {
+        /* Raw width including the terminator, captured before stripping —
+         * this is what advances the offset, and it is the only place CRLF
+         * and a missing final newline are still visible. */
+        long long raw = (long long)nread;
+
         /* Strip line endings — we add our own on output (normalizes CRLF). */
         while (nread > 0 && (buf[nread - 1] == '\n' || buf[nread - 1] == '\r'))
             buf[--nread] = '\0';
@@ -1830,6 +2245,9 @@ static int read_all(FILE *fp)
             return 1;
         }
         memcpy(lines[nlines], buf, (size_t)nread + 1);
+        line_off[nlines]   = src_bytes;
+        line_bytes[nlines] = (int)nread;
+        src_bytes += raw;
         nlines++;
     }
     free(buf);
@@ -1909,7 +2327,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 1913 "mdfix.c"
+#line 2331 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -1917,20 +2335,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 1921 "mdfix.c"
+#line 2339 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 2290 "mdfix.rl"
+#line 2708 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 2041 "mdfix.rl"
+#line 2459 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -1970,7 +2388,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 1933 "mdfix.rl"
+#line 2351 "mdfix.rl"
 	{te = p+1;{
                 if (ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -2007,19 +2425,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 1926 "mdfix.rl"
+#line 2344 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 1926 "mdfix.rl"
+#line 2344 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 2225 "mdfix.rl"
+#line 2643 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -2043,7 +2461,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 2270 "mdfix.rl"
+#line 2688 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -2064,7 +2482,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 2248 "mdfix.rl"
+#line 2666 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -2087,13 +2505,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 2290 "mdfix.rl"
+#line 2708 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 2170 "mdfix.rl"
+#line 2588 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -2116,7 +2534,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 2083 "mdfix.rl"
+#line 2501 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_CHAR('.');
@@ -2167,13 +2585,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 2290 "mdfix.rl"
+#line 2708 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 2133 "mdfix.rl"
+#line 2551 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -2211,7 +2629,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 2192 "mdfix.rl"
+#line 2610 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -2245,7 +2663,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 1987 "mdfix.rl"
+#line 2405 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -2254,7 +2672,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 1969 "mdfix.rl"
+#line 2387 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -2264,7 +2682,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 1995 "mdfix.rl"
+#line 2413 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -2273,7 +2691,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 1978 "mdfix.rl"
+#line 2396 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -2283,7 +2701,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 2003 "mdfix.rl"
+#line 2421 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -2322,7 +2740,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 1926 "mdfix.rl"
+#line 2344 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -2335,7 +2753,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 2339 "mdfix.c"
+#line 2757 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -2361,7 +2779,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 2365 "mdfix.c"
+#line 2783 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -2405,7 +2823,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 2409 "mdfix.c"
+#line 2827 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -2454,7 +2872,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 2458 "mdfix.c"
+#line 2876 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -2473,7 +2891,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 2477 "mdfix.c"
+#line 2895 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -2499,7 +2917,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 2503 "mdfix.c"
+#line 2921 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -2548,7 +2966,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 2552 "mdfix.c"
+#line 2970 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -2628,7 +3046,7 @@ case 13:
 
 	}
 
-#line 2297 "mdfix.rl"
+#line 2715 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';
@@ -3075,6 +3493,9 @@ static void usage(const char *prog)
         "        Enable full canonical Markdown profile (safe passes)\n"
         "  --canonical-lint\n"
         "        Canonical gate mode: fail if file is not canonical\n"
+        "  --emit-ir\n"
+        "        Emit the structural IR as JSONL on stdout and write nothing.\n"
+        "        Byte spans slice the input exactly; see docs/ir-schema.md\n"
         "  --footnote-canonical\n"
         "        Normalize footnote refs/defs to canonical style\n"
         "  --heading-canonical\n"
@@ -3505,6 +3926,24 @@ static int process_file(const char *input_path, const char *output_path)
     if (opt_verbose)
         fprintf(stderr, "Read %d lines from %s\n", nlines, input_path);
 
+    /*
+     * ── Read-only IR ──
+     * Checked before every write path and before any fixer runs, so the
+     * emitted spans describe the file on disk rather than a partially fixed
+     * copy. No summary either: the output is a machine interface, and a
+     * "3 fixes applied" line on stdout would corrupt the JSONL stream.
+     */
+    if (opt_emit_ir) {
+        emit_ir(stdout, input_path);
+        free_lines();
+        if (fflush(stdout) != 0) {
+            fprintf(stderr, "error writing IR: ");
+            perror(NULL);
+            return 1;
+        }
+        return 0;
+    }
+
     /* ── Write / lint ── */
     int write_rc = 0;
     if (opt_canonical_lint) {
@@ -3627,6 +4066,11 @@ int main(int argc, char *argv[])
             argi++;
             continue;
         }
+        if (strcmp(argv[argi], "--emit-ir") == 0) {
+            opt_emit_ir = 1;
+            argi++;
+            continue;
+        }
         if (strcmp(argv[argi], "--footnote-canonical") == 0) {
             opt_footnote_canonical = 1;
             argi++;
@@ -3724,9 +4168,16 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    /* Multi-file mode: -i (in-place) and -n/--canonical-lint (no-write)
-     * treat every positional as an input file. */
-    if (opt_inplace || opt_dryrun) {
+    if (opt_emit_ir && (opt_inplace || opt_canonical_lint)) {
+        fprintf(stderr,
+            "--emit-ir only reads: it writes JSONL to stdout and never "
+            "touches the input. Omit -i and --canonical-lint.\n");
+        return 1;
+    }
+
+    /* Multi-file mode: -i (in-place), -n/--canonical-lint (no-write), and
+     * --emit-ir (read-only) treat every positional as an input file. */
+    if (opt_inplace || opt_dryrun || opt_emit_ir) {
         int exit_code = 0;
         for (int i = 0; i < npos; i++) {
             int rc = process_file(pos[i], NULL);
