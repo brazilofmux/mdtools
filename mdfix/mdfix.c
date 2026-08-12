@@ -96,6 +96,7 @@ enum linetype {
     LT_CODEFENCE,
     LT_INDENTCODE,  /* four-column-indented code; emitted verbatim */
     LT_RAWHTML,     /* raw HTML block; leaf — not paragraph text */
+    LT_TABLEBLOCK,  /* Pandoc grid/simple table; column-aligned, verbatim */
     LT_TEXT         /* everything else: paragraphs, blockquotes, etc. */
 };
 
@@ -576,6 +577,120 @@ static int is_table_line(const char *line)
     while (*p == ' ' || *p == '\t')
         p++;
     return *p == '|';
+}
+
+/*
+ * Pandoc grid and simple tables.
+ *
+ * mdfix only recognized a row when the first non-space character was '|', so
+ * these forms went through the prose scanner: punctuation was rewritten and
+ * --technical reflowed them. Unlike a pipe table, column *position* carries
+ * the structure here — shortening a cell by converting an arrow to an em-dash
+ * moves every column after it — so these lines are verbatim, not merely
+ * unwrappable.
+ */
+static int is_grid_border(const char *line)
+{
+    int i = 0;
+    while (i < 3 && line[i] == ' ')
+        i++;
+    if (line[i] != '+')
+        return 0;
+    int seen = 0;
+    for (i++; line[i]; i++) {
+        if (line[i] == '-' || line[i] == '=' || line[i] == '+') {
+            seen = 1;
+            continue;
+        }
+        if (line[i] == ' ' || line[i] == '\t') {
+            for (; line[i]; i++)
+                if (line[i] != ' ' && line[i] != '\t')
+                    return 0;
+            break;
+        }
+        return 0;
+    }
+    /* Must end on '+' once trailing whitespace is ignored. */
+    int last = (int)strlen(line) - 1;
+    while (last >= 0 && (line[last] == ' ' || line[last] == '\t'))
+        last--;
+    return seen && last >= 0 && line[last] == '+';
+}
+
+static int is_grid_row(const char *line)
+{
+    int i = 0;
+    while (i < 3 && line[i] == ' ')
+        i++;
+    if (line[i] != '|')
+        return 0;
+    int last = (int)strlen(line) - 1;
+    while (last >= 0 && (line[last] == ' ' || line[last] == '\t'))
+        last--;
+    return last > i && line[last] == '|';
+}
+
+/* Two or more dash runs separated by spaces. The spaces distinguish this from
+ * a setext underline or thematic break, which are one unbroken run. */
+static int is_simple_dash_row(const char *line)
+{
+    int i = 0;
+    while (i < 3 && line[i] == ' ')
+        i++;
+    int groups = 0;
+    while (line[i]) {
+        if (line[i] == '-') {
+            int run = 0;
+            while (line[i] == '-') {
+                run++;
+                i++;
+            }
+            if (run < 2)
+                return 0;
+            groups++;
+        } else if (line[i] == ' ' || line[i] == '\t') {
+            i++;
+        } else {
+            return 0;
+        }
+    }
+    return groups >= 2;
+}
+
+/*
+ * Extent of a grid or simple table starting at line i, or -1.
+ *
+ * Pandoc requires a simple table to have all three of a header line, a spaced
+ * dash row, and at least one body row — verified with `pandoc -t json`:
+ *
+ *   Right Left / --- ---- / 12 34  -> Table
+ *   Right Left / --- ----          -> Para Para        (no body row)
+ *   --- ----   / 12 34             -> HorizontalRule   (no header)
+ *
+ * Without those conditions a spaced dash run is a thematic break, and an
+ * unspaced one is a setext underline; treating either as a table would freeze
+ * ordinary prose.
+ */
+static int table_block_end(int i)
+{
+    if (is_grid_border(lines[i])) {
+        int j = i;
+        while (j < nlines && (is_grid_border(lines[j]) || is_grid_row(lines[j])))
+            j++;
+        return j;
+    }
+    if (i + 2 < nlines
+        && !is_blank(lines[i])
+        && !is_simple_dash_row(lines[i])
+        && is_simple_dash_row(lines[i + 1])
+        && !is_blank(lines[i + 2]))
+    {
+        int j = i + 2;
+        while (j < nlines && !is_blank(lines[j]))
+            j++;
+        return j;
+    }
+    return -1;
 }
 
 static int is_blockquote_line(const char *line)
@@ -1726,7 +1841,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 1730 "mdfix.c"
+#line 1845 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -1734,20 +1849,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 1738 "mdfix.c"
+#line 1853 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 2107 "mdfix.rl"
+#line 2222 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 1858 "mdfix.rl"
+#line 1973 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -1787,7 +1902,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 1750 "mdfix.rl"
+#line 1865 "mdfix.rl"
 	{te = p+1;{
                 if (ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -1824,19 +1939,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 1743 "mdfix.rl"
+#line 1858 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 1743 "mdfix.rl"
+#line 1858 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 2042 "mdfix.rl"
+#line 2157 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -1860,7 +1975,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 2087 "mdfix.rl"
+#line 2202 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -1881,7 +1996,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 2065 "mdfix.rl"
+#line 2180 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -1904,13 +2019,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 2107 "mdfix.rl"
+#line 2222 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 1987 "mdfix.rl"
+#line 2102 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -1933,7 +2048,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 1900 "mdfix.rl"
+#line 2015 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_CHAR('.');
@@ -1984,13 +2099,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 2107 "mdfix.rl"
+#line 2222 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 1950 "mdfix.rl"
+#line 2065 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -2028,7 +2143,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 2009 "mdfix.rl"
+#line 2124 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -2062,7 +2177,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 1804 "mdfix.rl"
+#line 1919 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -2071,7 +2186,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 1786 "mdfix.rl"
+#line 1901 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -2081,7 +2196,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 1812 "mdfix.rl"
+#line 1927 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -2090,7 +2205,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 1795 "mdfix.rl"
+#line 1910 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -2100,7 +2215,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 1820 "mdfix.rl"
+#line 1935 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -2139,7 +2254,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 1743 "mdfix.rl"
+#line 1858 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -2152,7 +2267,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 2156 "mdfix.c"
+#line 2271 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -2178,7 +2293,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 2182 "mdfix.c"
+#line 2297 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -2222,7 +2337,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 2226 "mdfix.c"
+#line 2341 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -2271,7 +2386,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 2275 "mdfix.c"
+#line 2390 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -2290,7 +2405,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 2294 "mdfix.c"
+#line 2409 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -2316,7 +2431,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 2320 "mdfix.c"
+#line 2435 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -2365,7 +2480,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 2369 "mdfix.c"
+#line 2484 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -2445,7 +2560,7 @@ case 13:
 
 	}
 
-#line 2114 "mdfix.rl"
+#line 2229 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';
@@ -2592,6 +2707,35 @@ static void process(FILE *out)
             prev_content_type = LT_CODEFENCE;
             had_blank = 0;
             continue;
+        }
+
+        /*
+         * ── Pandoc grid / simple table: verbatim ──
+         * Column position is the structure, so no fix may change a cell's
+         * width. Checked before the raw-HTML and blank branches so a grid
+         * border is never mistaken for anything else.
+         */
+        {
+            int table_end = table_block_end(i);
+            if (table_end > i) {
+                /*
+                 * A table strictly left of the enclosing item's content column
+                 * ends the list; one at or past that column is inside the item.
+                 * Always clearing (the previous behaviour) made a later
+                 * four-space list continuation look like margin indented code.
+                 */
+                if (indent_columns(line, NULL) < list_content_col) {
+                    prev_was_list_ctx = 0;
+                    list_content_col = 0;
+                }
+                flush_paragraph(out);
+                for (; i < table_end; i++)
+                    fprintf(out, "%s\n", lines[i]);
+                i--;  /* the loop's own i++ moves past the last table line */
+                prev_content_type = LT_TABLEBLOCK;
+                had_blank = 0;
+                continue;
+            }
         }
 
         /* ── Opening raw HTML block ── */

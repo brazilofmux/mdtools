@@ -39,6 +39,13 @@ _HEADING = re.compile(r"^#{1,6}\s")
 # see _is_fence_closer.
 _FENCE_OPEN = re.compile(r"^(?P<indent>[ \t]*)(?P<marker>`{3,}|~{3,})(?P<rest>.*)$")
 _TABLE_LEADING = re.compile(r"^\|")
+# Pandoc grid tables: `+---+---+` / `+===+===+` borders and `| … |` rows.
+_GRID_BORDER = re.compile(r"^ {0,3}\+[-=+]+\+\s*$")
+_GRID_ROW = re.compile(r"^ {0,3}\|.*\|\s*$")
+# Pandoc simple tables: two or more dash runs separated by spaces. The spaces
+# are what distinguish this from a setext underline or a thematic break, both
+# of which are a single unbroken run.
+_SIMPLE_DASH_ROW = re.compile(r"^ {0,3}-{2,}(?: +-{2,})+\s*$")
 _BLOCKQUOTE = re.compile(r"^>\s?")
 _LIST = re.compile(r"^(\s*)([-*+]|\d+\.)\s+")
 _HR = re.compile(r"^(\*\s*){3,}$|^(-\s*){3,}$|^(_\s*){3,}$")
@@ -417,6 +424,33 @@ def _is_table_separator(line: str) -> bool:
     return True
 
 
+def _is_simple_table_header(raw_lines: Sequence[str], i: int) -> bool:
+    """
+    Whether line i opens a Pandoc simple table.
+
+    Pandoc requires all three of a header line, a spaced dash row, and at
+    least one body row — verified against `pandoc -t json`:
+
+        Right  Left / ---  ---- / 12  34   -> Table
+        Right  Left / ---  ----            -> Para Para   (no body row)
+        ---    ----  / 12  34              -> HorizontalRule Para (no header)
+
+    Column positions carry the structure in this form, so every line of it is
+    verbatim: shortening a cell moves the columns.
+    """
+    n = len(raw_lines)
+    if i + 2 >= n:
+        return False
+    header = raw_lines[i].rstrip("\r\n")
+    dashes = raw_lines[i + 1].rstrip("\r\n")
+    body = raw_lines[i + 2].rstrip("\r\n")
+    if not header.strip() or _SIMPLE_DASH_ROW.match(header):
+        return False
+    if not _SIMPLE_DASH_ROW.match(dashes):
+        return False
+    return bool(body.strip())
+
+
 def _looks_like_table_row(line: str) -> bool:
     """Any non-empty line containing a pipe — only used after a separator context."""
     return bool(line.strip()) and "|" in line
@@ -581,6 +615,29 @@ def classify_lines(raw_lines: Sequence[str]) -> List[Line]:
         if _HEADING.match(stripped):
             emit(LineKind.HEADING, raw)
             i += 1
+            continue
+
+        # ── Pandoc grid table: borders and rows, ends at the last border ──
+        if _GRID_BORDER.match(stripped):
+            while i < n:
+                row_s = raw_lines[i].rstrip("\r\n")
+                if not (_GRID_BORDER.match(row_s) or _GRID_ROW.match(row_s)):
+                    break
+                emit(LineKind.TABLE, raw_lines[i])
+                i += 1
+            continue
+
+        # ── Pandoc simple table: header, spaced dash row, body, ends blank ──
+        if _is_simple_table_header(raw_lines, i):
+            emit(LineKind.TABLE, raw_lines[i])          # header
+            emit(LineKind.TABLE, raw_lines[i + 1])      # dash row
+            i += 2
+            while i < n:
+                row_s = raw_lines[i].rstrip("\r\n")
+                if not row_s.strip():
+                    break
+                emit(LineKind.TABLE, raw_lines[i])
+                i += 1
             continue
 
         # ── GFM table: header row + delimiter row, then body rows ──

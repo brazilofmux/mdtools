@@ -36,7 +36,13 @@ MDFIX = ROOT / "mdfix" / "mdfix"
 ARROW = "→"
 
 # Kinds both tools must pass through untouched.
-_VERBATIM_KINDS = {LineKind.FENCE, LineKind.INDENTED_CODE}
+#
+# TABLE is here for the Pandoc grid and simple forms, where column position
+# carries the structure — a fix that shortens a cell moves every column after
+# it. GFM pipe tables also land on LineKind.TABLE and mdfix does normalize
+# punctuation inside their cells, so those are excluded from the corpus rather
+# than from the contract.
+_VERBATIM_KINDS = {LineKind.FENCE, LineKind.INDENTED_CODE, LineKind.TABLE}
 
 CORPUS = {
     "fenced code": (
@@ -84,6 +90,14 @@ CORPUS = {
     ),
     "code immediately after a fence": (
         f"```sh\nx\n```\n    code A {ARROW} B\n\nTail A {ARROW} B.\n"
+    ),
+    "simple table": (
+        f"Prose A {ARROW} B.\n\nRight     Left\n-------   -------\n"
+        f"12        A {ARROW} B\n\nTail A {ARROW} B.\n"
+    ),
+    "grid table": (
+        f"Prose A {ARROW} B.\n\n+------+------+\n| a    | b    |\n"
+        f"+======+======+\n| A {ARROW} B | c |\n+------+------+\n\nTail A {ARROW} B.\n"
     ),
     "fence inside a list": (
         f"- item A {ARROW} B\n\n  ```sh\n  fenced A {ARROW} B\n  ```\n\n"

@@ -88,6 +88,7 @@ enum linetype {
     LT_CODEFENCE,
     LT_INDENTCODE,  /* four-column-indented code; emitted verbatim */
     LT_RAWHTML,     /* raw HTML block; leaf — not paragraph text */
+    LT_TABLEBLOCK,  /* Pandoc grid/simple table; column-aligned, verbatim */
     LT_TEXT         /* everything else: paragraphs, blockquotes, etc. */
 };
 
@@ -568,6 +569,120 @@ static int is_table_line(const char *line)
     while (*p == ' ' || *p == '\t')
         p++;
     return *p == '|';
+}
+
+/*
+ * Pandoc grid and simple tables.
+ *
+ * mdfix only recognized a row when the first non-space character was '|', so
+ * these forms went through the prose scanner: punctuation was rewritten and
+ * --technical reflowed them. Unlike a pipe table, column *position* carries
+ * the structure here — shortening a cell by converting an arrow to an em-dash
+ * moves every column after it — so these lines are verbatim, not merely
+ * unwrappable.
+ */
+static int is_grid_border(const char *line)
+{
+    int i = 0;
+    while (i < 3 && line[i] == ' ')
+        i++;
+    if (line[i] != '+')
+        return 0;
+    int seen = 0;
+    for (i++; line[i]; i++) {
+        if (line[i] == '-' || line[i] == '=' || line[i] == '+') {
+            seen = 1;
+            continue;
+        }
+        if (line[i] == ' ' || line[i] == '\t') {
+            for (; line[i]; i++)
+                if (line[i] != ' ' && line[i] != '\t')
+                    return 0;
+            break;
+        }
+        return 0;
+    }
+    /* Must end on '+' once trailing whitespace is ignored. */
+    int last = (int)strlen(line) - 1;
+    while (last >= 0 && (line[last] == ' ' || line[last] == '\t'))
+        last--;
+    return seen && last >= 0 && line[last] == '+';
+}
+
+static int is_grid_row(const char *line)
+{
+    int i = 0;
+    while (i < 3 && line[i] == ' ')
+        i++;
+    if (line[i] != '|')
+        return 0;
+    int last = (int)strlen(line) - 1;
+    while (last >= 0 && (line[last] == ' ' || line[last] == '\t'))
+        last--;
+    return last > i && line[last] == '|';
+}
+
+/* Two or more dash runs separated by spaces. The spaces distinguish this from
+ * a setext underline or thematic break, which are one unbroken run. */
+static int is_simple_dash_row(const char *line)
+{
+    int i = 0;
+    while (i < 3 && line[i] == ' ')
+        i++;
+    int groups = 0;
+    while (line[i]) {
+        if (line[i] == '-') {
+            int run = 0;
+            while (line[i] == '-') {
+                run++;
+                i++;
+            }
+            if (run < 2)
+                return 0;
+            groups++;
+        } else if (line[i] == ' ' || line[i] == '\t') {
+            i++;
+        } else {
+            return 0;
+        }
+    }
+    return groups >= 2;
+}
+
+/*
+ * Extent of a grid or simple table starting at line i, or -1.
+ *
+ * Pandoc requires a simple table to have all three of a header line, a spaced
+ * dash row, and at least one body row — verified with `pandoc -t json`:
+ *
+ *   Right Left / --- ---- / 12 34  -> Table
+ *   Right Left / --- ----          -> Para Para        (no body row)
+ *   --- ----   / 12 34             -> HorizontalRule   (no header)
+ *
+ * Without those conditions a spaced dash run is a thematic break, and an
+ * unspaced one is a setext underline; treating either as a table would freeze
+ * ordinary prose.
+ */
+static int table_block_end(int i)
+{
+    if (is_grid_border(lines[i])) {
+        int j = i;
+        while (j < nlines && (is_grid_border(lines[j]) || is_grid_row(lines[j])))
+            j++;
+        return j;
+    }
+    if (i + 2 < nlines
+        && !is_blank(lines[i])
+        && !is_simple_dash_row(lines[i])
+        && is_simple_dash_row(lines[i + 1])
+        && !is_blank(lines[i + 2]))
+    {
+        int j = i + 2;
+        while (j < nlines && !is_blank(lines[j]))
+            j++;
+        return j;
+    }
+    return -1;
 }
 
 static int is_blockquote_line(const char *line)
@@ -2257,6 +2372,35 @@ static void process(FILE *out)
             prev_content_type = LT_CODEFENCE;
             had_blank = 0;
             continue;
+        }
+
+        /*
+         * ── Pandoc grid / simple table: verbatim ──
+         * Column position is the structure, so no fix may change a cell's
+         * width. Checked before the raw-HTML and blank branches so a grid
+         * border is never mistaken for anything else.
+         */
+        {
+            int table_end = table_block_end(i);
+            if (table_end > i) {
+                /*
+                 * A table strictly left of the enclosing item's content column
+                 * ends the list; one at or past that column is inside the item.
+                 * Always clearing (the previous behaviour) made a later
+                 * four-space list continuation look like margin indented code.
+                 */
+                if (indent_columns(line, NULL) < list_content_col) {
+                    prev_was_list_ctx = 0;
+                    list_content_col = 0;
+                }
+                flush_paragraph(out);
+                for (; i < table_end; i++)
+                    fprintf(out, "%s\n", lines[i]);
+                i--;  /* the loop's own i++ moves past the last table line */
+                prev_content_type = LT_TABLEBLOCK;
+                had_blank = 0;
+                continue;
+            }
         }
 
         /* ── Opening raw HTML block ── */
