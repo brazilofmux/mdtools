@@ -247,6 +247,20 @@ class ValidationTests(ApplyTestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("not valid UTF-8", result.stderr)
 
+    def test_mid_codepoint_span_is_refused(self) -> None:
+        # € is E2 82 AC — cutting after the first byte would corrupt UTF-8.
+        data = b"# \xe2\x82\xac\n\npara\n"
+        path = self.dir / "u.md"
+        path.write_bytes(data)
+        result = subprocess.run(
+            [str(MDFIX), "-q", "--apply-edits", str(path)],
+            input=b'{"start":2,"end":3,"replacement":"x"}\n',
+            capture_output=True,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b"multi-byte", result.stderr)
+        self.assertEqual(path.read_bytes(), data)
+
 
 class ValidateDoNotRepairTests(ApplyTestCase):
     """
@@ -286,6 +300,35 @@ class ValidateDoNotRepairTests(ApplyTestCase):
         self.assertEqual(path.read_bytes(), before)
         self.assertFalse((self.dir / "a.md.bak").exists())
 
+    def test_empty_list_on_dirty_input_is_still_identity(self) -> None:
+        # I5.1 is absolute: pre-existing L2 dirt must not block an empty apply.
+        dirty = "#Title\n\nIntro:\n- one\n"
+        path = self._file(dirty)
+        result = self._apply(path, [])
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(result.stdout, dirty)
+
+    def test_no_required_does_not_disable_the_i43_gate(self) -> None:
+        path = self._file()
+        data = SAMPLE.encode("utf-8")
+        i = data.index(b"Second paragraph here.")
+        result = self._apply(path, [
+            {"start": i, "end": i + 22, "replacement": "Intro:\n- one\n- two"},
+        ], "--no-required")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("I4.3", result.stderr)
+
+    def test_same_offset_inserts_keep_input_order(self) -> None:
+        path = self._file()
+        data = SAMPLE.encode("utf-8")
+        i = data.index(b"quick")
+        result = self._apply(path, [
+            {"start": i, "end": i, "replacement": "A"},
+            {"start": i, "end": i, "replacement": "B"},
+        ])
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("ABquick", result.stdout)
+
 
 class InPlaceTests(ApplyTestCase):
     def test_in_place_preserves_mode_and_makes_a_backup(self) -> None:
@@ -307,15 +350,62 @@ class InPlaceTests(ApplyTestCase):
         self.assertTrue(backup.exists())
         self.assertEqual(backup.read_text(encoding="utf-8"), SAMPLE)
 
-    def test_output_file_form(self) -> None:
+    def test_empty_in_place_is_identity(self) -> None:
         path = self._file()
-        out = self.dir / "out.md"
         result = subprocess.run(
             [str(MDFIX), "-q", "--apply-edits", "-i", str(path)],
             input="", capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertEqual(path.read_text(encoding="utf-8"), SAMPLE)
-        self.assertFalse(out.exists())
+
+    def test_output_file_form(self) -> None:
+        path = self._file()
+        out = self.dir / "out.md"
+        data = SAMPLE.encode("utf-8")
+        i = data.index(b"quick")
+        result = subprocess.run(
+            [str(MDFIX), "-q", "--apply-edits", str(path), str(out)],
+            input=json.dumps({"start": i, "end": i + 5,
+                              "replacement": "slow"}) + "\n",
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(path.read_text(encoding="utf-8"), SAMPLE)
+        self.assertIn("slow", out.read_text(encoding="utf-8"))
+
+    def test_output_file_form_refuses_if_exists(self) -> None:
+        path = self._file()
+        out = self.dir / "out.md"
+        out.write_text("already\n", encoding="utf-8")
+        result = subprocess.run(
+            [str(MDFIX), "-q", "--apply-edits", str(path), str(out)],
+            input="", capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("already exists", result.stderr)
+        self.assertEqual(out.read_text(encoding="utf-8"), "already\n")
+
+    def test_dry_run_does_not_write(self) -> None:
+        path = self._file()
+        data = SAMPLE.encode("utf-8")
+        i = data.index(b"quick")
+        # No -q: dry-run message goes to stderr when not quiet.
+        result = subprocess.run(
+            [str(MDFIX), "-n", "-i", "--apply-edits", str(path)],
+            input=json.dumps({"start": i, "end": i + 5,
+                              "replacement": "slow"}) + "\n",
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(path.read_text(encoding="utf-8"), SAMPLE)
+        self.assertFalse((self.dir / "a.md.bak").exists())
+        self.assertIn("dry run", result.stderr)
+
+    def test_multi_file_in_place_is_refused(self) -> None:
+        a = self._file(name="a.md")
+        b = self._file(name="b.md")
+        result = subprocess.run(
+            [str(MDFIX), "-q", "--apply-edits", "-i", str(a), str(b)],
+            input="", capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("exactly one input file", result.stderr)
 
 
 class ModeConflictTests(ApplyTestCase):

@@ -4253,18 +4253,9 @@ static void print_summary(const char *path)
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- * L5 applier — architecture.md I4.2, I4.3, I5.1, I5.2
- *
- * `mdfix --apply-edits file.md` reads byte-span replacements as JSONL on
- * stdin and splices them into the original bytes. Splicing rather than
- * serializing is the whole design: untouched regions keep their exact bytes,
- * so a one-sentence change produces a one-sentence diff and an empty edit
- * list reproduces the file.
- *
- * Incoming edits are validated, never repaired (I4.3). An edit that would
- * leave the document needing a required repair is refused with a diagnostic
- * rather than silently fixed, because fixing would touch bytes the consumer
- * never edited and destroy the minimal-diff guarantee it came for.
+ * L5 applier — splice edits into original bytes (docs/edit-schema.md).
+ * Validate strictly (I4.2); refuse introduced L2 dirt (I4.3); empty list
+ * is byte-identical including CRLF (I5.1).
  * ═══════════════════════════════════════════════════════════════════ */
 
 /* Defined with the other write-path helpers, below. */
@@ -4279,6 +4270,7 @@ static int  write_inplace_buf(const char *input_path,
 struct edit {
     long long start;
     long long end;
+    int       order;         /* input order; tertiary sort key for ties */
     char     *replacement;   /* owned */
     char     *rule;          /* owned, may be NULL */
     char     *expect;        /* owned, may be NULL: original bytes as seen */
@@ -4469,14 +4461,7 @@ static char *read_stream(FILE *fp, long long *out_len)
     return buf;
 }
 
-/*
- * Load an edit list from stdin. Returns 0 on success.
- *
- * An optional header record carries the schema and the size the consumer saw.
- * Checking that size is cheap staleness detection: if the file changed since
- * `--emit-ir` ran, every span is wrong and splicing would corrupt the
- * document rather than fail.
- */
+/* Load edits from stdin. Header `bytes` is cheap staleness detection. */
 static int load_edits(const char *path, long long file_len)
 {
     long long len = 0;
@@ -4505,7 +4490,7 @@ static int load_edits(const char *path, long long file_len)
             break;
         }
 
-        struct edit e = {0, 0, NULL, NULL, NULL};
+        struct edit e = {0, 0, 0, NULL, NULL, NULL};
         char *kind = NULL, *schema = NULL;
         long long bytes = -1;
         if (!parse_edit_object(trimmed, &e, &kind, &bytes, &schema)) {
@@ -4542,6 +4527,7 @@ static int load_edits(const char *path, long long file_len)
         if (!e.replacement)
             e.replacement = strdup("");
         if (!e.replacement) { rc = 1; break; }
+        e.order = nedits;
         edits[nedits++] = e;
         line = nl ? nl + 1 : NULL;
     }
@@ -4556,7 +4542,18 @@ static int edit_cmp(const void *a, const void *b)
     if (x->start > y->start) return 1;
     if (x->end   < y->end)   return -1;
     if (x->end   > y->end)   return 1;
+    /* Stable order for same-offset inserts (qsort is not stable). */
+    if (x->order < y->order) return -1;
+    if (x->order > y->order) return 1;
     return 0;
+}
+
+/* True if offset is at a UTF-8 character boundary (or at EOF). */
+static int utf8_is_boundary(const char *s, long long off, long long len)
+{
+    if (off <= 0 || off >= len)
+        return 1;
+    return (((unsigned char)s[off]) & 0xC0) != 0x80;
 }
 
 /* I4.2: bounds, ordering, overlap, encoding, and staleness. */
@@ -4571,6 +4568,13 @@ static int validate_edits(const char *src, long long len)
             fprintf(stderr,
                 "error: edit %d spans [%lld,%lld), outside the file's %lld "
                 "bytes\n", i + 1, e->start, e->end, len);
+            return 1;
+        }
+        if (!utf8_is_boundary(src, e->start, len)
+            || !utf8_is_boundary(src, e->end, len)) {
+            fprintf(stderr,
+                "error: edit %d spans [%lld,%lld), which cuts a multi-byte "
+                "UTF-8 character\n", i + 1, e->start, e->end);
             return 1;
         }
         if (i > 0 && e->start < prev_end) {
@@ -4616,39 +4620,63 @@ static void splice_edits(FILE *out, const char *src, long long len)
 }
 
 /*
- * I4.3: validate, do not repair.
- *
- * Splicing a consumer's edit can leave the document needing a required repair
- * — a replacement that ends in a list marker with no blank line before it, say.
- * Applying the repair here would touch bytes the consumer never edited and
- * destroy the minimal-diff guarantee it came for, so the edit is refused and
- * the consumer fixes its own output.
- *
- * The check is the required set run over the result: if it would change
- * anything, the result is not L2-clean.
+ * Count how many required (L2) repairs `text` would receive. Forces L2-only
+ * flags so CLI options cannot weaken or widen the gate. Returns -1 if the
+ * check cannot run (invalid UTF-8, I/O, overlong line) — fail closed.
  */
-static int result_needs_required_repairs(const char *text, long long len)
+static int count_required_repairs(const char *text, long long len)
 {
+    if (len < 0 || len > (long long)INT_MAX)
+        return -1;
+    const char *why = NULL;
+    if (utf8_first_bad(text, (int)len, &why) >= 0)
+        return -1;
+    if (len == 0)
+        return 0;
+
     FILE *mem = fmemopen((void *)text, (size_t)len, "r");
     if (!mem)
-        return 0;               /* cannot check; do not block the write */
+        return -1;
 
+    int saved_required = opt_required;
     int saved_editorial = opt_editorial, saved_ws = opt_trail_ws;
     int saved_wrap = opt_wrap_width, saved_quiet = opt_quiet;
     int saved_verbose = opt_verbose;
+    int saved_chi = opt_chicago_punct, saved_chi2 = opt_chicago_punct2;
+    int saved_abbrev = opt_chicago_abbrev;
+    int saved_fn = opt_footnote_canonical, saved_head = opt_heading_canonical;
+    int saved_fence = opt_fence_canonical, saved_links = opt_pandoc_safe_links;
+    int saved_scriv = opt_scrivener_repair, saved_em = opt_spaced_emdash;
+    int saved_serial = opt_serial_comma_lint, saved_num = opt_chicago_number_lint;
+    int saved_no_arrow = opt_no_arrow_aside;
+
+    opt_required = 1;
     opt_editorial = 0;
     opt_trail_ws = 0;
     opt_wrap_width = 0;
+    opt_chicago_punct = 0;
+    opt_chicago_punct2 = 0;
+    opt_chicago_abbrev = 0;
+    opt_footnote_canonical = 0;
+    opt_heading_canonical = 0;
+    opt_fence_canonical = 0;
+    opt_pandoc_safe_links = 0;
+    opt_scrivener_repair = 0;
+    opt_spaced_emdash = 0;
+    opt_serial_comma_lint = 0;
+    opt_chicago_number_lint = 0;
+    opt_no_arrow_aside = 1;
     opt_quiet = 1;
     opt_verbose = 0;
     memset(fix_counts, 0, sizeof fix_counts);
 
-    int dirty = 0;
+    int dirty = -1;
     if (read_all(mem) == 0) {
         FILE *sink = fopen("/dev/null", "w");
         if (sink) {
             process(sink);
             fclose(sink);
+            dirty = 0;
             for (int i = 0; i < NUM_FIXES; i++)
                 dirty += fix_counts[i];
         }
@@ -4656,9 +4684,22 @@ static int result_needs_required_repairs(const char *text, long long len)
     }
     fclose(mem);
 
+    opt_required = saved_required;
     opt_editorial = saved_editorial;
     opt_trail_ws = saved_ws;
     opt_wrap_width = saved_wrap;
+    opt_chicago_punct = saved_chi;
+    opt_chicago_punct2 = saved_chi2;
+    opt_chicago_abbrev = saved_abbrev;
+    opt_footnote_canonical = saved_fn;
+    opt_heading_canonical = saved_head;
+    opt_fence_canonical = saved_fence;
+    opt_pandoc_safe_links = saved_links;
+    opt_scrivener_repair = saved_scriv;
+    opt_spaced_emdash = saved_em;
+    opt_serial_comma_lint = saved_serial;
+    opt_chicago_number_lint = saved_num;
+    opt_no_arrow_aside = saved_no_arrow;
     opt_quiet = saved_quiet;
     opt_verbose = saved_verbose;
     memset(fix_counts, 0, sizeof fix_counts);
@@ -4699,9 +4740,7 @@ static int apply_edits_file(const char *input_path, const char *output_path)
         return 1;
     }
 
-    /* Splice into memory so the result can be checked before anything is
-     * written. A write that has to be undone is a write that should not have
-     * happened. */
+    /* Buffer first so I4.3 can refuse before any write. */
     char *tmpbuf = NULL;
     size_t tmplen = 0;
     FILE *mem = open_memstream(&tmpbuf, &tmplen);
@@ -4714,20 +4753,40 @@ static int apply_edits_file(const char *input_path, const char *output_path)
     splice_edits(mem, src, len);
     fclose(mem);
 
-    if (result_needs_required_repairs(tmpbuf, (long long)tmplen)) {
-        fprintf(stderr,
-            "error: applying these edits would leave %s needing a required "
-            "repair, so they are refused rather than silently fixed "
-            "(architecture I4.3). Run mdfix on the result to see what.\n",
-            input_path);
-        free(tmpbuf);
-        free_edits();
-        free(src);
-        return 1;
+    /* I4.3: refuse only dirt the *edits introduced*. Empty list is I5.1 —
+     * always identity, even on an already-dirty manuscript. */
+    if (nedits > 0) {
+        int before = count_required_repairs(src, len);
+        int after = count_required_repairs(tmpbuf, (long long)tmplen);
+        if (before < 0 || after < 0) {
+            fprintf(stderr,
+                "error: cannot validate the spliced result of %s against the "
+                "required repairs (invalid UTF-8 or unreadable). Refused.\n",
+                input_path);
+            free(tmpbuf);
+            free_edits();
+            free(src);
+            return 1;
+        }
+        if (after > before) {
+            fprintf(stderr,
+                "error: applying these edits would leave %s needing a required "
+                "repair, so they are refused rather than silently fixed "
+                "(architecture I4.3). Run mdfix on the result to see what.\n",
+                input_path);
+            free(tmpbuf);
+            free_edits();
+            free(src);
+            return 1;
+        }
     }
 
     int rc = 0;
-    if (opt_inplace) {
+    if (opt_dryrun) {
+        if (!opt_quiet)
+            fprintf(stderr, "%s: would apply %d edit%s (dry run)\n",
+                    input_path, nedits, nedits == 1 ? "" : "s");
+    } else if (opt_inplace) {
         rc = write_inplace_buf(input_path, tmpbuf, tmplen);
     } else if (output_path) {
         FILE *out = fopen(output_path, "w");
@@ -4749,7 +4808,7 @@ static int apply_edits_file(const char *input_path, const char *output_path)
         }
     }
 
-    if (!opt_quiet && rc == 0)
+    if (!opt_quiet && rc == 0 && !opt_dryrun)
         fprintf(stderr, "%s: applied %d edit%s\n",
                 input_path, nedits, nedits == 1 ? "" : "s");
 
@@ -5527,10 +5586,18 @@ int main(int argc, char *argv[])
                         "run them separately.\n");
         return 1;
     }
-    if (opt_apply_edits && npos > 1 && !opt_inplace) {
+    /* Stdin holds one edit list for one document. */
+    if (opt_apply_edits && opt_inplace && npos != 1) {
         fprintf(stderr,
-            "--apply-edits reads one file's edits from stdin. With two names "
-            "the second is the OUTPUT file.\n");
+            "--apply-edits -i takes exactly one input file "
+            "(stdin is one edit list).\n");
+        return 1;
+    }
+    if (opt_apply_edits && !opt_inplace && npos > 2) {
+        fprintf(stderr,
+            "--apply-edits takes one input, or input plus output. "
+            "Stdin is one edit list.\n");
+        return 1;
     }
     if (opt_apply_edits && !opt_inplace && npos == 1) {
         /* Result goes to stdout; no output file is needed. */

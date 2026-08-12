@@ -55,7 +55,7 @@ because neither implementation can be trusted to agree with the other, and on
 its first run it caught only two of the three divergences it was written to
 find.
 
-### Target mechanism (reader shipped, applier not)
+### Target mechanism (reader and applier shipped)
 
 mdfix owns the grammar in both directions:
 
@@ -370,11 +370,9 @@ document exists to prevent.
 
 Still needed:
 
-- The applier half of §2: `--apply-edits` and the edit schema (#12). The
-  reader half shipped as `mdfix --emit-ir`; see
-  [ir-schema.md](ir-schema.md).
-- Round-trip identity for the span applier: an empty edit list must produce
-  byte-identical output; then retire dual grammar and `test_tool_parity.py`.
+- Consumer migration onto `--apply-edits` (schema `mdtools-edits-1`; see
+  [edit-schema.md](edit-schema.md)) so prosevary can drop its dual grammar
+  and `test_tool_parity.py` can retire.
 - Coverage for the §7 gaps, each with the Pandoc AST (or rendered output)
   as the assertion — including hard-break preservation under `-w` and
   Unicode ellipsis under Chicago.
