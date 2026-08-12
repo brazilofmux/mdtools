@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MDFIX = ROOT / "mdfix" / "mdfix"
 SCHEMA_DOC = ROOT / "docs" / "ir-schema.md"
 PANDOC = shutil.which("pandoc")
-SCHEMA = "mdtools-ir-2"
+SCHEMA = "mdtools-ir-3"
 
 SAMPLE = """\
 ---
@@ -101,9 +101,19 @@ class IRTestCase(unittest.TestCase):
         return [json.loads(line) for line in result.stdout.splitlines()]
 
     def _ir(self, data: bytes | str, name: str = "t.md") -> list[dict]:
-        """Header plus content records. `gap` records carry the runs between
-        blocks (schema 2) and are structure rather than content."""
-        return [r for r in self._ir_raw(data, name) if r["kind"] != "gap"]
+        """
+        Header plus top-level content records.
+
+        `gap` records carry the runs between blocks and are structure rather
+        than content. Nested records (schema 3, `depth > 0`) live inside their
+        parent's span, so including them here would double-count bytes and
+        break every span and totality assertion below.
+        """
+        return [r for r in self._ir_raw(data, name)
+                if r["kind"] != "gap" and not r.get("depth")]
+
+    def _nested(self, data: bytes | str, name: str = "t.md") -> list[dict]:
+        return [r for r in self._ir_raw(data, name) if r.get("depth")]
 
     def _kinds(self, data: bytes | str) -> list[str]:
         return [r["kind"] for r in self._ir(data)[1:]]
@@ -233,7 +243,8 @@ class TotalityTests(IRTestCase):
     def test_records_reproduce_the_file(self) -> None:
         for name, data in self.CASES.items():
             with self.subTest(case=name):
-                records = self._ir_raw(data)[1:]
+                records = [r for r in self._ir_raw(data)[1:]
+                           if not r.get("depth")]
                 joined = b"".join(data[r["start"]:r["end"]] for r in records)
                 self.assertEqual(joined, data)
 
@@ -243,6 +254,8 @@ class TotalityTests(IRTestCase):
             with self.subTest(case=name):
                 cursor = 0
                 for record in self._ir_raw(data)[1:]:
+                    if record.get("depth"):
+                        continue
                     self.assertEqual(record["start"], cursor, record)
                     cursor = record["end"]
                 self.assertEqual(cursor, len(data))
@@ -251,7 +264,7 @@ class TotalityTests(IRTestCase):
         # dialect-policy §7 gap 5: two trailing spaces are a hard break, and
         # a serializer must be able to see them to preserve them.
         data = b"line one  \nline two\n"
-        records = self._ir_raw(data)[1:]
+        records = [r for r in self._ir_raw(data)[1:] if not r.get("depth")]
         joined = b"".join(data[r["start"]:r["end"]] for r in records)
         self.assertIn(b"  \n", joined)
 
@@ -260,7 +273,8 @@ class TotalityTests(IRTestCase):
         for blanks in (1, 2, 5):
             with self.subTest(blanks=blanks):
                 data = b"# A\n" + b"\n" * blanks + b"para\n"
-                records = self._ir_raw(data)[1:]
+                records = [r for r in self._ir_raw(data)[1:]
+                           if not r.get("depth")]
                 joined = b"".join(data[r["start"]:r["end"]] for r in records)
                 self.assertEqual(joined, data)
 
@@ -349,6 +363,88 @@ class ReadOnlyTests(IRTestCase):
         headers = [r for r in records if r["kind"] == "document"]
         self.assertEqual([Path(h["source"]).name for h in headers],
                          ["a.md", "b.md"])
+
+
+class NestedProseTests(IRTestCase):
+    """Schema 3: plain list-item prose as depth-1 paragraphs."""
+
+    def test_marker_is_excluded_from_the_span(self) -> None:
+        source = "- first item\n- second\n"
+        nested = self._nested(source)
+        self.assertEqual(len(nested), 2)
+        data = source.encode("utf-8")
+        self.assertEqual(data[nested[0]["start"]:nested[0]["end"]], b"first item")
+        self.assertEqual(data[nested[1]["start"]:nested[1]["end"]], b"second")
+        self.assertEqual(nested[0]["depth"], 1)
+        self.assertEqual(nested[0]["kind"], "paragraph")
+
+    def test_parent_is_the_list_start(self) -> None:
+        source = "- one\n- two\n"
+        top = self._ir(source)
+        lists = [r for r in top if r["kind"] == "list"]
+        self.assertEqual(len(lists), 1)
+        for child in self._nested(source):
+            self.assertEqual(child["parent"], lists[0]["start"])
+
+    def test_ordered_markers_work(self) -> None:
+        source = "1. alpha\n2. beta\n"
+        nested = self._nested(source)
+        self.assertEqual(len(nested), 2)
+        data = source.encode("utf-8")
+        self.assertEqual(data[nested[0]["start"]:nested[0]["end"]], b"alpha")
+
+    def test_loose_items_split_on_blank_lines(self) -> None:
+        source = "- first\n\n  continued\n- next\n"
+        nested = self._nested(source)
+        # Two paragraphs in the first item, one in the second.
+        self.assertEqual(len(nested), 3)
+        data = source.encode("utf-8")
+        self.assertEqual(data[nested[0]["start"]:nested[0]["end"]], b"first")
+        self.assertIn(b"continued", data[nested[1]["start"]:nested[1]["end"]])
+
+    def test_pipe_prose_is_still_nested(self) -> None:
+        # A bare pipe in item text is not a table; under-report only real tables.
+        source = "- use A | B here\n"
+        nested = self._nested(source)
+        self.assertEqual(len(nested), 1)
+        data = source.encode("utf-8")
+        self.assertEqual(data[nested[0]["start"]:nested[0]["end"]],
+                         b"use A | B here")
+
+    def test_non_prose_runs_are_not_nested(self) -> None:
+        # Opacity is per blank-separated run: plain intro may still nest, but
+        # the fence/quote/heading/table run must not become a depth-1 paragraph.
+        cases = {
+            "fence": "- intro\n\n  ```\n  code\n  ```\n",
+            "heading": "- intro\n\n  # nested head\n",
+            "blockquote": "- intro\n\n  > quoted\n",
+            "table": "- intro\n\n  a | b\n  --|--\n  1 | 2\n",
+        }
+        for name, source in cases.items():
+            with self.subTest(construct=name):
+                nested = self._nested(source)
+                data = source.encode("utf-8")
+                for child in nested:
+                    span = data[child["start"]:child["end"]]
+                    self.assertNotIn(b"```", span)
+                    self.assertNotIn(b"> quoted", span)
+                    self.assertNotIn(b"# nested", span)
+                    self.assertNotIn(b"--|--", span)
+                # The plain intro is still reachable.
+                self.assertTrue(
+                    any(data[c["start"]:c["end"]] == b"intro" for c in nested),
+                    msg=nested,
+                )
+
+    def test_blockquote_alone_in_item_is_opaque(self) -> None:
+        # Mis-report would emit a paragraph spanning the `>` markers.
+        source = "- > quoted line\n"
+        self.assertEqual(self._nested(source), [])
+        self.assertIn("list", self._kinds(source))
+
+    def test_tight_quote_after_prose_keeps_whole_run_opaque(self) -> None:
+        # No blank between intro and quote: one run, quote fails plain → none.
+        self.assertEqual(self._nested("- intro\n  > quoted\n"), [])
 
 
 class BlockKindTests(IRTestCase):

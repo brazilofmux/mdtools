@@ -1005,7 +1005,7 @@ static int is_wrappable_at(const char *line, enum linetype type, int index)
  * rather than rediscover §7's compatibility table by experiment.
  * ═══════════════════════════════════════════════════════════════════ */
 
-#define IR_SCHEMA "mdtools-ir-2"
+#define IR_SCHEMA "mdtools-ir-3"
 
 /*
  * A pipe-table delimiter row: `|---|---|`, `--|--`, `|:--|--:|`.
@@ -1495,6 +1495,142 @@ static const char *ir_raw_html_name(enum raw_html_kind kind)
     }
 }
 
+
+/*
+ * Nested prose inside list items (schema 3, issue #65).
+ *
+ * Children only for items that are plainly prose. Fence, table, line block,
+ * raw HTML, indented code, heading, or block quote inside an item keeps the
+ * whole item opaque — under-report, not mis-report. Nested list markers end
+ * the outer item and start a sibling item (they are not an opacity case).
+ * Full recursive nesting is the rest of #65.
+ */
+
+/* Byte offset where an item's content starts, or -1 if this is not a marker. */
+static int list_marker_bytes(const char *line)
+{
+    int chars = 0;
+    indent_columns(line, &chars);
+    int i = chars;
+    if (line[i] == '-' || line[i] == '*' || line[i] == '+') {
+        i++;
+    } else if (isdigit((unsigned char)line[i])) {
+        while (isdigit((unsigned char)line[i]))
+            i++;
+        if (line[i] != '.' && line[i] != ')')
+            return -1;
+        i++;
+    } else {
+        return -1;
+    }
+    if (line[i] != ' ' && line[i] != '\t')
+        return -1;
+    while (line[i] == ' ' || line[i] == '\t')
+        i++;
+    return i;
+}
+
+/* A line that is ordinary prose once the item's indentation is discounted.
+ * On a marker line, openers are checked on the content after the marker so
+ * `- > quote` and `- # Head` stay opaque rather than mis-reporting prose. */
+static int item_line_is_plain(int i, int content_col)
+{
+    const char *line = lines[i];
+    int marker = list_marker_bytes(line);
+    const char *body = (marker >= 0) ? line + marker : line;
+    struct fence_state probe;
+
+    if (parse_fence_opener(line, &probe) || parse_fence_opener(body, &probe))
+        return 0;
+    if (table_block_end(i) > i)
+        return 0;
+    if (raw_html_open_kind(line) != RAW_HTML_NONE
+        || raw_html_open_kind(body) != RAW_HTML_NONE)
+        return 0;
+    if (is_thematic_break(line) || is_thematic_break(body))
+        return 0;
+    /* Pipe table / line block — same discrimination as top-level IR. */
+    if (is_table_line(line) || is_table_line(body))
+        return 0;
+    if (is_pipe_delim_row(line) || is_pipe_delim_row(body))
+        return 0;
+    if (i + 1 < nlines && is_pipe_delim_row(lines[i + 1])
+        && (is_headerless_table_header(line)
+            || is_headerless_table_header(body)))
+        return 0;
+    if (is_blockquote_line(line) || is_blockquote_line(body))
+        return 0;
+    if (ref_def_kind(line) || ref_def_kind(body))
+        return 0;
+    if (indent_columns(line, NULL) >= content_col + 4)
+        return 0;               /* indented code relative to the item */
+    if (is_heading(line) || is_heading(body))
+        return 0;
+    return 1;
+}
+
+static void emit_list_children(FILE *out, int from, int to, long long parent)
+{
+    int i = from;
+    while (i <= to) {
+        int marker = list_marker_bytes(lines[i]);
+        if (marker < 0) {
+            i++;
+            continue;
+        }
+        int content_col = list_content_column(lines[i]);
+        if (content_col < 0) {
+            i++;
+            continue;
+        }
+
+        /* The item runs to the next marker or the end of the list. */
+        int item_end = i;
+        for (int j = i + 1; j <= to; j++) {
+            if (list_marker_bytes(lines[j]) >= 0)
+                break;
+            if (!is_blank(lines[j])
+                && indent_columns(lines[j], NULL) < content_col)
+                break;
+            item_end = j;
+        }
+
+        /* Paragraph runs inside the item, split on blank lines. Any run that
+         * is not plainly prose is skipped whole. */
+        int run_start = -1;
+        for (int j = i; j <= item_end + 1; j++) {
+            int blank = (j > item_end) || is_blank(lines[j]);
+            if (!blank && run_start < 0)
+                run_start = j;
+            if (!blank)
+                continue;
+            if (run_start < 0)
+                continue;
+            int ok = 1;
+            for (int k = run_start; k < j; k++)
+                if (!item_line_is_plain(k, content_col)) {
+                    ok = 0;
+                    break;
+                }
+            if (ok) {
+                long long start = line_off[run_start];
+                if (run_start == i)
+                    start += marker;   /* skip the marker on the first line */
+                long long end = line_off[j - 1] + line_bytes[j - 1];
+                if (end > start) {
+                    fprintf(out,
+                        "{\"kind\":\"paragraph\",\"start\":%lld,\"end\":%lld,"
+                        "\"line\":%d,\"endLine\":%d,\"protected\":false,"
+                        "\"depth\":1,\"parent\":%lld}\n",
+                        start, end, run_start + 1, j, parent);
+                }
+            }
+            run_start = -1;
+        }
+        i = item_end + 1;
+    }
+}
+
 static void emit_ir(FILE *out, const char *source)
 {
     /* The source path is part of the header so several files can share one
@@ -1794,6 +1930,7 @@ static void emit_ir(FILE *out, const char *source)
                 break;
             }
             ir_block(out, "list", i, last, 0);
+            emit_list_children(out, i, last, line_off[i]);
             i = last;
             prev_content_type = LT_BULLET;
             had_blank = 0;

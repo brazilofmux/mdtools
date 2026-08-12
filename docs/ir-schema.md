@@ -1,4 +1,4 @@
-# Structural IR — schema `mdtools-ir-2`
+# Structural IR — schema `mdtools-ir-3`
 
 Status: shipped, 2026-08-12. Implements the reader half of the boundary in
 [dialect-policy.md](dialect-policy.md) §2.
@@ -9,7 +9,7 @@ tool is meant to consume instead of re-deriving the grammar.
 
 ```console
 $ mdfix --emit-ir README.md | head -4
-{"kind":"document","schema":"mdtools-ir-2","source":"README.md","bytes":3184,"lines":118}
+{"kind":"document","schema":"mdtools-ir-3","source":"README.md","bytes":3184,"lines":118}
 {"kind":"heading","start":0,"end":9,"line":1,"endLine":1,"protected":false,"level":1,"text":"mdtools","plain":"mdtools"}
 {"kind":"gap","start":9,"end":11,"line":1,"endLine":2,"protected":false}
 {"kind":"paragraph","start":11,"end":76,"line":3,"endLine":3,"protected":false}
@@ -25,8 +25,10 @@ These are the properties a consumer may rely on, and each has a test.
    locate correctly.
 2. **`end` excludes the line terminator.** A consumer splicing a replacement
    never has to guess whether it owns the newline.
-3. **Records are total, contiguous, and in source order.** Concatenating every
-   record's span reproduces the input **byte for byte**. Nothing is skipped:
+3. **Top-level records are total, contiguous, and in source order.**
+   Concatenating every `depth`-0 record's span reproduces the input **byte for
+   byte**. Nested records (`depth > 0`) live inside their parent's span and do
+   not participate — a consumer summing every record would double-count. Nothing is skipped:
    line terminators, blank runs, a leading BOM and any trailing bytes arrive as
    `gap` records. This is what lets a transform know exactly what it is
    changing, and it is checkable without reference to the parser that produced
@@ -173,6 +175,32 @@ Distinguishing them is new in this schema. mdfix's fixer still treats both as
 prose, which is why both carry `"protected": false` — the IR reports the
 structure correctly while being honest that the fixer does not yet respect it.
 
+## Nested prose
+
+Schema 3 emits `paragraph` records **inside list items**, carrying optional
+fields `depth: 1` and `parent` (the parent record's `start`). A consumer
+rewriting prose can reach into a list item without learning what a list marker
+is:
+
+```console
+$ mdfix --emit-ir chapter.md | grep '"depth"'
+{"kind":"paragraph","start":12,"end":28,...,"depth":1,"parent":10}
+```
+
+The span excludes the marker, so replacing it through `--apply-edits` leaves
+`- ` and every other byte untouched. Nested records do not participate in the
+totality sum — only `depth`-0 spans concatenate to the file.
+
+**Children are blank-separated runs of plain prose only.** A run that holds a
+fence, table, line block, raw HTML, indented code, heading, or block quote is
+skipped whole (under-report, not mis-report). A plain run earlier in the same
+item may still nest. Nested list markers end the outer item and start a
+sibling item.
+
+On this repository's markdown that reaches most previously list-trapped
+sentences; remaining opaque items hold nested constructs. Full recursive
+walks (and nested block quotes) are the rest of #65.
+
 ## Known divergences from Pandoc
 
 The IR is mdfix's block segmentation, and mdfix is a line classifier rather
@@ -200,23 +228,25 @@ Schema 2 changed guarantee 3 — records became total rather than merely
 non-overlapping — which is why the name moved from `mdtools-ir-1`. Adding the
 `gap` kind alone would not have required it.
 
-`mdtools-ir-2` may gain **new optional fields** and **new block kinds** without
+`mdtools-ir-3` may gain **new optional fields** and **new block kinds** without
 a schema bump; a consumer must ignore fields it does not recognize and should
 treat an unknown `kind` as opaque-but-located. Removing a field, changing a
 field's meaning, or changing what `start`/`end` measure requires a new schema
 name, which the header record makes detectable.
 
-## Not in schema 2
+## Not yet in schema 3
 
 - **Inline structure.** Links, images, footnote references, citations, emphasis
   and inline code are not represented. A consumer that needs them today must
   slice the span and scan it, which is exactly the grammar leak the boundary
   exists to prevent — so this is the next thing to add, not a permanent shape.
-- **Nesting.** Records are a flat sequence. A list is one record, not a tree of
-  items, and blocks nested inside list items or block quotes are not emitted
-  separately. Tight versus loose lists are not represented. **`protected` on a
-  flat parent is therefore not a byte-level freeze map for nested verbatim
-  constructs** (fenced code, raw HTML, grid tables inside a list item still
-  freeze in `process()` but are invisible as separate IR records). Do not
-  treat `list.protected == false` as “everything under this span is rewritable.”
-- **The applier half.** `--apply-edits` and the edit schema are issue #12.
+- **Partial nesting only.** Schema 3 emits plain list-item prose as nested
+  `paragraph` records (`depth` / `parent`). A list is still one parent record,
+  not a full tree of items; fence, table, raw HTML, indented code, heading, and
+  block quote inside an item stay opaque (no separate child). Block quotes are
+  not nested. Tight versus loose lists are not represented. **`protected` on a
+  list parent is therefore not a byte-level freeze map for nested verbatim
+  constructs** that `process()` still freezes. Do not treat
+  `list.protected == false` as “everything under this span is rewritable.”
+- **The applier half.** `--apply-edits` and the edit schema are issue #12
+  (shipped; see [edit-schema.md](edit-schema.md)).
