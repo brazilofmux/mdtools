@@ -87,11 +87,68 @@ _REF_DEF = re.compile(r"^ {0,3}\[[^\]\n]+\]:\s+\S")
 _FOOTNOTE_DEF = re.compile(r"^ {0,3}\[\^[^\]\n]+\]:")
 # Continuation line carrying a reference definition's optional title.
 _REF_TITLE_CONT = re.compile(r"""^\s+(["'(]).*$""")
-# Sentence end: .!? optional close-quote, whitespace, next sentence-ish token.
+# Sentence end: .!? then optional closing quotes, then whitespace, then the
+# next sentence-ish token. Closing quotes are matched so the split can fire,
+# but they belong to the *preceding* sentence (see split_sentences) — leaving
+# them in the separator produced `He said "Hello.` / gap `"` / `Next…` and a
+# balanced rewrite reconstructed as `He replied "Hi."" Next…`.
 # Conservative; abbrev false splits (e.g. "Dr. Smith") are acceptable for v0.
 _SENT_SPLIT = re.compile(
-    r'(?<=[.!?])["\'”’]?\s+(?=["\'“‘]?[A-Z0-9])'
+    r'(?<=[.!?])["\'”’)\]}]*\s+(?=["\'“‘]?[A-Z0-9])'
 )
+# Closers that trail a terminator and must stay inside the sentence span when
+# the splitter matches them as part of the separator. These sit *after* the
+# terminator — `He said "Hello."`, `(See the note.)`, `[See note.]` — not
+# before it.
+_SENT_TRAILING_CLOSERS = frozenset("\"'”’)]}")
+
+
+def _trailing_closer_run(text: str) -> str:
+    """The run of closing delimiters at the end of text, possibly empty."""
+    j = len(text)
+    while j > 0 and text[j - 1] in _SENT_TRAILING_CLOSERS:
+        j -= 1
+    return text[j:]
+
+
+def _is_enumeration_label(prose: str, term_end: int, closer_end: int) -> bool:
+    """
+    Whether a terminator + bracket run is an enumeration label like `1.)`.
+
+    Admitting `)]}` to the separator class made `Step 1.) Do the thing.` split
+    into the fragment `Step 1.)` plus a sentence, and the fragment then went to
+    the paraphraser on its own. These reach TEXT at all only because _LIST
+    requires whitespace after `\\d+.`, so `1.)` is not read as a list marker.
+
+    Scoped narrowly: bracket-only run, `.` terminator, digit before it. A
+    letter before the terminator (`See the note.)`) still splits, which is the
+    case this separator class was widened for.
+    """
+    run = prose[term_end:closer_end]
+    if not run or any(c not in ")]}" for c in run):
+        return False
+    if term_end == 0 or prose[term_end - 1] != ".":
+        return False
+    return term_end >= 2 and prose[term_end - 2].isdigit()
+
+
+def _restore_trailing_closers(original: str, candidate: str) -> str:
+    """
+    Ensure a rewritten sentence keeps the closers the original ended with.
+
+    Attributing the closer to the sentence (rather than the inter-sentence gap)
+    fixes duplication — a balanced candidate no longer yields `"Hi.""`. But it
+    moves the closer *inside* rewritable text, where a candidate that drops it
+    silently unbalances the document. That is the worse failure: duplication is
+    obvious in a diff, a missing quote is not.
+
+    Only ever appends. A candidate that already ends with the run is untouched,
+    so a well-behaved model sees no interference.
+    """
+    closers = _trailing_closer_run(original)
+    if not closers or candidate.endswith(closers):
+        return candidate
+    return candidate + closers
 
 
 @dataclass
@@ -153,6 +210,8 @@ class Document:
                 if sent.start > cursor:
                     parts.append(reg.text[cursor : sent.start])
                 new = replacements.get((reg.region_id, i), sent.text)
+                if new is not sent.text:
+                    new = _restore_trailing_closers(sent.text, new)
                 parts.append(new)
                 cursor = sent.end
             if cursor < len(reg.text):
@@ -511,12 +570,14 @@ def split_sentences(prose: str) -> List[Tuple[int, int, str]]:
     spans: List[Tuple[int, int]] = []
     last = 0
     for m in _SENT_SPLIT.finditer(prose):
+        # m.start() is the first character after the terminator — often a
+        # closing quote that the regex consumed as part of the separator.
+        # Those closers belong to this sentence, not the inter-sentence gap.
         end = m.start()
-        # include trailing close-quotes already in lookbehind area — m.start()
-        # is at the whitespace after punct. Sentence ends at first whitespace.
-        # Actually finditer position is start of whitespace after punct.
-        # We want end after the punctuation/quote.
-        end = m.start()
+        while end < m.end() and prose[end] in _SENT_TRAILING_CLOSERS:
+            end += 1
+        if _is_enumeration_label(prose, m.start(), end):
+            continue
         if end > last:
             spans.append((last, end))
         last = m.end()  # skip the whitespace between sentences
