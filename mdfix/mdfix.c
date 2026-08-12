@@ -2645,6 +2645,100 @@ static void free_lines(void);
  * fit is a hard error rather than a silent truncate. Returns 0 on success,
  * 1 on I/O or capacity failure (caller free_lines).
  */
+/*
+ * L1 encoding validation — architecture.md I1.1.
+ *
+ * mdtools expects UTF-8. Malformed input used to be accepted silently and
+ * copied straight into the IR, so `mdfix --emit-ir` emitted JSON that no
+ * parser could read: I4.1 was false for a reason that had nothing to do with
+ * Markdown, and every consumer inherited the failure.
+ *
+ * Rejecting rather than substituting U+FFFD is deliberate. Replacement would
+ * change byte lengths and invalidate I1.3 — spans must address the file on
+ * disk — and silently repairing an author's encoding is the wrong default for
+ * a tool that edits manuscripts.
+ *
+ * Returns the length of the sequence starting at s, or 0 with *why set.
+ * The ranges below are RFC 3629, which excludes overlong forms, UTF-16
+ * surrogates (U+D800..U+DFFF), and anything past U+10FFFF.
+ */
+static int utf8_sequence_len(const unsigned char *s, int avail, const char **why)
+{
+    unsigned char c = s[0];
+
+    if (c < 0x80) {
+        if (c == 0x00) {
+            /*
+             * U+0000 is valid Unicode but not valid in a text document, and
+             * every fixer here is strlen-bounded: a NUL truncated the line and
+             * the remainder was silently dropped on output. A 36-byte file
+             * came back 22 bytes with the tail gone.
+             */
+            *why = "NUL byte (would silently truncate the line)";
+            return 0;
+        }
+        return 1;
+    }
+    if (c < 0xC2) {
+        *why = (c < 0xC0) ? "unexpected continuation byte"
+                          : "overlong two-byte sequence";
+        return 0;
+    }
+    if (c < 0xE0) {
+        if (avail < 2 || (s[1] & 0xC0) != 0x80) {
+            *why = "truncated two-byte sequence";
+            return 0;
+        }
+        return 2;
+    }
+    if (c < 0xF0) {
+        if (avail < 3 || (s[1] & 0xC0) != 0x80 || (s[2] & 0xC0) != 0x80) {
+            *why = "truncated three-byte sequence";
+            return 0;
+        }
+        if (c == 0xE0 && s[1] < 0xA0) {
+            *why = "overlong three-byte sequence";
+            return 0;
+        }
+        if (c == 0xED && s[1] >= 0xA0) {
+            *why = "UTF-16 surrogate (U+D800..U+DFFF)";
+            return 0;
+        }
+        return 3;
+    }
+    if (c < 0xF5) {
+        if (avail < 4 || (s[1] & 0xC0) != 0x80 || (s[2] & 0xC0) != 0x80
+            || (s[3] & 0xC0) != 0x80) {
+            *why = "truncated four-byte sequence";
+            return 0;
+        }
+        if (c == 0xF0 && s[1] < 0x90) {
+            *why = "overlong four-byte sequence";
+            return 0;
+        }
+        if (c == 0xF4 && s[1] >= 0x90) {
+            *why = "codepoint above U+10FFFF";
+            return 0;
+        }
+        return 4;
+    }
+    *why = "invalid lead byte";
+    return 0;
+}
+
+/* Offset of the first malformed byte within [s, s+len), or -1. */
+static long long utf8_first_bad(const char *s, int len, const char **why)
+{
+    int i = 0;
+    while (i < len) {
+        int n = utf8_sequence_len((const unsigned char *)s + i, len - i, why);
+        if (n == 0)
+            return i;
+        i += n;
+    }
+    return -1;
+}
+
 static int read_all(FILE *fp)
 {
     char *buf = NULL;
@@ -2662,6 +2756,39 @@ static int read_all(FILE *fp)
         /* Strip line endings — we add our own on output (normalizes CRLF). */
         while (nread > 0 && (buf[nread - 1] == '\n' || buf[nread - 1] == '\r'))
             buf[--nread] = '\0';
+
+        /*
+         * A leading BOM belongs to the file, not to the first heading.
+         * Pandoc strips it — `\xEF\xBB\xBF# Title` is a Header with the
+         * identifier `title` — while mdfix classified the line by its first
+         * byte and so saw no heading at all, mis-parsing the whole file.
+         *
+         * Skipping the bytes rather than rewriting the buffer keeps I1.3:
+         * line_off still points at the first *content* byte in the file.
+         */
+        int skip = 0;
+        if (nlines == 0 && nread >= 3
+            && (unsigned char)buf[0] == 0xEF
+            && (unsigned char)buf[1] == 0xBB
+            && (unsigned char)buf[2] == 0xBF)
+        {
+            skip = 3;
+        }
+
+        const char *why = NULL;
+        long long bad = utf8_first_bad(buf + skip, (int)nread - skip, &why);
+        if (bad >= 0) {
+            fprintf(stderr,
+                "error: line %d is not valid UTF-8 at byte offset %lld: %s.\n"
+                "mdtools expects UTF-8; refusing to guess at the encoding.\n",
+                nlines + 1, src_bytes + skip + bad, why);
+            free(buf);
+            free_lines();
+            return 1;
+        }
+
+        nread -= skip;
+        memmove(buf, buf + skip, (size_t)nread + 1);
 
         /*
          * ">" not ">=": a line of exactly MAX_LINE-1 content bytes plus its
@@ -2709,7 +2836,9 @@ static int read_all(FILE *fp)
             return 1;
         }
         memcpy(lines[nlines], buf, (size_t)nread + 1);
-        line_off[nlines]   = src_bytes;
+        /* skip: the BOM is part of the file but not of the line's text, so
+         * the content offset moves past it while src_bytes still counts it. */
+        line_off[nlines]   = src_bytes + skip;
         line_bytes[nlines] = (int)nread;
         src_bytes += raw;
         nlines++;
@@ -2791,7 +2920,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 2795 "mdfix.c"
+#line 2924 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -2799,20 +2928,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 2803 "mdfix.c"
+#line 2932 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 3172 "mdfix.rl"
+#line 3301 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 2923 "mdfix.rl"
+#line 3052 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -2852,7 +2981,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 2815 "mdfix.rl"
+#line 2944 "mdfix.rl"
 	{te = p+1;{
                 if (ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -2889,19 +3018,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 2808 "mdfix.rl"
+#line 2937 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 2808 "mdfix.rl"
+#line 2937 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 3107 "mdfix.rl"
+#line 3236 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -2925,7 +3054,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 3152 "mdfix.rl"
+#line 3281 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -2946,7 +3075,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 3130 "mdfix.rl"
+#line 3259 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -2969,13 +3098,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 3172 "mdfix.rl"
+#line 3301 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 3052 "mdfix.rl"
+#line 3181 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -2998,7 +3127,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 2965 "mdfix.rl"
+#line 3094 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_CHAR('.');
@@ -3049,13 +3178,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 3172 "mdfix.rl"
+#line 3301 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 3015 "mdfix.rl"
+#line 3144 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -3093,7 +3222,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 3074 "mdfix.rl"
+#line 3203 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -3127,7 +3256,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 2869 "mdfix.rl"
+#line 2998 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -3136,7 +3265,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 2851 "mdfix.rl"
+#line 2980 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -3146,7 +3275,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 2877 "mdfix.rl"
+#line 3006 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -3155,7 +3284,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 2860 "mdfix.rl"
+#line 2989 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -3165,7 +3294,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 2885 "mdfix.rl"
+#line 3014 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -3204,7 +3333,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 2808 "mdfix.rl"
+#line 2937 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -3217,7 +3346,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 3221 "mdfix.c"
+#line 3350 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -3243,7 +3372,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 3247 "mdfix.c"
+#line 3376 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -3287,7 +3416,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 3291 "mdfix.c"
+#line 3420 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -3336,7 +3465,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 3340 "mdfix.c"
+#line 3469 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -3355,7 +3484,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 3359 "mdfix.c"
+#line 3488 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -3381,7 +3510,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 3385 "mdfix.c"
+#line 3514 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -3430,7 +3559,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 3434 "mdfix.c"
+#line 3563 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -3510,7 +3639,7 @@ case 13:
 
 	}
 
-#line 3179 "mdfix.rl"
+#line 3308 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';

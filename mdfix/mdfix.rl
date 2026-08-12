@@ -2637,6 +2637,100 @@ static void free_lines(void);
  * fit is a hard error rather than a silent truncate. Returns 0 on success,
  * 1 on I/O or capacity failure (caller free_lines).
  */
+/*
+ * L1 encoding validation — architecture.md I1.1.
+ *
+ * mdtools expects UTF-8. Malformed input used to be accepted silently and
+ * copied straight into the IR, so `mdfix --emit-ir` emitted JSON that no
+ * parser could read: I4.1 was false for a reason that had nothing to do with
+ * Markdown, and every consumer inherited the failure.
+ *
+ * Rejecting rather than substituting U+FFFD is deliberate. Replacement would
+ * change byte lengths and invalidate I1.3 — spans must address the file on
+ * disk — and silently repairing an author's encoding is the wrong default for
+ * a tool that edits manuscripts.
+ *
+ * Returns the length of the sequence starting at s, or 0 with *why set.
+ * The ranges below are RFC 3629, which excludes overlong forms, UTF-16
+ * surrogates (U+D800..U+DFFF), and anything past U+10FFFF.
+ */
+static int utf8_sequence_len(const unsigned char *s, int avail, const char **why)
+{
+    unsigned char c = s[0];
+
+    if (c < 0x80) {
+        if (c == 0x00) {
+            /*
+             * U+0000 is valid Unicode but not valid in a text document, and
+             * every fixer here is strlen-bounded: a NUL truncated the line and
+             * the remainder was silently dropped on output. A 36-byte file
+             * came back 22 bytes with the tail gone.
+             */
+            *why = "NUL byte (would silently truncate the line)";
+            return 0;
+        }
+        return 1;
+    }
+    if (c < 0xC2) {
+        *why = (c < 0xC0) ? "unexpected continuation byte"
+                          : "overlong two-byte sequence";
+        return 0;
+    }
+    if (c < 0xE0) {
+        if (avail < 2 || (s[1] & 0xC0) != 0x80) {
+            *why = "truncated two-byte sequence";
+            return 0;
+        }
+        return 2;
+    }
+    if (c < 0xF0) {
+        if (avail < 3 || (s[1] & 0xC0) != 0x80 || (s[2] & 0xC0) != 0x80) {
+            *why = "truncated three-byte sequence";
+            return 0;
+        }
+        if (c == 0xE0 && s[1] < 0xA0) {
+            *why = "overlong three-byte sequence";
+            return 0;
+        }
+        if (c == 0xED && s[1] >= 0xA0) {
+            *why = "UTF-16 surrogate (U+D800..U+DFFF)";
+            return 0;
+        }
+        return 3;
+    }
+    if (c < 0xF5) {
+        if (avail < 4 || (s[1] & 0xC0) != 0x80 || (s[2] & 0xC0) != 0x80
+            || (s[3] & 0xC0) != 0x80) {
+            *why = "truncated four-byte sequence";
+            return 0;
+        }
+        if (c == 0xF0 && s[1] < 0x90) {
+            *why = "overlong four-byte sequence";
+            return 0;
+        }
+        if (c == 0xF4 && s[1] >= 0x90) {
+            *why = "codepoint above U+10FFFF";
+            return 0;
+        }
+        return 4;
+    }
+    *why = "invalid lead byte";
+    return 0;
+}
+
+/* Offset of the first malformed byte within [s, s+len), or -1. */
+static long long utf8_first_bad(const char *s, int len, const char **why)
+{
+    int i = 0;
+    while (i < len) {
+        int n = utf8_sequence_len((const unsigned char *)s + i, len - i, why);
+        if (n == 0)
+            return i;
+        i += n;
+    }
+    return -1;
+}
+
 static int read_all(FILE *fp)
 {
     char *buf = NULL;
@@ -2654,6 +2748,39 @@ static int read_all(FILE *fp)
         /* Strip line endings — we add our own on output (normalizes CRLF). */
         while (nread > 0 && (buf[nread - 1] == '\n' || buf[nread - 1] == '\r'))
             buf[--nread] = '\0';
+
+        /*
+         * A leading BOM belongs to the file, not to the first heading.
+         * Pandoc strips it — `\xEF\xBB\xBF# Title` is a Header with the
+         * identifier `title` — while mdfix classified the line by its first
+         * byte and so saw no heading at all, mis-parsing the whole file.
+         *
+         * Skipping the bytes rather than rewriting the buffer keeps I1.3:
+         * line_off still points at the first *content* byte in the file.
+         */
+        int skip = 0;
+        if (nlines == 0 && nread >= 3
+            && (unsigned char)buf[0] == 0xEF
+            && (unsigned char)buf[1] == 0xBB
+            && (unsigned char)buf[2] == 0xBF)
+        {
+            skip = 3;
+        }
+
+        const char *why = NULL;
+        long long bad = utf8_first_bad(buf + skip, (int)nread - skip, &why);
+        if (bad >= 0) {
+            fprintf(stderr,
+                "error: line %d is not valid UTF-8 at byte offset %lld: %s.\n"
+                "mdtools expects UTF-8; refusing to guess at the encoding.\n",
+                nlines + 1, src_bytes + skip + bad, why);
+            free(buf);
+            free_lines();
+            return 1;
+        }
+
+        nread -= skip;
+        memmove(buf, buf + skip, (size_t)nread + 1);
 
         /*
          * ">" not ">=": a line of exactly MAX_LINE-1 content bytes plus its
@@ -2701,7 +2828,9 @@ static int read_all(FILE *fp)
             return 1;
         }
         memcpy(lines[nlines], buf, (size_t)nread + 1);
-        line_off[nlines]   = src_bytes;
+        /* skip: the BOM is part of the file but not of the line's text, so
+         * the content offset moves past it while src_bytes still counts it. */
+        line_off[nlines]   = src_bytes + skip;
         line_bytes[nlines] = (int)nread;
         src_bytes += raw;
         nlines++;
