@@ -62,6 +62,7 @@
 #include <string.h>
 #include <strings.h>   /* strncasecmp */
 #include <ctype.h>
+#include "vendor/utf_width.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -3201,32 +3202,70 @@ static int fix_trailing_ws(char *line, int linenum)
 static const char *para_lines_buf[MAX_LINES];
 static int npara = 0;
 
+/* Validated UTF-8 length of the code point at s[i] (I1.1 already enforced). */
+static int utf8_sequence_len(const unsigned char *s, int avail, const char **why);
+
+static int utf8_cp_len(const char *s, int i, int end)
+{
+    const char *why = NULL;
+    int n = utf8_sequence_len((const unsigned char *)s + i, end - i, &why);
+    return n > 0 ? n : 1;
+}
+
+/* Display columns spanned by [from, to). Wide = 2, combining = 0. */
+static int display_columns(const char *text, int from, int to)
+{
+    int cols = 0;
+    for (int i = from; i < to; ) {
+        int n = utf8_cp_len(text, i, to);
+        if (i + n > to)
+            break;
+        cols += mdfix_display_width((const unsigned char *)text + i);
+        i += n;
+    }
+    return cols;
+}
+
+/*
+ * Wrap on display columns (mdfix_display_width): break only at ASCII spaces.
+ * Unspaced tokens (including CJK without spaces) are not split.
+ */
 static void emit_wrapped(FILE *out, const char *text, int width)
 {
     int len = (int)strlen(text);
     int pos = 0;
 
     while (pos < len) {
-        if (len - pos <= width) {
+        if (display_columns(text, pos, len) <= width) {
             fprintf(out, "%s\n", text + pos);
             return;
         }
 
-        /* Find last space at or before pos + width */
+        /* Last ASCII space whose preceding display width is still <= width. */
         int break_at = -1;
-        for (int i = pos; i <= pos + width && i < len; i++) {
-            if (text[i] == ' ')
+        int cols = 0;
+        for (int i = pos; i < len; ) {
+            if (text[i] == ' ' && cols <= width)
                 break_at = i;
+            cols += mdfix_display_width((const unsigned char *)text + i);
+            if (cols > width)
+                break;
+            i += utf8_cp_len(text, i, len);
         }
 
         if (break_at <= pos) {
-            /* No space within width — find next space (long word) */
-            break_at = pos + width;
+            /* No break opportunity in budget: emit the whole token
+             * through the next space (do not split). */
+            break_at = pos;
             while (break_at < len && text[break_at] != ' ')
-                break_at++;
+                break_at += utf8_cp_len(text, break_at, len);
+            if (break_at >= len) {
+                fprintf(out, "%s\n", text + pos);
+                return;
+            }
         }
 
-        fwrite(text + pos, 1, break_at - pos, out);
+        fwrite(text + pos, 1, (size_t)(break_at - pos), out);
         fputc('\n', out);
         pos = break_at;
         while (pos < len && text[pos] == ' ')
@@ -3235,19 +3274,15 @@ static void emit_wrapped(FILE *out, const char *text, int width)
 }
 
 /*
- * Should line i be joined to line i+1?  Only if the current line looks
- * like it was hard-wrapped (long enough to be near the target width).
- * Short lines signal an intentional paragraph/stanza break.
+ * Join only if the current line looks hard-wrapped (near the target width
+ * in display columns). Short lines are intentional breaks.
  */
 static int should_join(const char *line, int wrap_width)
 {
     int len = (int)strlen(line);
-    /* Trim trailing whitespace for length check */
     while (len > 0 && (line[len - 1] == ' ' || line[len - 1] == '\t'))
         len--;
-    /* A line shorter than 60% of the wrap width is probably intentionally
-     * short — a title, a metadata line, a list-like structure, etc. */
-    return len >= (wrap_width * 3 / 5);
+    return display_columns(line, 0, len) >= (wrap_width * 3 / 5);
 }
 
 static void flush_paragraph(FILE *out)

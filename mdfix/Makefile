@@ -6,15 +6,15 @@ CFLAGS ?= -O2
 
 all: mdfix
 
-mdfix: mdfix.c
-	$(CC) $(CFLAGS) -o $@ $<
+mdfix: mdfix.c vendor/utf_width.c
+	$(CC) $(CFLAGS) -o $@ mdfix.c vendor/utf_width.c
 
 # Sanitizer build. Every fixer mutates its line in place and several of them
 # lengthen it, so a wrong-sized line allocation overflows the heap by a few
 # bytes — invisible to the test suite, obvious to ASan. Run this after
 # touching read_all or any fixer that grows a line.
-asan: mdfix.c
-	$(CC) -O1 -g -fsanitize=address,undefined -o mdfix-asan mdfix.c
+asan: mdfix.c vendor/utf_width.c
+	$(CC) -O1 -g -fsanitize=address,undefined -o mdfix-asan mdfix.c vendor/utf_width.c
 	@err=$$(mktemp); \
 	find .. -name '*.md' -not -path '*/.git/*' -print0 \
 	| while IFS= read -r -d '' f; do \
