@@ -19,7 +19,7 @@
  *              [--heading-canonical] [--fence-canonical] [--pandoc-safe-links]
  *              [--spaced-emdash] [--wrap[=N]] [--technical]
  *              input.md [output.md]
- *   -i  Edit in-place (creates .bak backup)
+ *   -i  Edit in-place (atomic temp write; collision-safe .bak)
  *   -n  Dry run — report what would change, touch nothing
  *   -v  Verbose — show every fix
  *   -q  Quiet — shut up, just fix it
@@ -56,16 +56,21 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 
-#line 62 "mdfix.c"
+#line 67 "mdfix.c"
 static const int mdfix_scanner_start = 14;
 static const int mdfix_scanner_error = -1;
 
 static const int mdfix_scanner_en_main = 14;
 
 
-#line 61 "mdfix.rl"
+#line 66 "mdfix.rl"
 
 
 #define MAX_LINE  8192
@@ -1480,7 +1485,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 1484 "mdfix.c"
+#line 1489 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -1488,20 +1493,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 1492 "mdfix.c"
+#line 1497 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 1861 "mdfix.rl"
+#line 1866 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 1612 "mdfix.rl"
+#line 1617 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -1541,7 +1546,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 1504 "mdfix.rl"
+#line 1509 "mdfix.rl"
 	{te = p+1;{
                 if (ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -1578,19 +1583,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 1497 "mdfix.rl"
+#line 1502 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 1497 "mdfix.rl"
+#line 1502 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 1796 "mdfix.rl"
+#line 1801 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -1614,7 +1619,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 1841 "mdfix.rl"
+#line 1846 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -1635,7 +1640,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 1819 "mdfix.rl"
+#line 1824 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -1658,13 +1663,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 1861 "mdfix.rl"
+#line 1866 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 1741 "mdfix.rl"
+#line 1746 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -1687,7 +1692,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 1654 "mdfix.rl"
+#line 1659 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_CHAR('.');
@@ -1738,13 +1743,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 1861 "mdfix.rl"
+#line 1866 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 1704 "mdfix.rl"
+#line 1709 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -1782,7 +1787,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 1763 "mdfix.rl"
+#line 1768 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -1816,7 +1821,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 1558 "mdfix.rl"
+#line 1563 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -1825,7 +1830,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 1540 "mdfix.rl"
+#line 1545 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -1835,7 +1840,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 1566 "mdfix.rl"
+#line 1571 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -1844,7 +1849,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 1549 "mdfix.rl"
+#line 1554 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -1854,7 +1859,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 1574 "mdfix.rl"
+#line 1579 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -1893,7 +1898,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 1497 "mdfix.rl"
+#line 1502 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -1906,7 +1911,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 1910 "mdfix.c"
+#line 1915 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -1932,7 +1937,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 1936 "mdfix.c"
+#line 1941 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -1976,7 +1981,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 1980 "mdfix.c"
+#line 1985 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -2025,7 +2030,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 2029 "mdfix.c"
+#line 2034 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -2044,7 +2049,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 2048 "mdfix.c"
+#line 2053 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -2070,7 +2075,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 2074 "mdfix.c"
+#line 2079 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -2119,7 +2124,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 2123 "mdfix.c"
+#line 2128 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -2199,7 +2204,7 @@ case 13:
 
 	}
 
-#line 1868 "mdfix.rl"
+#line 1873 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';
@@ -2624,6 +2629,232 @@ static int files_identical(const char *path_a, const char *path_b)
     return same;
 }
 
+/*
+ * Build the backup path: always "<input>.bak", always the immediately
+ * preceding version.
+ *
+ * An earlier revision hunted for a free name (.bak, then .bak.1, .bak.2, …)
+ * so it would never clobber anything. That inverted the contract -i
+ * documents: after four edits, .bak held the *oldest* preimage, so the
+ * conventional undo `mv doc.md.bak doc.md` silently restored a version four
+ * edits stale. It also littered a tree on any repeat run and refused to fix
+ * the file at all once 10000 names were taken.
+ *
+ * A backup that is not the previous version is worse than no backup, because
+ * it looks like one. Overwriting the previous .bak is what a backup is for.
+ */
+static int build_backup_path(const char *input_path, char *bak, size_t bak_sz)
+{
+    int n = snprintf(bak, bak_sz, "%s.bak", input_path);
+    return (n < 0 || (size_t)n >= bak_sz) ? -1 : 0;
+}
+
+/*
+ * fsync the directory containing path, so a completed rename survives power
+ * loss. Best-effort: a filesystem that refuses to open or sync a directory is
+ * not a reason to fail an edit that already succeeded.
+ */
+static void fsync_parent_dir(const char *path)
+{
+    char dir[PATH_MAX];
+    int n = snprintf(dir, sizeof(dir), "%s", path);
+    if (n < 0 || (size_t)n >= sizeof(dir))
+        return;
+
+    char *slash = strrchr(dir, '/');
+    if (slash == dir)
+        dir[1] = '\0';          /* "/file" -> "/" */
+    else if (slash)
+        *slash = '\0';
+    else
+        snprintf(dir, sizeof(dir), ".");
+
+    int dfd = open(dir, O_RDONLY);
+    if (dfd < 0)
+        return;
+    (void)fsync(dfd);
+    close(dfd);
+}
+
+/*
+ * Finish writing out, flush, fsync, and close. On any error, unlink tmp_path
+ * (if non-NULL) and return -1. On success return 0; *out_slot is set NULL.
+ */
+static int finalize_output(FILE **out_slot, const char *tmp_path)
+{
+    FILE *out = *out_slot;
+    if (!out)
+        return -1;
+    if (fflush(out) != 0) {
+        fprintf(stderr, "Can't flush output: ");
+        perror(NULL);
+        fclose(out);
+        *out_slot = NULL;
+        if (tmp_path)
+            unlink(tmp_path);
+        return -1;
+    }
+    if (fsync(fileno(out)) != 0) {
+        fprintf(stderr, "Can't fsync output: ");
+        perror(NULL);
+        fclose(out);
+        *out_slot = NULL;
+        if (tmp_path)
+            unlink(tmp_path);
+        return -1;
+    }
+    if (fclose(out) != 0) {
+        fprintf(stderr, "Can't close output: ");
+        perror(NULL);
+        *out_slot = NULL;
+        if (tmp_path)
+            unlink(tmp_path);
+        return -1;
+    }
+    *out_slot = NULL;
+    return 0;
+}
+
+/*
+ * In-place write: never open the primary path for writing until the new
+ * content is fully on disk.
+ *
+ *   1. Write to a unique same-directory temp (mkstemp).
+ *   2. Copy mode (and best-effort owner) from the original.
+ *   3. fflush + fsync + close; fail → unlink temp, original untouched.
+ *   4. If content is identical, unlink temp (no .bak, inode preserved).
+ *   5. Else rename original → collision-safe .bak, then temp → original.
+ *      If the second rename fails, restore original from .bak.
+ */
+static int write_inplace(const char *input_path)
+{
+    struct stat st;
+    char tmp_path[4096];
+    char bak_path[4096];
+    int fd;
+    FILE *out;
+    int n;
+
+    if (stat(input_path, &st) != 0) {
+        fprintf(stderr, "Can't stat '%s': ", input_path);
+        perror(NULL);
+        return 1;
+    }
+
+    n = snprintf(tmp_path, sizeof(tmp_path), "%s.mdfix.XXXXXX", input_path);
+    if (n < 0 || (size_t)n >= sizeof(tmp_path)) {
+        fprintf(stderr, "Path too long for temp file: %s\n", input_path);
+        return 1;
+    }
+    fd = mkstemp(tmp_path);
+    if (fd < 0) {
+        fprintf(stderr, "Can't create temp file for '%s': ", input_path);
+        perror(NULL);
+        return 1;
+    }
+
+    /* Preserve permission bits the user actually set (0600 stays 0600). */
+    if (fchmod(fd, st.st_mode & 07777) != 0) {
+        fprintf(stderr, "Can't set mode on temp file: ");
+        perror(NULL);
+        close(fd);
+        unlink(tmp_path);
+        return 1;
+    }
+    /*
+     * Best-effort ownership, and best-effort means ignore every failure.
+     * Treating anything but EPERM as fatal made mdfix refuse to edit *any*
+     * file on mounts that simply do not implement ownership — vfat/exfat,
+     * some CIFS/9p/virtiofs and FUSE mounts return ENOTSUP, EINVAL or EROFS.
+     * The old code never touched ownership at all, so failing here would be a
+     * hard regression for a cosmetic gain.
+     */
+    (void)fchown(fd, st.st_uid, st.st_gid);
+
+    out = fdopen(fd, "w");
+    if (!out) {
+        fprintf(stderr, "Can't fdopen temp file: ");
+        perror(NULL);
+        close(fd);
+        unlink(tmp_path);
+        return 1;
+    }
+
+    process(out);
+    if (finalize_output(&out, tmp_path) != 0)
+        return 1;
+
+    /* No content change: drop the temp, leave the original inode alone. */
+    if (files_identical(tmp_path, input_path)) {
+        unlink(tmp_path);
+        return 0;
+    }
+
+    if (build_backup_path(input_path, bak_path, sizeof(bak_path)) != 0) {
+        fprintf(stderr, "Path too long for backup file: %s\n", input_path);
+        unlink(tmp_path);
+        return 1;
+    }
+
+    /*
+     * Hard-link the original aside rather than renaming it, so input_path
+     * names a valid file at every instant. Rename-aside-then-rename-in leaves
+     * a window where the path does not exist: a concurrent reader gets
+     * ENOENT, and a crash inside it leaves no file at all.
+     *
+     * lstat, not stat: a dangling symlink at the backup path reports ENOENT
+     * under stat, and we would then destroy the link we meant to notice.
+     */
+    {
+        struct stat bst;
+        if (lstat(bak_path, &bst) == 0 && unlink(bak_path) != 0) {
+            fprintf(stderr, "Can't replace old backup '%s': ", bak_path);
+            perror(NULL);
+            unlink(tmp_path);
+            return 1;
+        }
+    }
+
+    int linked = (link(input_path, bak_path) == 0);
+    if (!linked) {
+        /* Filesystems without hard links (some FUSE/SMB mounts) fall back to
+         * the rename-aside sequence, losing atomicity but not the backup. */
+        if (rename(input_path, bak_path) != 0) {
+            fprintf(stderr, "Can't create backup '%s': ", bak_path);
+            perror(NULL);
+            unlink(tmp_path);
+            return 1;
+        }
+    }
+
+    if (rename(tmp_path, input_path) != 0) {
+        fprintf(stderr, "Can't install new file over '%s': ", input_path);
+        perror(NULL);
+        if (linked) {
+            /* input_path was never moved; just drop our extra link. */
+            unlink(bak_path);
+        } else if (rename(bak_path, input_path) != 0) {
+            fprintf(stderr,
+                "CRITICAL: failed to restore '%s' from '%s': ",
+                input_path, bak_path);
+            perror(NULL);
+        }
+        unlink(tmp_path);
+        return 1;
+    }
+
+    /*
+     * fsync the directory. The file's bytes are already durable, but the
+     * rename that made them reachable is a directory operation: without this,
+     * a power loss can leave the entry still naming the old inode.
+     */
+    fsync_parent_dir(input_path);
+
+    if (!opt_quiet)
+        printf("Backup: %s\n", bak_path);
+    return 0;
+}
+
 static int process_file(const char *input_path, const char *output_path)
 {
     /* Reset per-file state */
@@ -2646,52 +2877,51 @@ static int process_file(const char *input_path, const char *output_path)
     if (opt_verbose)
         fprintf(stderr, "Read %d lines from %s\n", nlines, input_path);
 
-    /* ── Open output ── */
-    FILE *out = NULL;
-    char bak_path[4096];
-
+    /* ── Write ── */
+    int write_rc = 0;
     if (opt_dryrun) {
-        out = fopen("/dev/null", "w");
-    } else if (opt_inplace) {
-        snprintf(bak_path, sizeof(bak_path), "%s.bak", input_path);
-        if (rename(input_path, bak_path) != 0) {
-            fprintf(stderr, "Can't create backup '%s': ", bak_path);
+        FILE *out = fopen("/dev/null", "w");
+        if (!out) {
+            fprintf(stderr, "Can't open /dev/null: ");
             perror(NULL);
+            free_lines();
             return 1;
         }
-        out = fopen(input_path, "w");
+        process(out);
+        fclose(out);
+    } else if (opt_inplace) {
+        write_rc = write_inplace(input_path);
+        if (write_rc != 0) {
+            free_lines();
+            return write_rc;
+        }
     } else {
-        out = fopen(output_path, "w");
+        FILE *out = fopen(output_path, "w");
+        if (!out) {
+            fprintf(stderr, "Can't open output '%s': ", output_path);
+            perror(NULL);
+            free_lines();
+            return 1;
+        }
+        process(out);
+        /*
+         * Pass the output path so a flush/fsync/close failure removes the
+         * partial file. Leaving it behind was doubly bad: main refuses to
+         * overwrite an existing output, so the retry also failed and the user
+         * was stuck with a silently truncated file until deleting it by hand.
+         */
+        if (finalize_output(&out, output_path) != 0) {
+            free_lines();
+            return 1;
+        }
     }
-
-    if (!out) {
-        fprintf(stderr, "Can't open output: ");
-        perror(NULL);
-        if (opt_inplace)
-            rename(bak_path, input_path);
-        return 1;
-    }
-
-    /* ── Do the work ── */
-    process(out);
-    fclose(out);
 
     /* ── Report ── */
     if (!opt_quiet)
         print_summary(input_path);
 
-    if (opt_dryrun && !opt_canonical_lint) {
+    if (opt_dryrun && !opt_canonical_lint)
         printf("(dry run — no files were harmed)\n");
-    } else if (opt_inplace) {
-        /* Judge "changed" by content, not fix_counts: some
-         * normalizations (CRLF, wrap) don't increment a counter. */
-        if (files_identical(input_path, bak_path)) {
-            /* No changes — remove the unnecessary backup */
-            rename(bak_path, input_path);
-        } else if (!opt_quiet) {
-            printf("Backup: %s\n", bak_path);
-        }
-    }
 
     if (opt_canonical_lint) {
         int issues = total_issues();
