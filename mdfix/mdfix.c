@@ -1505,23 +1505,13 @@ static const char *ir_raw_html_name(enum raw_html_kind kind)
 
 
 /*
- * Nested prose inside list items — architecture I5.2 for consumers that edit,
- * issue #65.
+ * Nested prose inside list items (schema 3, issue #65).
  *
- * Schema 2 emitted one flat `list` record, so a paraphrasing consumer could
- * either rewrite the whole thing (markers included) or skip it. It skipped,
- * which cost prosevary every sentence inside a list.
- *
- * Children are emitted only for items whose content is *plainly* prose. An
- * item holding a fence, a table, raw HTML, indented code or a nested list
- * yields no children and stays opaque. That under-reports rather than
- * mis-reports, which is the only safe direction: a consumer that rewrites a
- * fence because the IR called it prose corrupts the document, while one that
- * skips an item merely leaves it alone. The full recursive walk that would
- * handle those items is the remaining half of #65.
- *
- * depth > 0 records are contained in their parent and do not participate in
- * the totality guarantee; see docs/ir-schema.md.
+ * Children only for items that are plainly prose. Fence, table, line block,
+ * raw HTML, indented code, heading, or block quote inside an item keeps the
+ * whole item opaque — under-report, not mis-report. Nested list markers end
+ * the outer item and start a sibling item (they are not an opacity case).
+ * Full recursive nesting is the rest of #65.
  */
 
 /* Byte offset where an item's content starts, or -1 if this is not a marker. */
@@ -1548,26 +1538,41 @@ static int list_marker_bytes(const char *line)
     return i;
 }
 
-/* A line that is ordinary prose once the item's indentation is discounted. */
+/* A line that is ordinary prose once the item's indentation is discounted.
+ * On a marker line, openers are checked on the content after the marker so
+ * `- > quote` and `- # Head` stay opaque rather than mis-reporting prose. */
 static int item_line_is_plain(int i, int content_col)
 {
     const char *line = lines[i];
+    int marker = list_marker_bytes(line);
+    const char *body = (marker >= 0) ? line + marker : line;
     struct fence_state probe;
-    if (parse_fence_opener(line, &probe))
+
+    if (parse_fence_opener(line, &probe) || parse_fence_opener(body, &probe))
         return 0;
     if (table_block_end(i) > i)
         return 0;
-    if (raw_html_open_kind(line) != RAW_HTML_NONE)
+    if (raw_html_open_kind(line) != RAW_HTML_NONE
+        || raw_html_open_kind(body) != RAW_HTML_NONE)
         return 0;
-    if (is_thematic_break(line))
+    if (is_thematic_break(line) || is_thematic_break(body))
         return 0;
-    if (is_table_line(line) || strchr(line, '|'))
-        return 0;               /* a pipe table inside an item */
-    if (ref_def_kind(line))
+    /* Pipe table / line block — same discrimination as top-level IR. */
+    if (is_table_line(line) || is_table_line(body))
+        return 0;
+    if (is_pipe_delim_row(line) || is_pipe_delim_row(body))
+        return 0;
+    if (i + 1 < nlines && is_pipe_delim_row(lines[i + 1])
+        && (is_headerless_table_header(line)
+            || is_headerless_table_header(body)))
+        return 0;
+    if (is_blockquote_line(line) || is_blockquote_line(body))
+        return 0;
+    if (ref_def_kind(line) || ref_def_kind(body))
         return 0;
     if (indent_columns(line, NULL) >= content_col + 4)
         return 0;               /* indented code relative to the item */
-    if (is_heading(line))
+    if (is_heading(line) || is_heading(body))
         return 0;
     return 1;
 }
@@ -3263,7 +3268,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 3267 "mdfix.c"
+#line 3272 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -3271,20 +3276,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 3275 "mdfix.c"
+#line 3280 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 3660 "mdfix.rl"
+#line 3665 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 3411 "mdfix.rl"
+#line 3416 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -3324,7 +3329,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 3287 "mdfix.rl"
+#line 3292 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial || ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -3361,19 +3366,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 3280 "mdfix.rl"
+#line 3285 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 3280 "mdfix.rl"
+#line 3285 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 3595 "mdfix.rl"
+#line 3600 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -3397,7 +3402,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 3640 "mdfix.rl"
+#line 3645 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -3418,7 +3423,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 3618 "mdfix.rl"
+#line 3623 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -3441,13 +3446,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 3660 "mdfix.rl"
+#line 3665 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 3540 "mdfix.rl"
+#line 3545 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -3470,7 +3475,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 3453 "mdfix.rl"
+#line 3458 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_CHAR('.');
@@ -3521,13 +3526,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 3660 "mdfix.rl"
+#line 3665 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 3503 "mdfix.rl"
+#line 3508 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -3565,7 +3570,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 3562 "mdfix.rl"
+#line 3567 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -3599,7 +3604,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 3349 "mdfix.rl"
+#line 3354 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -3612,7 +3617,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 3323 "mdfix.rl"
+#line 3328 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -3626,7 +3631,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 3361 "mdfix.rl"
+#line 3366 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -3639,7 +3644,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 3336 "mdfix.rl"
+#line 3341 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -3653,7 +3658,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 3373 "mdfix.rl"
+#line 3378 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -3692,7 +3697,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 3280 "mdfix.rl"
+#line 3285 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -3705,7 +3710,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 3709 "mdfix.c"
+#line 3714 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -3731,7 +3736,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 3735 "mdfix.c"
+#line 3740 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -3775,7 +3780,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 3779 "mdfix.c"
+#line 3784 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -3824,7 +3829,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 3828 "mdfix.c"
+#line 3833 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -3843,7 +3848,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 3847 "mdfix.c"
+#line 3852 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -3869,7 +3874,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 3873 "mdfix.c"
+#line 3878 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -3918,7 +3923,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 3922 "mdfix.c"
+#line 3927 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -3998,7 +4003,7 @@ case 13:
 
 	}
 
-#line 3667 "mdfix.rl"
+#line 3672 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';

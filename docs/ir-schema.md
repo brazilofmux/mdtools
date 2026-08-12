@@ -177,9 +177,10 @@ structure correctly while being honest that the fixer does not yet respect it.
 
 ## Nested prose
 
-Schema 3 emits `paragraph` records **inside list items**, carrying `depth: 1`
-and `parent` (the parent record's `start`). A consumer rewriting prose can
-reach into a list item without learning what a list marker is:
+Schema 3 emits `paragraph` records **inside list items**, carrying optional
+fields `depth: 1` and `parent` (the parent record's `start`). A consumer
+rewriting prose can reach into a list item without learning what a list marker
+is:
 
 ```console
 $ mdfix --emit-ir chapter.md | grep '"depth"'
@@ -187,20 +188,18 @@ $ mdfix --emit-ir chapter.md | grep '"depth"'
 ```
 
 The span excludes the marker, so replacing it through `--apply-edits` leaves
-`- ` and every other byte untouched.
+`- ` and every other byte untouched. Nested records do not participate in the
+totality sum — only `depth`-0 spans concatenate to the file.
 
-**Children are emitted only for items whose content is plainly prose.** An
-item holding a fence, a table, raw HTML, indented code or a heading yields no
-children and stays opaque. That under-reports rather than mis-reports, which
-is the only safe direction here: a consumer that rewrites a fence because the
-IR called it prose corrupts the document, while one that skips an item merely
-leaves it alone.
+**Children are blank-separated runs of plain prose only.** A run that holds a
+fence, table, line block, raw HTML, indented code, heading, or block quote is
+skipped whole (under-report, not mis-report). A plain run earlier in the same
+item may still nest. Nested list markers end the outer item and start a
+sibling item.
 
-On this repository's markdown that reaches 495 of 502 previously
-list-trapped sentences; the remaining 7 are items with nested constructs. The
-full recursive walk that would handle them is the other half of #65.
-
-Block quotes are not yet nested either.
+On this repository's markdown that reaches most previously list-trapped
+sentences; remaining opaque items hold nested constructs. Full recursive
+walks (and nested block quotes) are the rest of #65.
 
 ## Known divergences from Pandoc
 
@@ -235,17 +234,19 @@ treat an unknown `kind` as opaque-but-located. Removing a field, changing a
 field's meaning, or changing what `start`/`end` measure requires a new schema
 name, which the header record makes detectable.
 
-## Not in schema 2
+## Not yet in schema 3
 
 - **Inline structure.** Links, images, footnote references, citations, emphasis
   and inline code are not represented. A consumer that needs them today must
   slice the span and scan it, which is exactly the grammar leak the boundary
   exists to prevent — so this is the next thing to add, not a permanent shape.
-- **Nesting.** Records are a flat sequence. A list is one record, not a tree of
-  items, and blocks nested inside list items or block quotes are not emitted
-  separately. Tight versus loose lists are not represented. **`protected` on a
-  flat parent is therefore not a byte-level freeze map for nested verbatim
-  constructs** (fenced code, raw HTML, grid tables inside a list item still
-  freeze in `process()` but are invisible as separate IR records). Do not
-  treat `list.protected == false` as “everything under this span is rewritable.”
-- **The applier half.** `--apply-edits` and the edit schema are issue #12.
+- **Partial nesting only.** Schema 3 emits plain list-item prose as nested
+  `paragraph` records (`depth` / `parent`). A list is still one parent record,
+  not a full tree of items; fence, table, raw HTML, indented code, heading, and
+  block quote inside an item stay opaque (no separate child). Block quotes are
+  not nested. Tight versus loose lists are not represented. **`protected` on a
+  list parent is therefore not a byte-level freeze map for nested verbatim
+  constructs** that `process()` still freezes. Do not treat
+  `list.protected == false` as “everything under this span is rewritable.”
+- **The applier half.** `--apply-edits` and the edit schema are issue #12
+  (shipped; see [edit-schema.md](edit-schema.md)).

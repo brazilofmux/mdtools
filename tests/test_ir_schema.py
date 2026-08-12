@@ -365,6 +365,88 @@ class ReadOnlyTests(IRTestCase):
                          ["a.md", "b.md"])
 
 
+class NestedProseTests(IRTestCase):
+    """Schema 3: plain list-item prose as depth-1 paragraphs."""
+
+    def test_marker_is_excluded_from_the_span(self) -> None:
+        source = "- first item\n- second\n"
+        nested = self._nested(source)
+        self.assertEqual(len(nested), 2)
+        data = source.encode("utf-8")
+        self.assertEqual(data[nested[0]["start"]:nested[0]["end"]], b"first item")
+        self.assertEqual(data[nested[1]["start"]:nested[1]["end"]], b"second")
+        self.assertEqual(nested[0]["depth"], 1)
+        self.assertEqual(nested[0]["kind"], "paragraph")
+
+    def test_parent_is_the_list_start(self) -> None:
+        source = "- one\n- two\n"
+        top = self._ir(source)
+        lists = [r for r in top if r["kind"] == "list"]
+        self.assertEqual(len(lists), 1)
+        for child in self._nested(source):
+            self.assertEqual(child["parent"], lists[0]["start"])
+
+    def test_ordered_markers_work(self) -> None:
+        source = "1. alpha\n2. beta\n"
+        nested = self._nested(source)
+        self.assertEqual(len(nested), 2)
+        data = source.encode("utf-8")
+        self.assertEqual(data[nested[0]["start"]:nested[0]["end"]], b"alpha")
+
+    def test_loose_items_split_on_blank_lines(self) -> None:
+        source = "- first\n\n  continued\n- next\n"
+        nested = self._nested(source)
+        # Two paragraphs in the first item, one in the second.
+        self.assertEqual(len(nested), 3)
+        data = source.encode("utf-8")
+        self.assertEqual(data[nested[0]["start"]:nested[0]["end"]], b"first")
+        self.assertIn(b"continued", data[nested[1]["start"]:nested[1]["end"]])
+
+    def test_pipe_prose_is_still_nested(self) -> None:
+        # A bare pipe in item text is not a table; under-report only real tables.
+        source = "- use A | B here\n"
+        nested = self._nested(source)
+        self.assertEqual(len(nested), 1)
+        data = source.encode("utf-8")
+        self.assertEqual(data[nested[0]["start"]:nested[0]["end"]],
+                         b"use A | B here")
+
+    def test_non_prose_runs_are_not_nested(self) -> None:
+        # Opacity is per blank-separated run: plain intro may still nest, but
+        # the fence/quote/heading/table run must not become a depth-1 paragraph.
+        cases = {
+            "fence": "- intro\n\n  ```\n  code\n  ```\n",
+            "heading": "- intro\n\n  # nested head\n",
+            "blockquote": "- intro\n\n  > quoted\n",
+            "table": "- intro\n\n  a | b\n  --|--\n  1 | 2\n",
+        }
+        for name, source in cases.items():
+            with self.subTest(construct=name):
+                nested = self._nested(source)
+                data = source.encode("utf-8")
+                for child in nested:
+                    span = data[child["start"]:child["end"]]
+                    self.assertNotIn(b"```", span)
+                    self.assertNotIn(b"> quoted", span)
+                    self.assertNotIn(b"# nested", span)
+                    self.assertNotIn(b"--|--", span)
+                # The plain intro is still reachable.
+                self.assertTrue(
+                    any(data[c["start"]:c["end"]] == b"intro" for c in nested),
+                    msg=nested,
+                )
+
+    def test_blockquote_alone_in_item_is_opaque(self) -> None:
+        # Mis-report would emit a paragraph spanning the `>` markers.
+        source = "- > quoted line\n"
+        self.assertEqual(self._nested(source), [])
+        self.assertIn("list", self._kinds(source))
+
+    def test_tight_quote_after_prose_keeps_whole_run_opaque(self) -> None:
+        # No blank between intro and quote: one run, quote fails plain → none.
+        self.assertEqual(self._nested("- intro\n  > quoted\n"), [])
+
+
 class BlockKindTests(IRTestCase):
     def test_sample_document_segmentation(self) -> None:
         self.assertEqual(self._kinds(SAMPLE), [

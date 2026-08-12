@@ -19,8 +19,8 @@ from typing import Iterable, List, Optional
 
 SCHEMA = "mdtools-ir-3"
 
-# Flat parents that can hide nested blocks (no nesting yet). Used by
-# under-report warnings; an unknown kind is still opaque-but-located.
+# Containers that can still hide nested non-prose blocks (fence/table/raw
+# inside a list item stay opaque in schema 3). Used by under-report warnings.
 CONTAINER_KINDS = frozenset({"list", "block_quote"})
 
 # Schema 2 attributes every byte, so the runs between blocks arrive as `gap`
@@ -182,7 +182,8 @@ def load(paths: Iterable[Path], mdfix: Optional[str] = None) -> List[Document]:
             # Schema 3 emits prose nested inside list items. mdquery's model
             # is the flat block list — a nested paragraph would double-count
             # its parent's bytes and break `stats` and the span guarantees.
-            # A consumer that wants nesting reads raw_records().
+            # Consumers that need nesting should re-run `mdfix --emit-ir`
+            # (or read the raw JSONL); this loader only keeps depth-0 blocks.
             continue
         current.blocks.append(Block(
             kind=kind or "unknown",

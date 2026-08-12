@@ -1497,23 +1497,13 @@ static const char *ir_raw_html_name(enum raw_html_kind kind)
 
 
 /*
- * Nested prose inside list items — architecture I5.2 for consumers that edit,
- * issue #65.
+ * Nested prose inside list items (schema 3, issue #65).
  *
- * Schema 2 emitted one flat `list` record, so a paraphrasing consumer could
- * either rewrite the whole thing (markers included) or skip it. It skipped,
- * which cost prosevary every sentence inside a list.
- *
- * Children are emitted only for items whose content is *plainly* prose. An
- * item holding a fence, a table, raw HTML, indented code or a nested list
- * yields no children and stays opaque. That under-reports rather than
- * mis-reports, which is the only safe direction: a consumer that rewrites a
- * fence because the IR called it prose corrupts the document, while one that
- * skips an item merely leaves it alone. The full recursive walk that would
- * handle those items is the remaining half of #65.
- *
- * depth > 0 records are contained in their parent and do not participate in
- * the totality guarantee; see docs/ir-schema.md.
+ * Children only for items that are plainly prose. Fence, table, line block,
+ * raw HTML, indented code, heading, or block quote inside an item keeps the
+ * whole item opaque — under-report, not mis-report. Nested list markers end
+ * the outer item and start a sibling item (they are not an opacity case).
+ * Full recursive nesting is the rest of #65.
  */
 
 /* Byte offset where an item's content starts, or -1 if this is not a marker. */
@@ -1540,26 +1530,41 @@ static int list_marker_bytes(const char *line)
     return i;
 }
 
-/* A line that is ordinary prose once the item's indentation is discounted. */
+/* A line that is ordinary prose once the item's indentation is discounted.
+ * On a marker line, openers are checked on the content after the marker so
+ * `- > quote` and `- # Head` stay opaque rather than mis-reporting prose. */
 static int item_line_is_plain(int i, int content_col)
 {
     const char *line = lines[i];
+    int marker = list_marker_bytes(line);
+    const char *body = (marker >= 0) ? line + marker : line;
     struct fence_state probe;
-    if (parse_fence_opener(line, &probe))
+
+    if (parse_fence_opener(line, &probe) || parse_fence_opener(body, &probe))
         return 0;
     if (table_block_end(i) > i)
         return 0;
-    if (raw_html_open_kind(line) != RAW_HTML_NONE)
+    if (raw_html_open_kind(line) != RAW_HTML_NONE
+        || raw_html_open_kind(body) != RAW_HTML_NONE)
         return 0;
-    if (is_thematic_break(line))
+    if (is_thematic_break(line) || is_thematic_break(body))
         return 0;
-    if (is_table_line(line) || strchr(line, '|'))
-        return 0;               /* a pipe table inside an item */
-    if (ref_def_kind(line))
+    /* Pipe table / line block — same discrimination as top-level IR. */
+    if (is_table_line(line) || is_table_line(body))
+        return 0;
+    if (is_pipe_delim_row(line) || is_pipe_delim_row(body))
+        return 0;
+    if (i + 1 < nlines && is_pipe_delim_row(lines[i + 1])
+        && (is_headerless_table_header(line)
+            || is_headerless_table_header(body)))
+        return 0;
+    if (is_blockquote_line(line) || is_blockquote_line(body))
+        return 0;
+    if (ref_def_kind(line) || ref_def_kind(body))
         return 0;
     if (indent_columns(line, NULL) >= content_col + 4)
         return 0;               /* indented code relative to the item */
-    if (is_heading(line))
+    if (is_heading(line) || is_heading(body))
         return 0;
     return 1;
 }
