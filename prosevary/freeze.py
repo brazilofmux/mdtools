@@ -30,9 +30,20 @@ _PRODUCT = re.compile(r"\bSLOW-?\d+\b", re.IGNORECASE)
 # Structural Markdown/Pandoc inline forms: freeze the whole match so a rewrite
 # cannot drop a destination, image target, citation, attribute, or footnote ref.
 # Destination-aware patterns keep the full construct, not just the label text.
-_INLINE_IMAGE = re.compile(r"!\[[^\]]*\]\([^)]+\)")
-_INLINE_LINK = re.compile(r"(?<!!)\[[^\]]+\]\([^)]+\)")
-_INLINE_REF_LINK = re.compile(r"(?<!!)\[[^\]]+\]\[[^\]]*\]")
+# Label may nest one level of brackets so an image inside a link
+# (`[![alt](img)](url)`) is captured whole rather than as a broken fragment.
+_LABEL = r"\[(?:[^\[\]]|\[[^\[\]]*\])*\]"
+# Destination may contain one level of balanced parens, as Wikipedia URLs do
+# (`.../Foo_(bar)`); `[^)]+` stopped at the inner paren and left the trailing
+# `)` outside the frozen span, where a rewrite could drop it.
+_DEST = r"\((?:[^()\s]|\([^()]*\))*(?:\s+(?:\"[^\"]*\"|'[^']*'))?\)"
+_INLINE_IMAGE = re.compile(r"!" + _LABEL + _DEST)
+_INLINE_LINK = re.compile(r"(?<!!)" + _LABEL + _DEST)
+_INLINE_REF_LINK = re.compile(r"(?<!!)" + _LABEL + r"\[[^\]]*\]")
+# Shortcut reference link `[foo]` — no destination, no second bracket pair.
+# Its definition is frozen as a block, so leaving the label rewritable would
+# break the link and orphan a definition promised to stay byte-identical.
+_SHORTCUT_REF = re.compile(r"(?<!!)\[[^\]\n]+\](?![\(\[:])")
 _AUTOLINK = re.compile(r"<https?://[^>\s]+>|<mailto:[^>\s]+>", re.IGNORECASE)
 _FOOTNOTE_REF = re.compile(r"\[\^[^\]]+\]")
 _CITATION = re.compile(r"(?<![A-Za-z0-9])@[\w:-]+")
@@ -94,6 +105,9 @@ def sentence_freeze(text: str, glossary: Iterable[str]) -> FreezeSet:
         _FOOTNOTE_REF,
         _PANDOC_ATTR,
         _CITATION,
+        # Last: only labels no earlier pattern already claimed as a full
+        # link, image, ref-link, or footnote reference.
+        _SHORTCUT_REF,
     ):
         for m in pat.finditer(text):
             fs.spans.append(m.group(0))

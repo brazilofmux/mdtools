@@ -146,5 +146,96 @@ class AmbiguousDefaultsFrozenTests(unittest.TestCase):
         self.assertEqual(_kinds(source), ["TABLE"])
 
 
+class ReviewFixTests(unittest.TestCase):
+    """Regressions for the review round on the protected-regions work."""
+
+    def test_table_delimiter_row_accepts_gfm_short_forms(self) -> None:
+        # GFM needs only one dash. Requiring three let no-leading-pipe tables
+        # with short or aligned delimiters through to the paraphraser; the
+        # original suite only covered the "--- | ---" form that worked.
+        for delim in ("--- | ---", ":-: | :-:", "- | -", "-- | --", ":- | -:"):
+            source = f"Name | Type\n{delim}\nfoo | bar\n"
+            with self.subTest(delim=delim):
+                self.assertEqual(_sentences(source), [])
+                self.assertEqual(_kinds(source), ["TABLE", "TABLE", "TABLE"])
+
+    def test_lone_dash_underline_does_not_merge_with_title(self) -> None:
+        # "Subtitle\n-" split as one sentence, so a single rewrite replaced
+        # the title and destroyed its underline.
+        source = "Subtitle\n-\n\nBody text follows.\n"
+        self.assertEqual(_kinds(source)[:2], ["HEADING", "HEADING"])
+        self.assertNotIn("Subtitle", "".join(_sentences(source)))
+
+    def test_setext_freezes_the_whole_preceding_paragraph(self) -> None:
+        # CommonMark makes the entire paragraph the heading, not just the
+        # line directly above the underline.
+        source = "Line one of prose.\nLine two of prose.\n---\n"
+        self.assertEqual(_kinds(source), ["HEADING", "HEADING", "HEADING"])
+        self.assertEqual(_sentences(source), [])
+
+    def test_indented_continuation_is_not_code(self) -> None:
+        # Indented code cannot interrupt a paragraph. Splitting here handed
+        # generation the fragment "This is a paragraph that wraps".
+        source = "This is a paragraph that wraps\n    with a hanging indent.\n"
+        self.assertEqual(_kinds(source), ["TEXT", "TEXT"])
+        self.assertEqual(len(_sentences(source)), 1)
+
+    def test_reference_definition_title_continuation_frozen(self) -> None:
+        source = '[ref]: https://example.com\n  "Optional Title Here"\n'
+        self.assertEqual(_kinds(source), ["REFERENCE", "REFERENCE"])
+        self.assertEqual(_sentences(source), [])
+
+    def test_inline_html_does_not_swallow_following_prose(self) -> None:
+        # <span>x</span> opened a block and froze every line to the next blank.
+        source = "Some prose here.\n<span>inline html</span>\nMore prose follows.\n"
+        self.assertEqual(_kinds(source), ["TEXT", "HTML", "TEXT"])
+        self.assertIn("More prose follows.", "".join(_sentences(source)))
+
+    def test_table_run_does_not_absorb_following_prose(self) -> None:
+        source = "| Name | Type |\n|---|---|\n| a | b |\nThis prose has a | pipe.\n"
+        self.assertEqual(_kinds(source)[-1], "TEXT")
+
+    def test_list_item_paragraph_keeps_load_bearing_indent(self) -> None:
+        # The indent lives at the head of the first span; dropping it ejects
+        # the paragraph from its list item, splitting one list into two.
+        source = "- item one\n\n  Second paragraph of the item.\n\n- item two\n"
+        doc = parse(source)
+        keys = [(r.region_id, i) for r in doc.regions for i, _ in enumerate(r.sentences)]
+        self.assertEqual(len(keys), 1)
+        out = doc.reconstruct({keys[0]: "Rewritten second paragraph."})
+        self.assertIn("\n  Rewritten second paragraph.\n", out)
+
+
+class InlineFreezeReviewTests(unittest.TestCase):
+    def test_image_inside_link_freezes_outer_destination(self) -> None:
+        text = "Click [![logo](img/l.png)](https://example.com/home) now."
+        spans = sentence_freeze(text, set()).spans
+        self.assertTrue(any("https://example.com/home)" in s for s in spans), spans)
+
+    def test_balanced_parens_in_destination_are_kept(self) -> None:
+        text = "See [wiki](https://en.wikipedia.org/wiki/Foo_(bar)) here."
+        spans = sentence_freeze(text, set()).spans
+        self.assertIn("[wiki](https://en.wikipedia.org/wiki/Foo_(bar))", spans)
+
+    def test_shortcut_reference_label_is_frozen(self) -> None:
+        # Its definition is block-frozen, so a rewritable label would orphan it.
+        fs = sentence_freeze("See [foo] for details.", set())
+        self.assertIn("[foo]", fs.spans)
+        self.assertIsNotNone(
+            fs.check("See [foo] for details.", "See [bar] for details.")
+        )
+
+    def test_ordinary_links_still_frozen(self) -> None:
+        text = "Prose with [a link](http://x.com) and ![img](y.png) and <http://a.com>."
+        fs = sentence_freeze(text, set())
+        for bad in (
+            "Prose with [a hyperlink](http://x.com) and ![img](y.png) and <http://a.com>.",
+            "Prose with [a link](http://x.com) and ![image](y.png) and <http://a.com>.",
+            "Prose with [a link](http://x.com) and ![img](y.png) and <http://b.com>.",
+        ):
+            with self.subTest(bad=bad):
+                self.assertIsNotNone(fs.check(text, bad))
+
+
 if __name__ == "__main__":
     unittest.main()

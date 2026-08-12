@@ -50,13 +50,22 @@ _HTML_CDATA = re.compile(r"^ {0,3}<!\[CDATA\[")
 _HTML_PI = re.compile(r"^ {0,3}<\?")
 # Complete single-line HTML comment.
 _HTML_COMMENT_FULL = re.compile(r"^ {0,3}<!--.*?-->\s*$")
-# Setext underlines: 0–3 spaces, then only = or only - (CM allows 1+; we
-# require 3+ dashes so a lone "-" in prose is not an underline).
+# One HTML tag: (closing slash, name, self-closing slash).
+_HTML_TAG = re.compile(r"<(/?)([a-zA-Z][\w-]*)\b[^>]*?(/?)>")
+# Setext underlines: 0–3 spaces, then only = or only -. CommonMark allows a
+# single dash, and requiring 3+ did not merely miss headings — the title and a
+# lone "-" merged into one region and split as the single sentence
+# "Subtitle\n-", so one accepted rewrite destroyed both. A bare dash run is
+# only ever read as an underline when a paragraph line precedes it (see the
+# setext branch in classify_lines); "- item" is a list because _LIST requires
+# whitespace after the marker.
 _SETEXT_EQ = re.compile(r"^ {0,3}=+\s*$")
-_SETEXT_DASH = re.compile(r"^ {0,3}-{3,}\s*$")
+_SETEXT_DASH = re.compile(r"^ {0,3}-+\s*$")
 # Link/image reference definitions and Pandoc footnote definitions.
 _REF_DEF = re.compile(r"^ {0,3}\[[^\]\n]+\]:\s+\S")
 _FOOTNOTE_DEF = re.compile(r"^ {0,3}\[\^[^\]\n]+\]:")
+# Continuation line carrying a reference definition's optional title.
+_REF_TITLE_CONT = re.compile(r"""^\s+(["'(]).*$""")
 # Sentence end: .!? optional close-quote, whitespace, next sentence-ish token.
 # Conservative; abbrev false splits (e.g. "Dr. Smith") are acceptable for v0.
 _SENT_SPLIT = re.compile(
@@ -222,7 +231,11 @@ def _is_table_separator(line: str) -> bool:
     if not cells:
         return False
     for cell in cells:
-        if not re.fullmatch(r":?-{3,}:?", cell.strip()):
+        # GFM requires only one dash per cell: `-`, `--`, `:-:`, `:-` are all
+        # valid delimiter rows. Requiring three let no-leading-pipe tables with
+        # short or aligned delimiters through to the paraphraser; leading-pipe
+        # tables only escaped that via the _TABLE_LEADING fallback.
+        if not re.fullmatch(r":?-+:?", cell.strip()):
             return False
     return True
 
@@ -249,10 +262,18 @@ def _is_html_block_complete(line: str) -> bool:
     # Self-contained one-line tag with a closer on the same line, e.g. <br/>.
     if re.match(r"^ {0,3}<[^>]+/>\s*$", line):
         return True
-    if re.match(r"^ {0,3}</?[a-zA-Z][^>]*>\s*$", line) and line.count("<") == 1:
-        # Single open or close tag alone — still start a block if it's an open
-        # container; only treat pure close tags as complete.
-        if re.match(r"^ {0,3}</", line):
+    # Every tag opened on this line is also closed on it, e.g.
+    # "<span>inline html</span>". Previously no branch matched such a line, so
+    # it opened a block and silently froze every following line up to the next
+    # blank — swallowing ordinary prose.
+    tags = _HTML_TAG.findall(line)
+    if tags:
+        depth = 0
+        for closing, _name, self_closing in tags:
+            if self_closing:
+                continue
+            depth += -1 if closing else 1
+        if depth <= 0:
             return True
     return False
 
@@ -346,6 +367,16 @@ def classify_lines(raw_lines: Sequence[str]) -> List[Line]:
             and _setext_text_ok(stripped)
             and _is_setext_underline(raw_lines[i + 1].rstrip("\r\n"))
         ):
+            # CommonMark makes the *whole* preceding paragraph the heading, not
+            # just the line above the underline. Retroactively promote the
+            # contiguous run of TEXT already emitted, otherwise earlier lines of
+            # a multi-line heading stay paraphrasable.
+            j = len(lines) - 1
+            while j >= 0 and lines[j].kind is LineKind.TEXT:
+                lines[j] = Line(
+                    kind=LineKind.HEADING, text=lines[j].text, raw=lines[j].raw
+                )
+                j -= 1
             emit(LineKind.HEADING, raw)
             emit(LineKind.HEADING, raw_lines[i + 1])
             i += 2
@@ -363,6 +394,10 @@ def classify_lines(raw_lines: Sequence[str]) -> List[Line]:
             and _looks_like_table_row(stripped)
             and _is_table_separator(raw_lines[i + 1].rstrip("\r\n"))
         ):
+            # A leading-pipe table's rows all start with a pipe. Without this
+            # the run absorbed the first prose line that merely contained a
+            # pipe, freezing it out of generation entirely.
+            leading_style = stripped.lstrip().startswith("|")
             while i < n:
                 row = raw_lines[i]
                 row_s = row.rstrip("\r\n")
@@ -371,6 +406,8 @@ def classify_lines(raw_lines: Sequence[str]) -> List[Line]:
                 if not (
                     _looks_like_table_row(row_s) or _is_table_separator(row_s)
                 ):
+                    break
+                if leading_style and not row_s.lstrip().startswith("|"):
                     break
                 emit(LineKind.TABLE, row)
                 i += 1
@@ -403,6 +440,12 @@ def classify_lines(raw_lines: Sequence[str]) -> List[Line]:
         if _is_reference_def(stripped):
             emit(LineKind.REFERENCE, raw)
             i += 1
+            # A definition's optional title may sit on the next indented line;
+            # left as TEXT it became a paraphrasable "sentence" that a rewrite
+            # would corrupt.
+            while i < n and _REF_TITLE_CONT.match(raw_lines[i].rstrip("\r\n")):
+                emit(LineKind.REFERENCE, raw_lines[i])
+                i += 1
             continue
 
         # ── HTML block start ──
@@ -414,7 +457,13 @@ def classify_lines(raw_lines: Sequence[str]) -> List[Line]:
             continue
 
         # ── Indented code (4 spaces or tab) ──
-        if _is_indented_code(stripped):
+        # Indented code cannot interrupt a paragraph: an indented line directly
+        # after a TEXT line is a lazy continuation. Firing here split paragraphs
+        # mid-sentence and handed generation a fragment whose frozen tail would
+        # not rejoin grammatically.
+        if _is_indented_code(stripped) and not (
+            lines and lines[-1].kind is LineKind.TEXT
+        ):
             while i < n and _is_indented_code(raw_lines[i].rstrip("\r\n")):
                 emit(LineKind.INDENTED_CODE, raw_lines[i])
                 i += 1
@@ -425,62 +474,6 @@ def classify_lines(raw_lines: Sequence[str]) -> List[Line]:
         i += 1
 
     return lines
-
-
-def classify_line(
-    text: str,
-    fence: Optional[FenceState],
-    in_front_matter: bool,
-    line_no: int,
-) -> Tuple[LineKind, Optional[FenceState], bool]:
-    """
-    Single-line classifier for simple callers and tests.
-
-    Multi-line constructs (setext pairs, GFM tables, HTML block bodies)
-    need classify_lines / parse — this helper cannot see look-ahead.
-    """
-    stripped = text.rstrip("\r\n")
-
-    if line_no == 0 and stripped.strip() == "---":
-        return LineKind.FRONT_MATTER, fence, True
-    if in_front_matter:
-        if stripped.strip() == "---":
-            return LineKind.FRONT_MATTER, fence, False
-        return LineKind.FRONT_MATTER, fence, True
-
-    if fence is not None:
-        if _is_fence_closer(stripped, fence):
-            return LineKind.FENCE, None, False
-        return LineKind.FENCE, fence, False
-
-    opener = _fence_opener(stripped)
-    if opener is not None:
-        return LineKind.FENCE, opener, False
-    if not stripped.strip():
-        return LineKind.BLANK, None, False
-    if _HEADING.match(stripped):
-        return LineKind.HEADING, None, False
-    if _is_setext_underline(stripped):
-        # Without the preceding text line this is a thematic break when dashes,
-        # or an inert underline when equals — freeze either way.
-        if _SETEXT_EQ.match(stripped):
-            return LineKind.HEADING, None, False
-        return LineKind.HR, None, False
-    if _HR.match(stripped.strip()):
-        return LineKind.HR, None, False
-    if _TABLE_LEADING.match(stripped) or _is_table_separator(stripped):
-        return LineKind.TABLE, None, False
-    if _BLOCKQUOTE.match(stripped):
-        return LineKind.BLOCKQUOTE, None, False
-    if _LIST.match(stripped):
-        return LineKind.LIST, None, False
-    if _is_reference_def(stripped):
-        return LineKind.REFERENCE, None, False
-    if _is_html_block_start(stripped):
-        return LineKind.HTML, None, False
-    if _is_indented_code(stripped):
-        return LineKind.INDENTED_CODE, None, False
-    return LineKind.TEXT, None, False
 
 
 def split_sentences(prose: str) -> List[Tuple[int, int, str]]:
@@ -513,12 +506,20 @@ def split_sentences(prose: str) -> List[Tuple[int, int, str]]:
         chunk = prose[a:b]
         if not chunk.strip():
             continue
-        # Trailing whitespace belongs to the gap between sentences, not to the
-        # sentence. The final span runs to end-of-region, so leaving the
+        # Whitespace at either edge belongs to the gap between sentences, not
+        # to the sentence, and reconstruct() re-emits anything outside a span
+        # verbatim.
+        #
+        # Trailing: the final span runs to end-of-region, so leaving the
         # newline inside it means an accepted rewrite silently eats it.
-        # reconstruct() re-emits anything outside a span verbatim.
-        trimmed = chunk.rstrip()
-        out.append((a, a + len(trimmed), trimmed))
+        #
+        # Leading: a paragraph indented inside a list item carries its indent
+        # at the head of the first span. That indent is load-bearing — drop it
+        # and a second paragraph escapes its list item, splitting one list into
+        # two with a stray paragraph between.
+        lead = len(chunk) - len(chunk.lstrip())
+        trimmed = chunk.strip()
+        out.append((a + lead, a + lead + len(trimmed), trimmed))
     return out
 
 
