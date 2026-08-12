@@ -2279,7 +2279,18 @@ static void process(FILE *out)
 
     enum linetype prev_content_type = LT_BLANK;
     int prev_was_list_ctx = 0;    /* was previous content in a list context? */
-    int list_content_col = 0;     /* content column of the enclosing list item */
+    /*
+     * Content column of the enclosing list item. Indented code starts at
+     * list_content_col + 4, not at margin + 4.
+     *
+     * Branches that consume a block and continue (fence, grid/simple table,
+     * and any similar sibling) clear this only when the block starts
+     * strictly left of list_content_col — that means the list item ended.
+     * A block at or past that column is nested and must leave the value
+     * standing. Blank lines keep the column so nested-code detection still
+     * works after a blank inside an item.
+     */
+    int list_content_col = 0;
     int had_blank = 1;            /* start-of-file counts as separation */
 
     for (int i = 0; i < nlines; i++) {
