@@ -24,7 +24,11 @@ def annotate(document: Document) -> Document:
     rather than per block.
     """
     headings = [b for b in document.blocks if b.kind == "heading"]
-    for block, slug in zip(headings, assign_slugs([b.text or "" for b in headings])):
+    # `plain` when mdfix supplies it: raw text still carries inline link
+    # destinations and emphasis delimiters, which Pandoc's identifier pass
+    # does not see. Falling back to `text` keeps an older mdfix working.
+    texts = [b.plain if b.plain is not None else (b.text or "") for b in headings]
+    for block, slug in zip(headings, assign_slugs(texts)):
         block.slug = slug
 
     # stack[i] is the innermost heading at each level seen so far.

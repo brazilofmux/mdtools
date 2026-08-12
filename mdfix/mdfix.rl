@@ -907,6 +907,279 @@ static void ir_block(FILE *out, const char *kind, int i0, int i1, int protectd)
 }
 
 /* Heading level and the text after the marker, trailing '#' run removed. */
+/*
+ * Inline markup stripped to the text Pandoc's identifier pass sees.
+ *
+ * `heading.text` is raw source, so a consumer computing an anchor from it
+ * diverges wherever markup carries text that is not literal. Rather than let
+ * every consumer grow an inline parser — the leak dialect-policy §2 exists to
+ * prevent — mdfix does the stripping and the consumer does the character
+ * filtering and Unicode lowercasing, which C is the wrong language for.
+ *
+ * Exactly three constructs need handling; everything else already agrees once
+ * a consumer drops non-identifier characters. Pinned with `pandoc -t json`:
+ *
+ *     [inline](http://u)      -> 'inline'      destination must go
+ *     ![img](i.png)           -> 'img'
+ *     _under_                 -> 'under'       delimiters must go
+ *     <span>html</span>       -> 'html'        tags must go
+ *     [text][id]              -> 'textid'      LEFT RAW, see below
+ *     `code`, <http://a>      -> already agree (backticks/brackets filtered)
+ *     note[^1], 2*3*4, a_b_c  -> already agree
+ *
+ * Reference links stay raw on purpose. Pandoc computes header identifiers
+ * before it resolves references, so `## [text][id]` is 'textid' whether or not
+ * the definition exists — verified both ways. Reducing it to 'text' would be
+ * more principled and would not match.
+ */
+
+/* A raw inline HTML tag, not an autolink: `<http://x>` has ':' after the
+ * name, where a tag has whitespace, '/' or '>'. Returns bytes consumed. */
+static int inline_html_tag_len(const char *s)
+{
+    int i = 0;
+    if (s[i] != '<')
+        return 0;
+    i++;
+    if (s[i] == '/')
+        i++;
+    if (!isalpha((unsigned char)s[i]))
+        return 0;
+    while (isalnum((unsigned char)s[i]) || s[i] == '-')
+        i++;
+    if (s[i] != ' ' && s[i] != '\t' && s[i] != '/' && s[i] != '>')
+        return 0;
+    while (s[i] && s[i] != '>' && s[i] != '<')
+        i++;
+    return (s[i] == '>') ? i + 1 : 0;
+}
+
+/*
+ * Span of an inline link or image starting at `s`, or 0.
+ *
+ * Fills text_off/text_len with the bracketed text. Only the inline form
+ * counts: a '(' must follow the ']' immediately.
+ */
+static int inline_link_len(const char *s, int *text_off, int *text_len)
+{
+    int i = 0;
+    if (s[i] == '!')
+        i++;
+    if (s[i] != '[')
+        return 0;
+    int open = ++i;
+    int depth = 1;
+    for (; s[i]; i++) {
+        if (s[i] == '\\' && s[i + 1]) {
+            i++;
+            continue;
+        }
+        if (s[i] == '[')
+            depth++;
+        else if (s[i] == ']' && --depth == 0)
+            break;
+    }
+    if (s[i] != ']')
+        return 0;
+    int close = i;
+    if (s[i + 1] != '(')
+        return 0;               /* reference or shortcut form: leave raw */
+    i += 2;
+    depth = 1;
+    for (; s[i]; i++) {
+        if (s[i] == '\\' && s[i + 1]) {
+            i++;
+            continue;
+        }
+        if (s[i] == '(')
+            depth++;
+        else if (s[i] == ')' && --depth == 0)
+            break;
+    }
+    if (s[i] != ')')
+        return 0;
+    *text_off = open;
+    *text_len = close - open;
+    return i + 1;
+}
+
+/*
+ * Word-ish for the intraword-underscore rule, UTF-8 aware.
+ *
+ * `isalnum` is byte-based, so every multibyte letter looked like punctuation
+ * and `漢字_の_強調` came out as `漢字の強調` where Pandoc keeps the underscores
+ * literal. Pandoc applies the rule to Unicode alphanumerics, so any
+ * continuation or lead byte counts as word-ish here.
+ *
+ * The approximation is deliberate and one-sided: a *symbol* above U+007F —
+ * `∈_x_`, say — is alphanumeric to this test and is not to Pandoc, so mdfix
+ * leaves the underscores literal where Pandoc would emphasise. Erring that way
+ * keeps text as written rather than silently deleting a character, and it is
+ * the direction that serves Greek, Cyrillic, CJK and Hangul prose, where an
+ * underscore against a letter is the case that actually occurs. Classifying
+ * properly needs Unicode character tables, which do not belong in this file.
+ */
+static int is_wordish_byte(unsigned char c)
+{
+    return isalnum(c) || c >= 0x80;
+}
+
+/* Emphasis flanking, simplified from CommonMark. `_` additionally refuses to
+ * open after, or close before, an alphanumeric — that is +intraword_underscores,
+ * which keeps `a_b_c` and `漢字_の_強調` literal. */
+static int emphasis_can_open(char marker, unsigned char before, unsigned char after)
+{
+    if (after == '\0' || after == ' ' || after == '\t')
+        return 0;
+    if (marker == '_' && is_wordish_byte(before))
+        return 0;
+    return 1;
+}
+
+static int emphasis_can_close(char marker, unsigned char before, unsigned char after)
+{
+    if (before == '\0' || before == ' ' || before == '\t')
+        return 0;
+    if (marker == '_' && is_wordish_byte(after))
+        return 0;
+    return 1;
+}
+
+#define IR_EMPH_STACK 32
+
+/*
+ * Link text is processed in place rather than copied, and nesting is capped.
+ *
+ * The first version recursed with two MAX_LINE buffers per frame, so a heading
+ * of nested link text — `[[[[x](u)](u)](u)](u)` and so on — overflowed the
+ * stack and segfaulted at around 1200 levels. Passing a range removes the
+ * per-frame buffers; the cap removes the unbounded recursion. Past the cap the
+ * remaining text is copied verbatim, which under-reports rather than crashing.
+ */
+#define IR_INLINE_MAX_DEPTH 24
+
+static size_t inline_plain_range(const char *src, int from, int to,
+                                 char *out, size_t n, size_t outsz, int depth)
+{
+    struct { int pos; int len; char marker; } stack[IR_EMPH_STACK];
+    int open_count = 0;
+    int i = from;
+
+    if (depth >= IR_INLINE_MAX_DEPTH) {
+        while (i < to && n + 1 < outsz)
+            out[n++] = src[i++];
+        return n;
+    }
+
+    while (i < to && n + 1 < outsz) {
+        /* Escapes first: a backslashed marker is never markup. */
+        if (src[i] == '\\' && i + 1 < to) {
+            if (n + 2 >= outsz)
+                break;
+            out[n++] = src[i++];
+            out[n++] = src[i++];
+            continue;
+        }
+
+        /* Code spans are opaque — a '*' inside is not a delimiter. */
+        if (src[i] == '`') {
+            int run = 0;
+            while (i + run < to && src[i + run] == '`')
+                run++;
+            int j = i + run;
+            int found = 0;
+            while (j < to) {
+                int close = 0;
+                while (j + close < to && src[j + close] == '`')
+                    close++;
+                if (close == run && close > 0) {
+                    found = 1;
+                    break;
+                }
+                j += close ? close : 1;
+            }
+            int end = found ? j + run : to;
+            while (i < end && n + 1 < outsz)
+                out[n++] = src[i++];
+            continue;
+        }
+
+        if (src[i] == '<') {
+            int tag = inline_html_tag_len(src + i);
+            if (tag && i + tag <= to) {
+                i += tag;       /* RawInline contributes no text */
+                continue;
+            }
+        }
+
+        if (src[i] == '[' || (src[i] == '!' && i + 1 < to && src[i + 1] == '[')) {
+            int text_off = 0, text_len = 0;
+            int span = inline_link_len(src + i, &text_off, &text_len);
+            if (span && i + span <= to) {
+                n = inline_plain_range(src, i + text_off, i + text_off + text_len,
+                                       out, n, outsz, depth + 1);
+                i += span;
+                continue;
+            }
+        }
+
+        if (src[i] == '*' || src[i] == '_') {
+            char marker = src[i];
+            int run = 0;
+            while (i + run < to && src[i + run] == marker)
+                run++;
+            unsigned char before = (i > from) ? (unsigned char)src[i - 1] : '\0';
+            unsigned char after = (i + run < to) ? (unsigned char)src[i + run] : '\0';
+            int can_open = emphasis_can_open(marker, before, after);
+            int can_close = emphasis_can_close(marker, before, after);
+
+            int matched = -1;
+            if (can_close) {
+                for (int k = open_count - 1; k >= 0; k--) {
+                    if (stack[k].marker == marker) {
+                        matched = k;
+                        break;
+                    }
+                }
+            }
+            if (matched >= 0) {
+                /* Splice the opener back out; anything pushed after it was
+                 * never matched and stays literal. */
+                int pos = stack[matched].pos;
+                int len = stack[matched].len;
+                memmove(out + pos, out + pos + len, n - (size_t)(pos + len));
+                n -= (size_t)len;
+                open_count = matched;
+                i += run;
+                continue;
+            }
+            /* Unmatched openers stay in the output until something closes
+             * them, so `_unclosed` keeps its underscore the way Pandoc does. */
+            if (can_open && open_count < IR_EMPH_STACK) {
+                stack[open_count].pos = (int)n;
+                stack[open_count].len = run;
+                stack[open_count].marker = marker;
+                open_count++;
+            }
+            for (int k = 0; k < run && n + 1 < outsz; k++)
+                out[n++] = marker;
+            i += run;
+            continue;
+        }
+
+        out[n++] = src[i++];
+    }
+    return n;
+}
+
+static void inline_plain(const char *src, char *out, size_t outsz)
+{
+    if (outsz == 0)
+        return;
+    size_t n = inline_plain_range(src, 0, (int)strlen(src), out, 0, outsz, 0);
+    out[n] = '\0';
+}
+
 static void ir_emit_heading(FILE *out, int i)
 {
     const char *line = lines[i];
@@ -943,9 +1216,14 @@ static void ir_emit_heading(FILE *out, int i)
     memcpy(text, line + p, (size_t)n);
     text[n] = '\0';
 
+    char plain[MAX_LINE];
+    inline_plain(text, plain, sizeof plain);
+
     ir_open(out, "heading", i, i, 0);
     fprintf(out, ",\"level\":%d,\"text\":", level);
     ir_json_string(out, text);
+    fputs(",\"plain\":", out);
+    ir_json_string(out, plain);
     fputs("}\n", out);
 }
 

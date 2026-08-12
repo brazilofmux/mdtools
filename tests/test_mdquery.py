@@ -256,29 +256,53 @@ class SlugOracleTests(MdqueryTestCase):
                 self.assertEqual([b.slug for b in outline(document)],
                                  self._pandoc_ids(path))
 
-    def test_link_in_heading_is_the_known_divergence(self) -> None:
-        # Pinned rather than hidden: fixing it needs inline structure in the
-        # IR (#15 part 3), not a Markdown parser inside mdquery.
-        path = self.dir / "d.md"
-        path.write_text("## [link](http://x)\n", encoding="utf-8")
-        document = annotate(load([path])[0])
-        self.assertEqual([b.slug for b in outline(document)], ["linkhttpx"])
-        self.assertEqual(self._pandoc_ids(path), ["link"])
-
-    def test_underscore_emphasis_is_a_known_divergence(self) -> None:
-        # Same class as links: raw IR text keeps "_", which is a slug character.
-        # Pandoc strips emphasis markers before slugging. Do not "fix" by
-        # parsing emphasis here.
-        for text, ours, pandoc in (
-            ("_emphasis_", "emphasis_", "emphasis"),
-            ("__bold__", "bold__", "bold"),
-        ):
+    def test_inline_constructs_now_match_pandoc(self) -> None:
+        # These were the pinned divergences until mdfix started emitting
+        # `plain`. mdquery did not learn Markdown to close them — the
+        # stripping happens on the other side of the boundary.
+        for text in ("[link](http://x)", "![img](i.png)", "_emphasis_",
+                     "__bold__", "<span>html</span>", "a [b](c) d",
+                     "[a **b** c](u)"):
             with self.subTest(heading=text):
-                path = self.dir / "u.md"
+                path = self.dir / "d.md"
                 path.write_text(f"## {text}\n", encoding="utf-8")
                 document = annotate(load([path])[0])
-                self.assertEqual([b.slug for b in outline(document)], [ours])
-                self.assertEqual(self._pandoc_ids(path), [pandoc])
+                self.assertEqual([b.slug for b in outline(document)],
+                                 self._pandoc_ids(path))
+
+    def test_reference_links_stay_raw_because_pandoc_does(self) -> None:
+        # Pandoc computes header identifiers before resolving references, so
+        # `## [text][id]` is 'textid' whether or not the definition exists.
+        # Reducing it to 'text' would be more principled and would not match.
+        for body in ("## [text][id]\n", "## [text][id]\n\n[id]: http://y\n"):
+            with self.subTest(body=body):
+                path = self.dir / "r.md"
+                path.write_text(body, encoding="utf-8")
+                document = annotate(load([path])[0])
+                self.assertEqual([b.slug for b in outline(document)], ["textid"])
+                self.assertEqual(self._pandoc_ids(path), ["textid"])
+
+    def test_slugs_match_pandoc_across_scripts(self) -> None:
+        # Greek, Cyrillic, CJK, Hangul and mathematics, because manuscripts
+        # here use them. Python does the character filtering and lowercasing,
+        # which is Unicode-aware; C only strips the markup.
+        headings = [
+            "\u1f29 \u1f48\u03b4\u03cd\u03c3\u03c3\u03b5\u03b9\u03b1",
+            "\u0398\u03b5\u03bf\u03bb\u03bf\u03b3\u03af\u03b1 \u03ba\u03b1\u1f76 \u03c6\u03b9\u03bb\u03bf\u03c3\u03bf\u03c6\u03af\u03b1",
+            "\u6f22\u5b57\u3068\u4eee\u540d",
+            "\u4e2d\u6587\u6a19\u984c",
+            "\ud55c\uad6d\uc5b4 \uc81c\ubaa9",
+            "\u041c\u0430\u0442\u0435\u043c\u0430\u0442\u0438\u043a\u0430: \u2200x \u2208 \u211d, x\u00b2 \u2265 0",
+            "\u1f18\u03bc\u03c6\u03b1\u03c3\u03b9\u03c2 _\u1f51\u03c0\u03bf\u03b3\u03c1\u03ac\u03bc\u03bc\u03b9\u03c3\u03b7_",
+            "\u6f22\u5b57_\u306e_\u5f37\u8abf",
+            "Mixed \u0395\u03bb\u03bb\u03b7\u03bd\u03b9\u03ba\u03ac \u6f22\u5b57 and ASCII",
+        ]
+        path = self.dir / "u.md"
+        path.write_text("".join(f"## {h}\n\n" for h in headings), encoding="utf-8")
+        document = annotate(load([path])[0])
+        self.assertEqual([b.slug for b in outline(document)],
+                         self._pandoc_ids(path))
+
 
 class AncestryTests(MdqueryTestCase):
     def test_headings_carry_their_ancestors(self) -> None:

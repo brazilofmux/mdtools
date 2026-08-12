@@ -69,6 +69,10 @@ class Block:
     # Heading-only, filled in by query.annotate().
     level: Optional[int] = None
     text: Optional[str] = None
+    # Heading text with inline markup stripped by mdfix. Identifiers are
+    # computed from this, never from `text`: reducing `[a](u)` to `a` is
+    # Markdown grammar and belongs on the other side of the boundary.
+    plain: Optional[str] = None
     slug: Optional[str] = None
     # Slugs of the enclosing headings, outermost first.
     ancestors: List[str] = field(default_factory=list)
@@ -92,6 +96,8 @@ class Block:
                 out[key] = self.raw[key]
         if self.text is not None:
             out["text"] = self.text
+        if self.plain is not None and self.plain != self.text:
+            out["plain"] = self.plain
         if self.slug is not None:
             out["slug"] = self.slug
         if self.ancestors:
@@ -174,5 +180,6 @@ def load(paths: Iterable[Path], mdfix: Optional[str] = None) -> List[Document]:
             raw=record,
             level=record.get("level"),
             text=record.get("text"),
+            plain=record.get("plain"),
         ))
     return documents

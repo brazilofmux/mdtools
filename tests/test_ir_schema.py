@@ -273,6 +273,55 @@ class BlockKindTests(IRTestCase):
         self.assertEqual([(r["level"], r["text"]) for r in records],
                          [(1, "One"), (3, "Three"), (1, "C#")])
 
+    def test_heading_plain_strips_inline_markup(self) -> None:
+        # `plain` is the text Pandoc's identifier pass sees. Exactly three
+        # constructs need handling; the rest already agree once a consumer
+        # drops non-identifier characters.
+        cases = {
+            "[link](http://x)": "link",
+            "![img](i.png)": "img",
+            "a [b](c) d": "a b d",
+            "[a **b** c](u)": "a b c",
+            "*star*": "star",
+            "_under_": "under",
+            "**strong**": "strong",
+            "<span>html</span>": "html",
+            "mix *a* and _b_": "mix a and b",
+        }
+        for text, expected in cases.items():
+            with self.subTest(heading=text):
+                self.assertEqual(self._ir(f"# {text}\n")[1]["plain"], expected)
+
+    def test_heading_plain_leaves_the_rest_alone(self) -> None:
+        # Under-report rather than mis-report. Reference links especially:
+        # Pandoc computes identifiers before resolving them, so raw is right.
+        for text in ("[text][id]", "[shortcut]", "note[^1]", "<http://auto>",
+                     "`code` span", "a * b", "a_b_c", "_unclosed",
+                     "*unclosed", "trailing_", "intra_word_score"):
+            with self.subTest(heading=text):
+                self.assertEqual(self._ir(f"# {text}\n")[1]["plain"], text)
+
+    def test_heading_plain_is_unicode_clean(self) -> None:
+        # Greek, CJK and Hangul pass through untouched, and an underscore
+        # against a multibyte letter stays literal — `isalnum` is byte-based,
+        # so this read as emphasis and deleted the underscores.
+        for text in ("\u6f22\u5b57_\u306e_\u5f37\u8abf",
+                     "\u0398\u03b5\u03bf\u03bb\u03bf\u03b3\u03af\u03b1",
+                     "\ud55c\uad6d\uc5b4 \uc81c\ubaa9",
+                     "\u2200x \u2208 \u211d, x\u00b2 \u2265 0"):
+            with self.subTest(heading=text):
+                self.assertEqual(self._ir(f"# {text}\n")[1]["plain"], text)
+
+    def test_deeply_nested_link_text_does_not_crash(self) -> None:
+        # Recursing with two MAX_LINE buffers per frame segfaulted here at
+        # around 1200 levels. The scanner now works on ranges and caps depth.
+        text = "x"
+        while len(text) < 7000:
+            text = f"[{text}](u)"
+        record = self._ir(f"# {text[:7000]}\n")[1]
+        self.assertEqual(record["kind"], "heading")
+        self.assertIn("plain", record)
+
     def test_table_forms(self) -> None:
         cases = {
             "pipe": "| a | b |\n|---|---|\n| 1 | 2 |\n",

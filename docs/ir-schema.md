@@ -54,7 +54,7 @@ closed, the flag flips and the consumer sees it.
 |---|---|---|---|
 | `document` | `schema`, `source`, `bytes`, `lines` | — | header record |
 | `frontmatter` | | `true` | metadata |
-| `heading` | `level`, `text` | `false` | `Header` |
+| `heading` | `level`, `text`, `plain` | `false` | `Header` |
 | `paragraph` | | `false` | `Para` |
 | `list` | | `false` | `BulletList` / `OrderedList` |
 | `block_quote` | | `false` | `BlockQuote` |
@@ -73,6 +73,41 @@ cells (dialect-policy §7 gap 4). `htmlKind` is one of `comment`, `cdata`,
 `heading.text` is the content after the marker with a closing `#` run removed,
 so `## Sub ##` yields `Sub`. A `#` that is part of the text survives: `# C#`
 yields `C#`.
+
+### `heading.plain`
+
+The heading text as Pandoc's identifier pass sees it. A consumer computing an
+anchor must use this and never `text`, which is raw source.
+
+Exactly three constructs are stripped, because they are the only ones whose
+raw form differs from what Pandoc slugs. Pinned with `pandoc -t json`:
+
+| Heading | `text` | `plain` | Pandoc identifier |
+|---|---|---|---|
+| `[inline](http://u)` | raw | `inline` | `inline` |
+| `![img](i.png)` | raw | `img` | `img` |
+| `_under_` | raw | `under` | `under` |
+| `<span>html</span>` | raw | `html` | `html` |
+| `[text][id]` | raw | **unchanged** | `textid` |
+| `` `code` ``, `<http://a>`, `note[^1]`, `a_b_c` | raw | unchanged | already agree |
+
+**Reference links are left raw on purpose.** Pandoc computes header
+identifiers *before* it resolves references, so `## [text][id]` is `textid`
+whether or not the definition exists — verified both ways. Reducing it to
+`text` would be more principled and would not match.
+
+Splitting the work here is deliberate. Stripping markup is Markdown grammar
+and belongs in mdfix; the character filtering and lowercasing that turn
+`plain` into an anchor are Unicode text processing, which the consumer does
+because C is the wrong language for it.
+
+One approximation, and it is one-sided. The intraword-underscore rule asks
+whether the neighbouring character is alphanumeric, and mdfix treats every
+byte above U+007F as alphanumeric rather than carrying Unicode tables. That
+is correct for Greek, Cyrillic, CJK and Hangul prose — `漢字_の_強調` keeps
+its underscores, as Pandoc does — but a *symbol* neighbour such as `∈_x_`
+stays literal where Pandoc emphasises. Erring that way keeps text as written
+instead of deleting a character.
 
 ### Pipe tables and line blocks
 
