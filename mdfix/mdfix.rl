@@ -1383,31 +1383,64 @@ static void flush_paragraph(FILE *out)
  * I/O
  * ═══════════════════════════════════════════════════════════════════ */
 
-static void read_all(FILE *fp)
+static void free_lines(void);
+
+/*
+ * Read every physical line with getline. Never silently split a long line the
+ * way fgets(MAX_LINE) did (a 9000-byte line became two "lines" and a longer
+ * file while reporting clean).
+ *
+ * Processing still uses MAX_LINE-sized work buffers, so a line that would not
+ * fit is a hard error rather than a silent truncate. Returns 0 on success,
+ * 1 on I/O or capacity failure (caller free_lines).
+ */
+static int read_all(FILE *fp)
 {
-    char buf[MAX_LINE];
+    char *buf = NULL;
+    size_t cap = 0;
+    ssize_t nread;
     nlines = 0;
 
-    while (fgets(buf, sizeof(buf), fp)) {
-        /* Strip line endings — we add our own on output */
-        size_t len = strlen(buf);
-        while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r'))
-            buf[--len] = '\0';
+    while ((nread = getline(&buf, &cap, fp)) != -1) {
+        /* Strip line endings — we add our own on output (normalizes CRLF). */
+        while (nread > 0 && (buf[nread - 1] == '\n' || buf[nread - 1] == '\r'))
+            buf[--nread] = '\0';
+
+        if (nread >= MAX_LINE - 1) {
+            fprintf(stderr,
+                "error: line %d is %zd bytes (limit %d). "
+                "mdfix refuses to silently split or truncate long lines.\n",
+                nlines + 1, (ssize_t)nread, MAX_LINE - 1);
+            free(buf);
+            free_lines();
+            return 1;
+        }
 
         if (nlines >= MAX_LINES) {
             fprintf(stderr,
                 "Holy shit, %d lines? Write a shorter book.\n", MAX_LINES);
-            exit(1);
+            free(buf);
+            free_lines();
+            return 1;
         }
-        lines[nlines] = malloc(MAX_LINE);
+        lines[nlines] = malloc((size_t)nread + 1);
         if (!lines[nlines]) {
             perror("malloc failed, out of memory");
-            exit(1);
+            free(buf);
+            free_lines();
+            return 1;
         }
-        strncpy(lines[nlines], buf, MAX_LINE - 1);
-        lines[nlines][MAX_LINE - 1] = '\0';
+        memcpy(lines[nlines], buf, (size_t)nread + 1);
         nlines++;
     }
+    free(buf);
+    if (ferror(fp)) {
+        fprintf(stderr, "error reading input: ");
+        perror(NULL);
+        free_lines();
+        return 1;
+    }
+    return 0;
 }
 
 static void free_lines(void)
@@ -2520,6 +2553,58 @@ static int write_inplace(const char *input_path)
     return 0;
 }
 
+/*
+ * --canonical-lint: produce the real canonical bytes and compare them to the
+ * input. Relying on fix_counts alone missed silent normalizations (CRLF→LF,
+ * final newline) that change the file while reporting "clean".
+ *
+ * Returns 0 clean, 2 not canonical, 1 hard error.
+ */
+static int run_canonical_lint(const char *input_path)
+{
+    char tmp_path[] = "/tmp/mdfix-lint.XXXXXX";
+    int fd = mkstemp(tmp_path);
+    if (fd < 0) {
+        fprintf(stderr, "canonical-lint: can't create temp file: ");
+        perror(NULL);
+        return 1;
+    }
+    FILE *out = fdopen(fd, "w");
+    if (!out) {
+        fprintf(stderr, "canonical-lint: can't fdopen temp file: ");
+        perror(NULL);
+        close(fd);
+        unlink(tmp_path);
+        return 1;
+    }
+
+    process(out);
+    if (finalize_output(&out, tmp_path) != 0)
+        return 1;
+
+    int same = files_identical(tmp_path, input_path);
+    unlink(tmp_path);
+
+    int issues = total_issues();
+    if (!same || issues > 0) {
+        if (!opt_quiet) {
+            if (!same && issues == 0) {
+                fprintf(stderr,
+                    "canonical-lint: output differs from input "
+                    "(normalization not reflected in fix counts).\n");
+            }
+            int report = issues > 0 ? issues : 1;
+            fprintf(stderr,
+                "canonical-lint: failed with %d issue%s.\n",
+                report, report == 1 ? "" : "s");
+        }
+        return 2;
+    }
+    if (!opt_quiet)
+        fprintf(stderr, "canonical-lint: clean.\n");
+    return 0;
+}
+
 static int process_file(const char *input_path, const char *output_path)
 {
     /* Reset per-file state */
@@ -2536,14 +2621,28 @@ static int process_file(const char *input_path, const char *output_path)
         perror(NULL);
         return 1;
     }
-    read_all(in);
+    if (read_all(in) != 0) {
+        fclose(in);
+        return 1;
+    }
     fclose(in);
 
     if (opt_verbose)
         fprintf(stderr, "Read %d lines from %s\n", nlines, input_path);
 
-    /* ── Write ── */
+    /* ── Write / lint ── */
     int write_rc = 0;
+    if (opt_canonical_lint) {
+        write_rc = run_canonical_lint(input_path);
+        /* Print the fix/warning summary when there is something to count, or
+         * when the gate is clean. Skip it for pure content-diff failures
+         * (CRLF / final newline) so we do not print "clean" after a fail. */
+        if (!opt_quiet && (write_rc == 0 || total_issues() > 0))
+            print_summary(input_path);
+        free_lines();
+        return write_rc;
+    }
+
     if (opt_dryrun) {
         FILE *out = fopen("/dev/null", "w");
         if (!out) {
@@ -2585,23 +2684,8 @@ static int process_file(const char *input_path, const char *output_path)
     if (!opt_quiet)
         print_summary(input_path);
 
-    if (opt_dryrun && !opt_canonical_lint)
+    if (opt_dryrun)
         printf("(dry run — no files were harmed)\n");
-
-    if (opt_canonical_lint) {
-        int issues = total_issues();
-        if (issues > 0) {
-            if (!opt_quiet) {
-                fprintf(stderr,
-                    "canonical-lint: failed with %d issue%s.\n",
-                    issues, issues == 1 ? "" : "s");
-            }
-            free_lines();
-            return 2;
-        }
-        if (!opt_quiet)
-            fprintf(stderr, "canonical-lint: clean.\n");
-    }
 
     free_lines();
     return 0;
