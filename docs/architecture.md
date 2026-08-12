@@ -53,7 +53,7 @@ true of mdquery; prosevary still re-derives blocks in `segment.py` until
 | **L2 Required** | Transforms without which output is not reliably Pandoc-readable — [transforms.md](transforms.md) |
 | **L3 Optional** | Transforms the caller asks for, which may never break L2 — [transforms.md](transforms.md) |
 | **L4 Interface** | Emitting IR, accepting IR and edits, validating both |
-| **L5 Output** | Turning IR plus edits back into bytes |
+| **L5 Output** | Turning IR plus edits back into bytes — [edit-schema.md](edit-schema.md) |
 | **D Diagnostics** | Located, rule-identified warnings and errors from any layer |
 
 ## 2. Invariants
@@ -117,9 +117,11 @@ Each has an identifier so issues and tests can cite it.
   input byte belongs to exactly one record), and spans within bounds.
 - **I4.2 Validated IR in.** Accepted IR and edit lists are checked, not
   trusted: schema version, UTF-8, span bounds, ordering, and non-overlap.
-  A violation is refused with a diagnostic.
+  A violation is refused with a diagnostic. *(Issue #12: `--apply-edits`,
+  schema `mdtools-edits-1`; see [edit-schema.md](edit-schema.md).)*
 - **I4.3 Validate, do not repair.** An incoming edit that would break L2 is
-  **rejected**, not silently fixed. See Q3.
+  **rejected**, not silently fixed. See Q3. *(Done: the required set is run
+  over the spliced result, and a result that would need a repair is refused.)*
 - **I4.4 Schema compatibility is detectable.** New optional fields and new
   block kinds may appear without a version bump; anything else changes the
   schema name in the header record.
@@ -127,9 +129,11 @@ Each has an identifier so issues and tests can cite it.
 ### L5 — Output
 
 - **I5.1 Empty edit list is byte-identical.** Applying no edits reproduces the
-  input exactly.
+  input exactly. *(Done; the applier is the only path that preserves CRLF,
+  since the fixer normalizes it by design.)*
 - **I5.2 Minimal diff.** A one-sentence change produces a one-sentence diff.
-  Untouched regions keep their original bytes.
+  Untouched regions keep their original bytes. *(Done, by splicing rather
+  than serializing.)*
 - **I5.3 Round-trip identity.** If the IR is ever serialized rather than
   spliced, `parse → serialize` is byte-identical for unmodified input. This is
   the invariant that forces the IR to be **lossless** rather than merely
@@ -167,7 +171,8 @@ byte-span edits.
 - **Editing (target)** — prosevary, mdterms (#16), mdlinks (#14). Return span
   edits and never learn what a grid table is. **Today:** prosevary still
   classifies blocks itself and reconstructs via `Document.reconstruct`; it
-  does not yet speak edit-lists to mdfix (`--apply-edits` is unshipped; §5).
+  does not yet speak edit-lists to mdfix (applier is shipped; prosevary still
+  dual-grammar until it migrates).
 
 prosevary is Python, external, and does what it does: orchestration, SQLite,
 metrics, gate policy. None of that *needs* to be grammar once the applier
@@ -180,8 +185,8 @@ lands.
 | L1 | Block parsing broad and Pandoc-verified. Inline parsing partial (identifiers only). **No UTF-8 validation, no NFC detection.** Whole-file only; `MAX_LINES` 200000, `MAX_LINE` 8192. |
 | L2 | Required set classified in [transforms.md](transforms.md) and on by default (`--no-required` for inspection). I2.3 holds for those three repairs. |
 | L3 | ~20 transforms exist. Editorial bundle is opt-in (`--editorial`; implied by `--canonical` / `--technical`), so I3.3 holds. I3.1 matrix in `tests/test_transform_matrix.py`; still false in the pinned §7 cases (hard breaks; Chicago ellipsis). |
-| L4 | Emits IR (`--emit-ir`, schema `mdtools-ir-2`, total). **Cannot accept IR**; no validator; no `--apply-edits`. |
-| L5 | **Absent.** Output is line-based passthrough. Nothing writes from the IR. I5.1–I5.2 untestable without the applier; I5.3 groundwork (reader totality) is in place. |
+| L4 | Emits IR (`--emit-ir`, schema `mdtools-ir-2`, total). Accepts edit lists (`--apply-edits`, schema `mdtools-edits-1`) with I4.2 validation. **Still cannot accept IR** for rewrite; no general IR validator. |
+| L5 | **Splicing applier shipped** (`--apply-edits`). I5.1–I5.2 hold via splice-not-serialize. I5.3 (serialize round-trip) still needs a serializer. |
 | D | English prose on stderr. No IDs, no spans, no machine format. |
 
 Known dialect gaps are tracked in dialect-policy §7 and ir-schema's divergence
@@ -202,8 +207,8 @@ Serialization is still worth having — `--wrap` and `--canonical` are reformat
 requests, where rewriting the file *is* the ask. Schema 2 already records
 every byte (content plus `gap` records for terminators, blank runs, BOM, and
 trailing bytes), so a serializer no longer has to invent blank-line or
-line-ending policy. Remaining L5 work is the serializer / splice path itself,
-not another schema reshape for those gaps.
+line-ending policy. The splice applier is shipped; remaining L5 work is an
+optional serializer path (I5.3), not another schema reshape for those gaps.
 
 ### Q2. Does L1 normalize to NFC?
 
@@ -229,9 +234,9 @@ the failure visible instead of silent.
 **Recommend: partial *edit*, yes. Partial *parse*, only with an explicit
 resume state.**
 
-Partial edit is what spans are *for*; the L5 applier that makes it true is
-not shipped (§5 / #12). prosevary-local reconstruct is a different,
-dual-grammar mechanism. Partial parse is a different claim: classification
+Partial edit is what spans are *for*; the L5 applier (`--apply-edits`) that
+makes it true is shipped (see [edit-schema.md](edit-schema.md)). prosevary-local
+reconstruct is still a dual-grammar mechanism until it migrates. Partial parse is a different claim: classification
 depends on fence state, front-matter state, list content column, and open raw
 HTML, and `table_block_end` needs forward lookahead. Starting mid-file without
 carrying that state produces confidently wrong answers. If streaming is wanted

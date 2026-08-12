@@ -18,8 +18,9 @@ invariants each stage guarantees,
 tool. It fixes the input dialects, the single canonical output profile, and the
 rule that Markdown grammar lives in exactly one implementation.
 [docs/ir-schema.md](docs/ir-schema.md) is the interface that rule implies:
-`mdfix --emit-ir` reports block structure with byte spans, so a consumer never
-has to re-derive the grammar. [docs/mdquery.md](docs/mdquery.md) is the first
+`mdfix --emit-ir` reports block structure with byte spans and
+[docs/edit-schema.md](docs/edit-schema.md) is how changes come back, so a
+consumer never has to re-derive the grammar. [docs/mdquery.md](docs/mdquery.md) is the first
 tool built on it.
 
 ## Canonical history (mdfix)

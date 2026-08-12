@@ -55,7 +55,7 @@ because neither implementation can be trusted to agree with the other, and on
 its first run it caught only two of the three divergences it was written to
 find.
 
-### Target mechanism (reader shipped, applier not)
+### Target mechanism (reader and applier shipped)
 
 mdfix owns the grammar in both directions:
 
@@ -63,9 +63,10 @@ mdfix owns the grammar in both directions:
   stdout. A pure function of the input bytes, testable against Pandoc.
   **Shipped**, schema `mdtools-ir-2`; see [ir-schema.md](ir-schema.md).
 - **Applier** — `mdfix --apply-edits` reads a list of byte-span replacements
-  and splices them into the original bytes. **Not shipped** — issue #12.
+  and splices them into the original bytes. **Shipped**, schema
+  `mdtools-edits-1`; see [edit-schema.md](edit-schema.md).
 
-Until the applier lands and consumers migrate, prosevary still carries its own
+Both halves now exist. Until consumers migrate, prosevary still carries its own
 block classifier and `tests/test_tool_parity.py` is the dual-grammar safety
 net. The IR under-reports structure in a handful of places (setext headings,
 definition lists, math, raw LaTeX), all recorded in ir-schema.md and pinned by
@@ -369,11 +370,9 @@ document exists to prevent.
 
 Still needed:
 
-- The applier half of §2: `--apply-edits` and the edit schema (#12). The
-  reader half shipped as `mdfix --emit-ir`; see
-  [ir-schema.md](ir-schema.md).
-- Round-trip identity for the span applier: an empty edit list must produce
-  byte-identical output; then retire dual grammar and `test_tool_parity.py`.
+- Consumer migration onto `--apply-edits` (schema `mdtools-edits-1`; see
+  [edit-schema.md](edit-schema.md)) so prosevary can drop its dual grammar
+  and `test_tool_parity.py` can retire.
 - Coverage for the §7 gaps, each with the Pandoc AST (or rendered output)
   as the assertion — including hard-break preservation under `-w` and
   Unicode ellipsis under Chicago.

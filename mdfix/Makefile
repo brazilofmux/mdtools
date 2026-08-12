@@ -24,6 +24,8 @@ asan: mdfix.c
 		done; \
 		./mdfix-asan --emit-ir "$$f" >/dev/null 2>$$err || \
 			{ cat $$err; rm -f $$err; exit 1; }; \
+		printf '' | ./mdfix-asan -q --apply-edits "$$f" >/dev/null 2>$$err || \
+			{ cat $$err; rm -f $$err; exit 1; }; \
 	done || { rm -f $$err; exit 1; }; \
 	rm -f $$err; \
 	echo "asan: clean over repo markdown"
