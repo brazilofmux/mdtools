@@ -263,8 +263,10 @@ sharp edges:
   inline HTML tags, footnote refs, Pandoc attributes, and simple citations.
   Matching backtick-run inline code, occurrence counts, and full Pandoc IR
   remain open (see issues #2 follow-ups and #6).
-- Freezes are a **set, not a multiset:** a sentence containing two `<b>` tags
-  is satisfied by one surviving in the candidate (issue #6).
+- Freezes are a **multiset:** each protected span/term must appear the same
+  number of times in the candidate (two `<b>` tags require two; dropping or
+  duplicating fails). Inline code uses matching backtick-run lengths.
+  Identifier glossary terms match on token boundaries (case-sensitive).
 - List marker lines are frozen; list-continuation paragraphs that are not
   indented code can still be exposed as prose. Their leading indentation is
   preserved on rewrite, so a rewritten paragraph no longer escapes its item.
