@@ -11,7 +11,9 @@ Private toolkit for markdown structure and controlled prose variation.
 These used to be copy-pasted across `slow32-book`, `mush`, `religions`, and others.
 This repo is the source of truth.
 
-Read [docs/dialect-policy.md](docs/dialect-policy.md) before adding a pass or a
+Read [docs/architecture.md](docs/architecture.md) for the layering and the
+invariants each stage guarantees, then
+[docs/dialect-policy.md](docs/dialect-policy.md) before adding a pass or a
 tool. It fixes the input dialects, the single canonical output profile, and the
 rule that Markdown grammar lives in exactly one implementation.
 [docs/ir-schema.md](docs/ir-schema.md) is the interface that rule implies:
@@ -102,7 +104,7 @@ for technical notation pipelines (`C → IR → asm`).
 mdfix/           # Ragel source, generated C, Makefile
 mdquery/          # Python package (python -m mdquery)
 prosevary/        # Python package (python -m prosevary)
-docs/             # architecture decisions (start with dialect-policy.md)
+docs/             # architecture decisions (start with architecture.md)
 scripts/          # install helpers
 Makefile          # top-level build/install
 ```
