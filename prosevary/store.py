@@ -12,6 +12,16 @@ from typing import Iterable, List, Optional, Sequence, Tuple
 
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 
+# Synonym pairs that change meaning rather than wording. Offline runs have only
+# the freeze check as a real gate, so a curated synonym is an unsupervised
+# accept — these must never be proposable. Both are rewrites the judge probes
+# explicitly reject: `demonstrate -> prove` is probe #1, and `failed -> broke`
+# shifts an outcome claim.
+UNSAFE_SYNONYMS: Tuple[Tuple[str, str], ...] = (
+    ("demonstrate", "prove"),
+    ("failed", "broke"),
+)
+
 
 def _connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -92,8 +102,38 @@ class Store:
             ).fetchall()
         return [r["synonym"] for r in rows]
 
+    def purge_unsafe_synonyms(self) -> int:
+        """
+        Remove meaning-changing pairs an older seed may have left behind.
+
+        Callers must invoke this on every run, not only when seeding. The CLI
+        seeds only when the DB has no `however` rows, so a database written by
+        an earlier version is never re-seeded and would keep these forever —
+        which is precisely where they do harm.
+
+        Both columns compare COLLATE NOCASE: `synonym` has no column-level
+        collation, so a hand-added or imported `Prove` row would otherwise
+        survive while its lowercase twin was removed.
+        """
+        removed = 0
+        for lemma, syn in UNSAFE_SYNONYMS:
+            cur = self.conn.execute(
+                "DELETE FROM synonyms "
+                "WHERE lemma = ? COLLATE NOCASE AND synonym = ? COLLATE NOCASE",
+                (lemma, syn),
+            )
+            removed += cur.rowcount or 0
+        if removed:
+            self.conn.commit()
+        return removed
+
     def seed_demo_synonyms(self) -> int:
         """Tiny built-in seed so dry-runs do something without WordNet."""
+        # Meaning-changing pairs that the judge probes treat as rejects must
+        # never appear here. Offline mode has only freeze as a real gate, so a
+        # curated synonym is an unsupervised accept. Dropped on purpose:
+        #   demonstrate → prove   (judge probe #1)
+        #   failed → broke        (outcome shift)
         pairs = [
             ("however", "still", "r", "general"),
             ("however", "even so", "r", "general"),
@@ -104,7 +144,6 @@ class Store:
             ("significant", "large", "a", "general"),
             ("significant", "substantial", "a", "general"),
             ("demonstrate", "show", "v", "general"),
-            ("demonstrate", "prove", "v", "general"),
             ("subsequently", "later", "r", "general"),
             ("subsequently", "afterward", "r", "general"),
             ("approximately", "about", "r", "general"),
@@ -123,9 +162,9 @@ class Store:
             ("numerous", "many", "a", "general"),
             ("fundamental", "basic", "a", "general"),
             ("attempt", "try", "v", "general"),
-            ("failed", "broke", "v", "general"),
             ("incorrect", "wrong", "a", "general"),
         ]
+        self.purge_unsafe_synonyms()
         n = 0
         for lemma, syn, pos, domain in pairs:
             self.add_synonym(lemma, syn, pos, domain)

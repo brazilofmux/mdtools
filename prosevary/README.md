@@ -78,8 +78,9 @@ python3 -m prosevary 1-07-Relocations.md
 # tighter semantic leash, more candidates
 python3 -m prosevary --tau 0.94 --k 4 2-07-TheBenchmarkThatLied.md
 
-# in-place only after you trust it (creates .bak)
-python3 -m prosevary -i --accept 2-07-TheBenchmarkThatLied.md
+# in-place only after you trust it (creates .bak); needs live semantic
+# embedder + enforcing judge, or the explicit unsafe override
+python3 -m prosevary -i --apply 2-07-TheBenchmarkThatLied.md
 
 # before/after editorial metrics (advisory; works in dry run)
 python3 -m prosevary --report 1-07-Relocations.md
@@ -90,6 +91,13 @@ python3 -m prosevary --report-run 12
 
 Flags mirror `mdfix` muscle memory where it makes sense: `-i`, `-n`, `-v`.
 As in `mdfix`, `-n` beats `-i`/`--apply` and implies `-v`.
+
+**Write safety.** `-i` / `--apply` require both a semantic embedder and an
+enforcing judge. The offline default (hash embed + null judge) only freezes
+structural tokens — that is enough for dry-run inspection, not for writing.
+To force a write with inert gates, pass `--allow-inert-gates` (logged in run
+metadata). Demo synonyms never include meaning-changing pairs such as
+`demonstrate → prove` (see issue #4).
 
 ## Model backends
 
@@ -243,17 +251,28 @@ sharp edges:
   mid-sentence wrapping is not yet.
 - Sentence splitting is regex-based and will mis-split on `Dr.`-style abbrevs.
 - On the offline default stack the tau and judge gates are inert; only the
-  freeze check vetted a rewrite. The CLI says so and warns before writing.
+  freeze check would vet a rewrite. The CLI refuses `-i`/`--apply` unless
+  `--allow-inert-gates` is passed (and logs that override).
 - No glossary is loaded by default, so terms of art (`fixup`, `relocation`)
   are unprotected unless `glossary_terms.yaml` is found. See the field notes.
 - Block protection now covers fenced code, GFM tables (with or without a
-  leading `|`), indented code, HTML blocks/comments, Setext headings, and
-  reference/footnote definitions. Inline freeze covers links, images,
-  autolinks, footnote refs, Pandoc attributes, and simple citations. Matching
-  backtick-run inline code, occurrence counts, and full Pandoc IR remain open
-  (see issues #2 follow-ups and #6).
+  leading `|`, and any GFM delimiter width), indented code, HTML
+  blocks/comments, Setext headings including the whole preceding paragraph,
+  and reference/footnote definitions with their title continuations. Inline
+  freeze covers links, images, reference and shortcut links, autolinks, raw
+  inline HTML tags, footnote refs, Pandoc attributes, and simple citations.
+  Matching backtick-run inline code, occurrence counts, and full Pandoc IR
+  remain open (see issues #2 follow-ups and #6).
+- Freezes are a **set, not a multiset:** a sentence containing two `<b>` tags
+  is satisfied by one surviving in the candidate (issue #6).
 - List marker lines are frozen; list-continuation paragraphs that are not
-  indented code can still be exposed as prose.
-- The first shared regression fixture covers delimiter-aware fenced blocks and
-  byte-exact prosevary reconstruction. Broader round-trip, idempotence, and
-  failure-path coverage is still needed before `-i` is trusted.
+  indented code can still be exposed as prose. Their leading indentation is
+  preserved on rewrite, so a rewritten paragraph no longer escapes its item.
+- Tests: 81 across four files (fences, protected regions, judge parsing,
+  inert-gate writes), wired into `make test`. They are hermetic — pure Python,
+  no network, ~0.1s — which is the right default gate but structurally cannot
+  catch protocol-shape surprises from a real model. The `max_tokens` bug,
+  where a reasoning model spent its whole budget thinking and returned empty
+  content that parsed as a silent reject, was only ever found by running
+  against a live server. Run `--test-judge` against the configured model after
+  touching the transport or parsing layer, and before trusting `-i`.
