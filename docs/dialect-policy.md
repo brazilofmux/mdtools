@@ -55,22 +55,27 @@ because neither implementation can be trusted to agree with the other, and on
 its first run it caught only two of the three divergences it was written to
 find.
 
-### The mechanism
+### Target mechanism (not yet implemented)
 
-mdfix owns the grammar in both directions:
+mdfix will own the grammar in both directions:
 
 - **Reader** — `mdfix --emit-ir` parses Markdown and emits the IR as JSON on
   stdout. A pure function of the input bytes, testable against Pandoc.
 - **Applier** — `mdfix --apply-edits` reads a list of byte-span replacements
   and splices them into the original bytes.
 
-Consumers speak to mdfix over a **wire format, not an ABI**. That distinction
-is the whole point: a JSON protocol over a subprocess needs no compiler in the
-install path, adds no refcounting to a codebase that has already produced one
-heap overflow, is inspectable by hand, is versionable, and is testable
-independently from both sides. A CPython extension module would gain nothing in
-exchange — the runtime here is dominated by HTTP round-trips to language
-models, not by parsing.
+Those flags are **not shipped yet**. Until they are, prosevary still carries
+its own block classifier and `tests/test_tool_parity.py` is the dual-grammar
+safety net. The rest of this section is the adopted design, not a description
+of today's CLI.
+
+Consumers will speak to mdfix over a **wire format, not an ABI**. That
+distinction is the whole point: a JSON protocol over a subprocess needs no
+compiler in the install path, adds no refcounting to a codebase that has
+already produced one heap overflow, is inspectable by hand, is versionable,
+and is testable independently from both sides. A CPython extension module
+would gain nothing in exchange — the runtime here is dominated by HTTP
+round-trips to language models, not by parsing.
 
 ### Apply edits; do not serialize
 
@@ -137,12 +142,12 @@ Load-bearing extensions, with the behavior each one buys:
 | `-four_space_rule` | List continuation is measured from the item's **content column**, not a fixed four spaces. `list_content_column()` implements exactly this. |
 | `+markdown_in_html_blocks` | `<div>` contents are parsed as Markdown, so they stay prose-variable. |
 | `+raw_html` | `<script>`, `<style>`, `<pre>`, `<textarea>`, comments, CDATA, PIs, and declarations become `RawBlock` and must survive byte-for-byte. |
-| `+pipe_tables`, `+simple_tables`, `+grid_tables`, `+multiline_tables` | All four table forms are recognized; all four are protected. |
+| `+pipe_tables`, `+simple_tables`, `+grid_tables`, `+multiline_tables` | All four forms are recognized. Grid, simple, and multiline are byte-protected in mdfix; **pipe cells still take prose passes** (deliberate for `|`-delimited cells today — see §7). |
 | `+line_blocks` | `\|`-prefixed lines are `LineBlock`, whitespace- and line-count-significant. See §7. |
 | `+yaml_metadata_block` | Front matter is metadata, not prose. |
 | `+footnotes`, `+inline_notes` | Footnote definitions are structure, not paragraphs. |
-| `+escaped_line_breaks`, `-hard_line_breaks` | A two-space line ending is a hard break. `mdfix -w` must preserve it. |
-| `+smart` | See §4 — output is deliberately invariant under this flag. |
+| `+escaped_line_breaks`, `-hard_line_breaks` | A two-space line ending is a hard break under this profile. **`mdfix -w` / `--canonical` currently collapse trailing spaces to one** and destroy hard breaks — see §7. |
+| `+smart` | See §4 — typographic output should be invariant under this flag. |
 | `+auto_identifiers`, `-gfm_auto_identifiers` | Heading anchors follow Pandoc's slug rules, which mdlinks (#14) will depend on. |
 | `+fenced_divs`, `+native_divs`, `+bracketed_spans`, `+native_spans` | Div and span syntax is structure to preserve, not prose. |
 | `+tex_math_dollars`, `+raw_tex` | Math and raw LaTeX are verbatim. See §7. |
@@ -151,10 +156,10 @@ Load-bearing extensions, with the behavior each one buys:
 A GFM-friendly display subset is useful where it happens to coincide, but it is
 not a second canonical output and no pass may trade Pandoc correctness for it.
 
-## 4. Punctuation: literal Unicode, never ASCII shorthand
+## 4. Punctuation: literal Unicode, not ASCII shorthand
 
-Canonical output uses literal `—`, `–`, `…`, `“`, `”`, `‘`, `’`. It never emits
-`--`, `...`, or straight quotes as typographic shorthand.
+When canonical output emits typographic dashes or quotes, it uses literal
+`—`, `–`, `“`, `”`, `‘`, `’` — not `--` or straight quotes as shorthand.
 
 The reason is not aesthetic. Verified by rendering to HTML both ways — pandoc's
 default `+smart`, and the `-smart` a consumer may pass and we do not control:
@@ -181,9 +186,11 @@ version-dependent — 3.10 keeps them as a plain `Str` under both flags, while
 the reader is the same in every combination. It is the output that has to be
 reliable.
 
-Canonical output is therefore **smart-invariant** — it means the same thing
-regardless of how the downstream consumer invokes Pandoc. This is what makes
-the mdfix Chicago passes a correctness feature rather than a stylistic one.
+**Target:** fully **smart-invariant** typography (including ellipsis as `…`).
+**Today:** mdfix's Chicago arrow/dash/quote passes emit Unicode for those
+marks, which is why they are correctness features. The Chicago ellipsis pass
+still normalizes to ASCII `...` under `--canonical` — the smart-dependent form
+in the table above. That is a known non-invariant until fixed (see §7).
 
 ## 5. The indentation model
 
@@ -211,7 +218,9 @@ was written down.
 
 ## 6. Preservation, warning, and failure rules
 
-Every construct falls into exactly one class.
+Every construct falls into exactly one **target** class. Current tool
+compliance is the inventory in §7 — a construct listed under Verbatim here may
+still be a gap until both tools match that class.
 
 **Verbatim.** Reproduced byte for byte. No pass may alter these, including
 whitespace passes, because their meaning is carried by column position or by
@@ -251,7 +260,7 @@ reproduced byte for byte; "prose" means eligible for rewriting.
 | ATX / setext heading | `Header` | structural | protected | ok |
 | Fenced code | `CodeBlock` | protected | protected | ok |
 | Indented code | `CodeBlock` | protected | protected | ok |
-| Pipe table | `Table` | protected | protected | ok |
+| Pipe table | `Table` | **prose rewrites in cells** | protected | **partial** |
 | Simple table | `Table` | protected | protected | ok |
 | Grid table | `Table` | protected | protected | ok |
 | Multiline table | `Table` | protected | protected | ok |
@@ -266,12 +275,13 @@ reproduced byte for byte; "prose" means eligible for rewriting.
 | **Line block** | `LineBlock` | **leaks — treated as prose** | protected, but misclassified as a table | **gap** |
 | **Display math `$$`** | `Math` | **leaks — rewrites inside** | **leaks — offered to the LLM as a sentence** | **gap** |
 | **Raw LaTeX block** | `RawBlock` | **leaks — rewrites inside** | **leaks** | **gap** |
+| **Hard break (two trailing spaces)** | soft/hard break | **`-w` / `--canonical` collapses to one space** | n/a | **gap** |
+| **Ellipsis under Chicago** | text | **emits ASCII `...`, not `…`** | n/a | **gap** |
 
-### The three gaps
+### Known gaps
 
-Each was found by running the tools against Pandoc while pinning this profile,
-and each is the same underlying defect — a verbatim construct reaching a prose
-pass.
+Each was found by running the tools against Pandoc while pinning this profile
+(or by matching the tools against the §4 / §3 contracts above).
 
 1. **Line blocks.** `| text` is `LineBlock`: whitespace inside is significant
    (Pandoc converts leading spaces to non-breaking spaces) and the line count
@@ -287,10 +297,26 @@ pass.
 3. **Raw LaTeX.** `\begin{verbatim} … \end{verbatim}` is a `RawBlock`. Both
    tools treat its contents as prose.
 
-Two of the three are cases where prosevary — the tool that only *reads*
-structure — leaks more than mdfix does. That is the duplication argument in
-§2 restated as a bug report, and all three become single-site fixes once the
-grammar lives in one place.
+4. **Pipe table cells in mdfix.** Structure is preserved, but punctuation
+   inside cells is rewritten (arrows, Chicago). That is intentional for
+   `|`-delimited cells today and documented in `tests/test_tool_parity.py`;
+   it is still not “protected” in the byte-for-byte sense of this table.
+   prosevary freezes the whole row.
+
+5. **Hard breaks under `-w` / `--canonical`.** Profile requires two trailing
+   spaces to mean a hard break. `fix_trailing_ws` collapses any trailing run
+   to one space, so the canonical profile currently turns hard breaks into
+   soft ones.
+
+6. **Chicago ellipsis.** Under `--canonical`, spaced or run ellipses become
+   ASCII `...`, which is smart-dependent under Pandoc (see §4). Target is
+   U+2026 `…`.
+
+The first three are cases where a verbatim construct reaches a prose pass —
+the duplication argument in §2 restated as a bug report. Those become
+single-site fixes once the grammar lives in one place. The last three are
+mdfix profile/contract mismatches that the policy now records so CI and
+future work cannot treat them as already done.
 
 ## 8. Verification
 
@@ -330,9 +356,16 @@ document exists to prevent.
 
 Still needed:
 
-- Coverage for the §7 gaps, each with the Pandoc AST as the assertion.
+- Implement §2: `--emit-ir` / `--apply-edits`, the JSON wire schema, and
+  byte offsets on every IR node.
 - Round-trip identity for the span applier: an empty edit list must produce
-  byte-identical output.
+  byte-identical output; then retire dual grammar and `test_tool_parity.py`.
+- Coverage for the §7 gaps, each with the Pandoc AST (or rendered output)
+  as the assertion — including hard-break preservation under `-w` and
+  Unicode ellipsis under Chicago.
+- CI oracle version: §3 pins pandoc 3.10 in prose; CI installs distro
+  pandoc. Failures should name the binary/version so an apt bump is
+  diagnosable.
 
 ## 9. Non-goals
 

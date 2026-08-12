@@ -97,6 +97,13 @@ class PolicyDocumentTests(unittest.TestCase):
                 self.assertEqual(pinned[name], enabled)
 
 
+def _pandoc_version() -> str:
+    result = subprocess.run(
+        [PANDOC, "--version"], capture_output=True, text=True, check=True,
+    )
+    return result.stdout.splitlines()[0] if result.stdout else "pandoc (unknown)"
+
+
 @unittest.skipUnless(PANDOC, "pandoc not installed")
 class PandocProfileTests(unittest.TestCase):
     def test_pinned_extensions_match_pandoc_defaults(self) -> None:
@@ -110,9 +117,10 @@ class PandocProfileTests(unittest.TestCase):
         self.assertFalse(
             drift,
             "pandoc's markdown defaults no longer match docs/dialect-policy.md "
-            f"§3 (name: policy-says, pandoc-says): {drift}. The canonical "
-            "output profile changed meaning; update the document deliberately "
-            "or pin the extension explicitly on every invocation.",
+            f"§3 (name: policy-says, pandoc-says): {drift}. "
+            f"Oracle: {_pandoc_version()}. The document pins pandoc 3.10 in "
+            "prose; CI may use a different install. Update the document "
+            "deliberately or pin the extension on every invocation.",
         )
 
     def test_pinned_extensions_still_exist(self) -> None:
@@ -120,7 +128,9 @@ class PandocProfileTests(unittest.TestCase):
         actual = _pandoc_defaults()
         missing = sorted(set(pinned) - set(actual))
         self.assertFalse(
-            missing, f"pandoc no longer knows these extensions: {missing}"
+            missing,
+            f"pandoc no longer knows these extensions: {missing} "
+            f"(oracle: {_pandoc_version()})",
         )
 
 
