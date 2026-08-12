@@ -17,7 +17,7 @@
  *              [--heading-canonical] [--fence-canonical] [--pandoc-safe-links]
  *              [--spaced-emdash] [--wrap[=N]] [--technical]
  *              input.md [output.md]
- *   -i  Edit in-place (creates .bak backup)
+ *   -i  Edit in-place (atomic temp write; collision-safe .bak)
  *   -n  Dry run — report what would change, touch nothing
  *   -v  Verbose — show every fix
  *   -q  Quiet — shut up, just fix it
@@ -54,6 +54,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 %%{
     machine mdfix_scanner;
@@ -2289,6 +2293,179 @@ static int files_identical(const char *path_a, const char *path_b)
     return same;
 }
 
+/*
+ * Pick a backup path that does not clobber an existing file.
+ * Prefer input.bak; if that exists, input.bak.1, .2, … .
+ * Returns 0 on success, -1 if no free name or buffer too small.
+ */
+static int choose_backup_path(const char *input_path, char *bak, size_t bak_sz)
+{
+    struct stat st;
+    int n;
+
+    n = snprintf(bak, bak_sz, "%s.bak", input_path);
+    if (n < 0 || (size_t)n >= bak_sz)
+        return -1;
+    if (stat(bak, &st) != 0)
+        return (errno == ENOENT) ? 0 : -1;
+
+    for (int i = 1; i < 10000; i++) {
+        n = snprintf(bak, bak_sz, "%s.bak.%d", input_path, i);
+        if (n < 0 || (size_t)n >= bak_sz)
+            return -1;
+        if (stat(bak, &st) != 0) {
+            if (errno == ENOENT)
+                return 0;
+            return -1;
+        }
+    }
+    return -1;
+}
+
+/*
+ * Finish writing out, flush, fsync, and close. On any error, unlink tmp_path
+ * (if non-NULL) and return -1. On success return 0; *out_slot is set NULL.
+ */
+static int finalize_output(FILE **out_slot, const char *tmp_path)
+{
+    FILE *out = *out_slot;
+    if (!out)
+        return -1;
+    if (fflush(out) != 0) {
+        fprintf(stderr, "Can't flush output: ");
+        perror(NULL);
+        fclose(out);
+        *out_slot = NULL;
+        if (tmp_path)
+            unlink(tmp_path);
+        return -1;
+    }
+    if (fsync(fileno(out)) != 0) {
+        fprintf(stderr, "Can't fsync output: ");
+        perror(NULL);
+        fclose(out);
+        *out_slot = NULL;
+        if (tmp_path)
+            unlink(tmp_path);
+        return -1;
+    }
+    if (fclose(out) != 0) {
+        fprintf(stderr, "Can't close output: ");
+        perror(NULL);
+        *out_slot = NULL;
+        if (tmp_path)
+            unlink(tmp_path);
+        return -1;
+    }
+    *out_slot = NULL;
+    return 0;
+}
+
+/*
+ * In-place write: never open the primary path for writing until the new
+ * content is fully on disk.
+ *
+ *   1. Write to a unique same-directory temp (mkstemp).
+ *   2. Copy mode (and best-effort owner) from the original.
+ *   3. fflush + fsync + close; fail → unlink temp, original untouched.
+ *   4. If content is identical, unlink temp (no .bak, inode preserved).
+ *   5. Else rename original → collision-safe .bak, then temp → original.
+ *      If the second rename fails, restore original from .bak.
+ */
+static int write_inplace(const char *input_path)
+{
+    struct stat st;
+    char tmp_path[4096];
+    char bak_path[4096];
+    int fd;
+    FILE *out;
+    int n;
+
+    if (stat(input_path, &st) != 0) {
+        fprintf(stderr, "Can't stat '%s': ", input_path);
+        perror(NULL);
+        return 1;
+    }
+
+    n = snprintf(tmp_path, sizeof(tmp_path), "%s.mdfix.XXXXXX", input_path);
+    if (n < 0 || (size_t)n >= sizeof(tmp_path)) {
+        fprintf(stderr, "Path too long for temp file: %s\n", input_path);
+        return 1;
+    }
+    fd = mkstemp(tmp_path);
+    if (fd < 0) {
+        fprintf(stderr, "Can't create temp file for '%s': ", input_path);
+        perror(NULL);
+        return 1;
+    }
+
+    /* Preserve permission bits the user actually set (0600 stays 0600). */
+    if (fchmod(fd, st.st_mode & 07777) != 0) {
+        fprintf(stderr, "Can't set mode on temp file: ");
+        perror(NULL);
+        close(fd);
+        unlink(tmp_path);
+        return 1;
+    }
+    /* Best-effort ownership; ignore EPERM when not root. */
+    if (fchown(fd, st.st_uid, st.st_gid) != 0 && errno != EPERM) {
+        fprintf(stderr, "Can't set owner on temp file: ");
+        perror(NULL);
+        close(fd);
+        unlink(tmp_path);
+        return 1;
+    }
+
+    out = fdopen(fd, "w");
+    if (!out) {
+        fprintf(stderr, "Can't fdopen temp file: ");
+        perror(NULL);
+        close(fd);
+        unlink(tmp_path);
+        return 1;
+    }
+
+    process(out);
+    if (finalize_output(&out, tmp_path) != 0)
+        return 1;
+
+    /* No content change: drop the temp, leave the original inode alone. */
+    if (files_identical(tmp_path, input_path)) {
+        unlink(tmp_path);
+        return 0;
+    }
+
+    if (choose_backup_path(input_path, bak_path, sizeof(bak_path)) != 0) {
+        fprintf(stderr, "Can't choose a free backup path for '%s'\n", input_path);
+        unlink(tmp_path);
+        return 1;
+    }
+
+    if (rename(input_path, bak_path) != 0) {
+        fprintf(stderr, "Can't create backup '%s': ", bak_path);
+        perror(NULL);
+        unlink(tmp_path);
+        return 1;
+    }
+    if (rename(tmp_path, input_path) != 0) {
+        fprintf(stderr, "Can't install new file over '%s': ", input_path);
+        perror(NULL);
+        /* Original content is in bak_path — put it back. */
+        if (rename(bak_path, input_path) != 0) {
+            fprintf(stderr,
+                "CRITICAL: failed to restore '%s' from '%s': ",
+                input_path, bak_path);
+            perror(NULL);
+        }
+        unlink(tmp_path);
+        return 1;
+    }
+
+    if (!opt_quiet)
+        printf("Backup: %s\n", bak_path);
+    return 0;
+}
+
 static int process_file(const char *input_path, const char *output_path)
 {
     /* Reset per-file state */
@@ -2311,52 +2488,45 @@ static int process_file(const char *input_path, const char *output_path)
     if (opt_verbose)
         fprintf(stderr, "Read %d lines from %s\n", nlines, input_path);
 
-    /* ── Open output ── */
-    FILE *out = NULL;
-    char bak_path[4096];
-
+    /* ── Write ── */
+    int write_rc = 0;
     if (opt_dryrun) {
-        out = fopen("/dev/null", "w");
-    } else if (opt_inplace) {
-        snprintf(bak_path, sizeof(bak_path), "%s.bak", input_path);
-        if (rename(input_path, bak_path) != 0) {
-            fprintf(stderr, "Can't create backup '%s': ", bak_path);
+        FILE *out = fopen("/dev/null", "w");
+        if (!out) {
+            fprintf(stderr, "Can't open /dev/null: ");
             perror(NULL);
+            free_lines();
             return 1;
         }
-        out = fopen(input_path, "w");
+        process(out);
+        fclose(out);
+    } else if (opt_inplace) {
+        write_rc = write_inplace(input_path);
+        if (write_rc != 0) {
+            free_lines();
+            return write_rc;
+        }
     } else {
-        out = fopen(output_path, "w");
+        FILE *out = fopen(output_path, "w");
+        if (!out) {
+            fprintf(stderr, "Can't open output '%s': ", output_path);
+            perror(NULL);
+            free_lines();
+            return 1;
+        }
+        process(out);
+        if (finalize_output(&out, NULL) != 0) {
+            free_lines();
+            return 1;
+        }
     }
-
-    if (!out) {
-        fprintf(stderr, "Can't open output: ");
-        perror(NULL);
-        if (opt_inplace)
-            rename(bak_path, input_path);
-        return 1;
-    }
-
-    /* ── Do the work ── */
-    process(out);
-    fclose(out);
 
     /* ── Report ── */
     if (!opt_quiet)
         print_summary(input_path);
 
-    if (opt_dryrun && !opt_canonical_lint) {
+    if (opt_dryrun && !opt_canonical_lint)
         printf("(dry run — no files were harmed)\n");
-    } else if (opt_inplace) {
-        /* Judge "changed" by content, not fix_counts: some
-         * normalizations (CRLF, wrap) don't increment a counter. */
-        if (files_identical(input_path, bak_path)) {
-            /* No changes — remove the unnecessary backup */
-            rename(bak_path, input_path);
-        } else if (!opt_quiet) {
-            printf("Backup: %s\n", bak_path);
-        }
-    }
 
     if (opt_canonical_lint) {
         int issues = total_issues();
