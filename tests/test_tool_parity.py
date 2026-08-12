@@ -95,6 +95,12 @@ CORPUS = {
     # prosevary did not, so the same document was a frozen table to one tool
     # and paraphrasable prose to the other. The corpus had no tab fixture, so
     # the harness could not see it.
+    # Spans a blank line, so it needs the opener/closer dash runs rather than
+    # ending at the first blank like the other forms.
+    "multiline table": (
+        f"Prose A {ARROW} B.\n\n----------\n A    B\n----- -----\n 1    2\n"
+        f"\n 3    A {ARROW} B\n 4    5\n----------\n\nTail A {ARROW} B.\n"
+    ),
     "simple table with tabs": (
         f"Prose A {ARROW} B.\n\nRight\tLeft\n----\t----\n"
         f"12\tA {ARROW} B\n\nTail A {ARROW} B.\n"

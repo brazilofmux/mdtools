@@ -14,8 +14,9 @@ spec, because the conditions are not obvious:
     --- ----   / 12 34              -> HorizontalRule  (no header line)
     Title      / -------            -> Header          (setext; no spaces)
 
-Multiline tables are deliberately out of scope here — they span blank lines
-and need different machinery. See the module-level note in test_tool_parity.
+Multiline tables are covered too, in MultilineTableTests. They span blank
+lines, so they are delimited by unbroken dash runs rather than ending at the
+first blank — different machinery, same contract.
 """
 
 from __future__ import annotations
@@ -109,6 +110,57 @@ class ProsevaryTableTests(unittest.TestCase):
         self.assertEqual(_sentences(source), ["After."])
 
 
+MULTILINE = (
+    "----------\n"
+    " A    B\n"
+    "----- -----\n"
+    " 1    2\n"
+    "\n"
+    f" 3    A {ARROW} B\n"
+    " 4    5\n"
+    "----------\n"
+    "\nAfter.\n"
+)
+
+
+class MultilineTableTests(unittest.TestCase):
+    """
+    The form that spans blank lines. Confirmed with `pandoc -t json`:
+
+        opener + header + column row + body + closer  -> Table
+        same without the opener                       -> Table Header Para
+        same without the closer                       -> Table Para Para Para
+
+    The opener is what lets blank lines stay inside; the closer is what keeps
+    the trailing dash run from being read as a setext underline.
+    """
+
+    def test_whole_table_is_one_protected_region(self) -> None:
+        kinds = _kinds(MULTILINE)
+        self.assertEqual(kinds[:8], ["TABLE"] * 8)
+        self.assertEqual(_sentences(MULTILINE), ["After."])
+        self.assertEqual(parse(MULTILINE).reconstruct({}), MULTILINE)
+
+    def test_body_after_a_blank_is_not_exposed(self) -> None:
+        # This row used to reach mdfix as prose: only the *last* body row
+        # paired with the closing dash run as a setext heading, so the row
+        # before it leaked.
+        self.assertNotIn(f" 3    A {ARROW} B", _sentences(MULTILINE))
+
+    def test_without_a_closer_it_is_not_a_multiline_table(self) -> None:
+        source = "-----\n A  B\n--- ---\n 1  2\n\nAfter.\n"
+        self.assertEqual(_kinds(source)[0], "HR")
+
+    def test_lone_dash_run_is_still_a_thematic_break(self) -> None:
+        self.assertEqual(_kinds("Para.\n\n-----\n\nPara two.\n")[2], "HR")
+
+    def test_dash_run_followed_by_prose_is_not_a_table(self) -> None:
+        self.assertEqual(_kinds("-----\nJust prose.\n\nAfter.\n")[0], "HR")
+
+    def test_two_dash_runs_with_no_column_row_is_not_a_table(self) -> None:
+        self.assertNotIn("TABLE", _kinds("-----\n A  B\n-----\n\nAfter.\n"))
+
+
 class MdfixTableTests(unittest.TestCase):
     def setUp(self) -> None:
         if not MDFIX.is_file():
@@ -161,8 +213,12 @@ class MdfixTableTests(unittest.TestCase):
             with self.subTest(case=name):
                 self.assertNotIn(f"A {ARROW} B", self._fix(source))
 
+    def test_multiline_table_survives_byte_for_byte(self) -> None:
+        # mdfix rewrote the arrow in the body row after the blank line.
+        self.assertEqual(self._fix(MULTILINE), MULTILINE)
+
     def test_idempotent(self) -> None:
-        for source in (SIMPLE, GRID):
+        for source in (SIMPLE, GRID, MULTILINE):
             with self.subTest(source=source[:14]):
                 once = self._fix(source)
                 self.assertEqual(self._fix(once), once)
@@ -216,7 +272,8 @@ class PandocTableOracleTests(unittest.TestCase):
         return [b["t"] for b in json.loads(result.stdout)["blocks"]]
 
     def test_table_block_survives_a_fix_run(self) -> None:
-        for name, source in (("simple", SIMPLE), ("grid", GRID)):
+        for name, source in (("simple", SIMPLE), ("grid", GRID),
+                             ("multiline", MULTILINE)):
             with self.subTest(case=name):
                 src, out = self.dir / "a.md", self.dir / "b.md"
                 if out.exists():

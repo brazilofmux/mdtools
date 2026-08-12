@@ -663,8 +663,76 @@ static int is_simple_dash_row(const char *line)
  * unspaced one is a setext underline; treating either as a table would freeze
  * ordinary prose.
  */
+/* An unbroken dash run: the opener and closer of a multiline table. Also what
+ * a setext underline and a thematic break look like, which is why it only
+ * counts as an opener under the conditions in multiline_table_end. */
+static int is_full_dash_row(const char *line)
+{
+    int i = 0;
+    while (i < 3 && line[i] == ' ')
+        i++;
+    int run = 0;
+    while (line[i] == '-') {
+        run++;
+        i++;
+    }
+    if (run < 2)
+        return 0;
+    while (line[i] == ' ' || line[i] == '\t')
+        i++;
+    return line[i] == '\0';
+}
+
+/*
+ * Index just past a Pandoc multiline table starting at line i, or -1.
+ *
+ *     ----------      unbroken dash run (opener)
+ *      A    B         one or more header lines
+ *     ----- -----     spaced dash row
+ *      1    2         body rows, which may include blank lines
+ *
+ *      3    4
+ *     ----------      unbroken dash run (closer)
+ *
+ * The opener is what lets blank lines stay inside: without it the content
+ * ends at the first blank and the trailing run becomes a setext underline.
+ * A closer is required too — pandoc otherwise ends the table at the first
+ * blank. Those conditions keep a lone dash run a thematic break.
+ */
+static int multiline_table_end(int i)
+{
+    if (!is_full_dash_row(lines[i]))
+        return -1;
+
+    int j = i + 1;
+    int saw_header = 0;
+    int found_columns = 0;
+    for (; j < nlines; j++) {
+        if (is_blank(lines[j]))
+            return -1;                  /* blank before the column row */
+        if (is_simple_dash_row(lines[j])) {
+            found_columns = 1;
+            break;
+        }
+        if (is_full_dash_row(lines[j]))
+            return -1;                  /* two runs, no column row */
+        saw_header = 1;
+    }
+    if (!found_columns || !saw_header)
+        return -1;
+
+    for (j++; j < nlines; j++) {
+        if (is_full_dash_row(lines[j]))
+            return j + 1;               /* closer belongs to the table */
+    }
+    return -1;                          /* unterminated: not a table */
+}
+
 static int table_block_end(int i)
 {
+    int multiline = multiline_table_end(i);
+    if (multiline > i)
+        return multiline;
     if (is_grid_border(lines[i])) {
         int j = i;
         while (j < nlines && (is_grid_border(lines[j]) || is_grid_row(lines[j])))
