@@ -127,5 +127,65 @@ class WrappedAndAbbrevTests(unittest.TestCase):
         self.assertEqual(out, 'She said "Done." Next came noon.\n')
 
 
+class MultiSentenceQuotationTests(unittest.TestCase):
+    """
+    Attributing the closer to the sentence fixes duplication but moves it into
+    rewritable text. A candidate that drops it would silently unbalance the
+    document — the worse failure, since duplication is visible in a diff.
+    """
+
+    SRC = 'He said, "This is one. This is two." Then he left.\n'
+
+    def test_closer_is_inside_the_second_sentence(self) -> None:
+        sents = [s.text for r in parse(self.SRC).regions for s in r.sentences]
+        self.assertEqual(
+            sents,
+            ['He said, "This is one.', 'This is two."', "Then he left."],
+        )
+
+    def test_candidate_dropping_the_closer_does_not_unbalance(self) -> None:
+        out = parse(self.SRC).reconstruct({(0, 1): "This is number two."})
+        self.assertIn('This is number two."', out)
+        self.assertEqual(out.count('"'), self.SRC.count('"'))
+
+    def test_candidate_keeping_the_closer_is_not_doubled(self) -> None:
+        out = parse(self.SRC).reconstruct({(0, 1): 'This is number two."'})
+        self.assertNotIn('""', out)
+        self.assertEqual(out.count('"'), self.SRC.count('"'))
+
+    def test_wholly_different_candidate_still_balanced(self) -> None:
+        out = parse(self.SRC).reconstruct({(0, 1): "Something else entirely"})
+        self.assertEqual(out.count('"'), self.SRC.count('"'))
+
+    def test_sentence_without_closer_is_untouched(self) -> None:
+        src = "One sentence here. Two sentences here.\n"
+        out = parse(src).reconstruct({(0, 0): "Rewritten one"})
+        self.assertIn("Rewritten one Two sentences here.", out)
+
+
+class EnumerationLabelTests(unittest.TestCase):
+    def test_numbered_paren_label_does_not_split(self) -> None:
+        # Admitting ")" to the separator class split "Step 1.)" off as a
+        # standalone fragment and handed it to the paraphraser.
+        self.assertEqual(
+            [t for _, _, t in split_sentences("Step 1.) Do the thing. Step 2.) Do more.")],
+            ["Step 1.) Do the thing.", "Step 2.) Do more."],
+        )
+
+    def test_letter_before_terminator_still_splits(self) -> None:
+        # The case the separator class was widened for must keep working.
+        self.assertEqual(
+            [t for _, _, t in split_sentences("See the note.) Next came noon.")],
+            ["See the note.)", "Next came noon."],
+        )
+
+    def test_parenthetical_ending_in_digit_stays_whole(self) -> None:
+        # Conservative: under-splitting is safe, fragmenting is not.
+        self.assertEqual(
+            [t for _, _, t in split_sentences("(See note 1.) Next came noon.")],
+            ["(See note 1.) Next came noon."],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
