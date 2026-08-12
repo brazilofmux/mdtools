@@ -97,7 +97,7 @@ enum linetype {
     LT_INDENTCODE,  /* four-column-indented code; emitted verbatim */
     LT_RAWHTML,     /* raw HTML block; leaf — not paragraph text */
     LT_TABLEBLOCK,  /* Pandoc grid/simple table; column-aligned, verbatim */
-    LT_REFDEF,      /* link/footnote definition; IR only, never from classify() */
+    LT_REFDEF,      /* link/footnote definition; not from classify() */
     LT_TEXT         /* everything else: paragraphs, blockquotes, etc. */
 };
 
@@ -818,8 +818,37 @@ static int is_setext_underline(const char *line)
     return line[i] == '\0';
 }
 
+/*
+ * `[label]:` — a link reference definition, or `[^label]:` a footnote one.
+ * Returns 1 for a reference definition, 2 for a footnote definition, else 0.
+ *
+ * No whitespace is required after the colon: `[id]:x` is a definition to
+ * pandoc, which produces no block at all for it. The label must be non-empty
+ * (`[]:` / `[^]:` are not definitions).
+ */
+static int ref_def_kind(const char *line)
+{
+    int i = 0;
+    while (i < 3 && line[i] == ' ')
+        i++;
+    if (line[i] != '[')
+        return 0;
+    int footnote = (line[i + 1] == '^');
+    int label_start = i + 1 + (footnote ? 1 : 0);
+    i = label_start;
+    for (; line[i] && line[i] != ']'; i++) {
+        if (line[i] == '\\' && line[i + 1])
+            i++;
+    }
+    if (line[i] != ']' || line[i + 1] != ':')
+        return 0;
+    if (i <= label_start)
+        return 0;
+    return footnote ? 2 : 1;
+}
+
 /* A line that can carry setext text: not blank, and not itself a block
- * opener. Pandoc takes only a single line, so callers check at block start. */
+ * opener or a link/footnote definition. Pandoc takes only a single line. */
 static int setext_text_ok(const char *line)
 {
     if (is_blank(line))
@@ -830,33 +859,10 @@ static int setext_text_ok(const char *line)
         return 0;
     if (find_bullet(line) >= 0 || is_ordered(line))
         return 0;
+    /* Else `[id]: url\n====` invents a Header pandoc does not emit. */
+    if (ref_def_kind(line))
+        return 0;
     return 1;
-}
-
-/*
- * `[label]:` — a link reference definition, or `[^label]:` a footnote one.
- * Returns 1 for a reference definition, 2 for a footnote definition, else 0.
- *
- * No whitespace is required after the colon: `[id]:x` is a definition to
- * pandoc, which produces no block at all for it. prosevary's own regex
- * demanded whitespace and so treated that line as paraphrasable prose.
- */
-static int ref_def_kind(const char *line)
-{
-    int i = 0;
-    while (i < 3 && line[i] == ' ')
-        i++;
-    if (line[i] != '[')
-        return 0;
-    int footnote = (line[i + 1] == '^');
-    i++;
-    for (; line[i] && line[i] != ']'; i++) {
-        if (line[i] == '\\' && line[i + 1])
-            i++;
-    }
-    if (line[i] != ']' || line[i + 1] != ':')
-        return 0;
-    return footnote ? 2 : 1;
 }
 
 /* A reference definition's optional title, carried onto the next line. Only
@@ -2785,7 +2791,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 2789 "mdfix.c"
+#line 2795 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -2793,20 +2799,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 2797 "mdfix.c"
+#line 2803 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 3166 "mdfix.rl"
+#line 3172 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 2917 "mdfix.rl"
+#line 2923 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -2846,7 +2852,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 2809 "mdfix.rl"
+#line 2815 "mdfix.rl"
 	{te = p+1;{
                 if (ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -2883,19 +2889,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 2802 "mdfix.rl"
+#line 2808 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 2802 "mdfix.rl"
+#line 2808 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 3101 "mdfix.rl"
+#line 3107 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -2919,7 +2925,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 3146 "mdfix.rl"
+#line 3152 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -2940,7 +2946,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 3124 "mdfix.rl"
+#line 3130 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -2963,13 +2969,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 3166 "mdfix.rl"
+#line 3172 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 3046 "mdfix.rl"
+#line 3052 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -2992,7 +2998,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 2959 "mdfix.rl"
+#line 2965 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_CHAR('.');
@@ -3043,13 +3049,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 3166 "mdfix.rl"
+#line 3172 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 3009 "mdfix.rl"
+#line 3015 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -3087,7 +3093,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 3068 "mdfix.rl"
+#line 3074 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -3121,7 +3127,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 2863 "mdfix.rl"
+#line 2869 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -3130,7 +3136,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 2845 "mdfix.rl"
+#line 2851 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -3140,7 +3146,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 2871 "mdfix.rl"
+#line 2877 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -3149,7 +3155,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 2854 "mdfix.rl"
+#line 2860 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR(':');
                 EMIT_CHAR('*');
@@ -3159,7 +3165,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 2879 "mdfix.rl"
+#line 2885 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -3198,7 +3204,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 2802 "mdfix.rl"
+#line 2808 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -3211,7 +3217,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 3215 "mdfix.c"
+#line 3221 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -3237,7 +3243,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 3241 "mdfix.c"
+#line 3247 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -3281,7 +3287,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 3285 "mdfix.c"
+#line 3291 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -3330,7 +3336,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 3334 "mdfix.c"
+#line 3340 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -3349,7 +3355,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 3353 "mdfix.c"
+#line 3359 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -3375,7 +3381,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 3379 "mdfix.c"
+#line 3385 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -3424,7 +3430,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 3428 "mdfix.c"
+#line 3434 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -3504,7 +3510,7 @@ case 13:
 
 	}
 
-#line 3173 "mdfix.rl"
+#line 3179 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';
@@ -3714,6 +3720,28 @@ static void process(FILE *out)
         }
 
         /*
+         * ── Setext heading ──
+         * Same rules as emit_ir: column-0 underline, single text line, before
+         * thematic break so `-----\n-----` is a heading. Must set
+         * prev_content_type so bare indented code after the heading is
+         * protected the way ATX headings already are.
+         */
+        if (i + 1 < nlines
+            && setext_text_ok(line)
+            && is_setext_underline(lines[i + 1]))
+        {
+            flush_paragraph(out);
+            fprintf(out, "%s\n", line);
+            fprintf(out, "%s\n", lines[i + 1]);
+            i++;
+            prev_was_list_ctx = 0;
+            list_content_col = 0;
+            prev_content_type = LT_HEADING;
+            had_blank = 0;
+            continue;
+        }
+
+        /*
          * ── Thematic break ──
          * Must beat list handling: "* * *" is both is_thematic_break and
          * find_bullet. Without this, fix_bullet rewrote the first marker to
@@ -3728,6 +3756,45 @@ static void process(FILE *out)
             prev_content_type = LT_TEXT;
             had_blank = 0;
             continue;
+        }
+
+        /*
+         * ── Link and footnote definitions ──
+         * Not paragraph text: skip prose passes, and set prev so a following
+         * four-column line is indented code (pandoc CodeBlock), matching
+         * emit_ir's LT_REFDEF. Title continuations (quoted) ride with a
+         * reference def; footnote defs take indented lines across blanks.
+         */
+        {
+            int def = ref_def_kind(line);
+            if (def) {
+                int last = i;
+                if (def == 1) {
+                    while (last + 1 < nlines && is_ref_title_cont(lines[last + 1]))
+                        last++;
+                } else {
+                    int j = last + 1;
+                    while (j < nlines) {
+                        if (is_blank(lines[j])) {
+                            j++;
+                            continue;
+                        }
+                        if (indent_columns(lines[j], NULL) < 4)
+                            break;
+                        last = j;
+                        j++;
+                    }
+                }
+                flush_paragraph(out);
+                for (; i <= last; i++)
+                    fprintf(out, "%s\n", lines[i]);
+                i = last;
+                prev_was_list_ctx = 0;
+                list_content_col = 0;
+                prev_content_type = LT_REFDEF;
+                had_blank = 0;
+                continue;
+            }
         }
 
         /* ── Blank line ── */

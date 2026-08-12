@@ -89,7 +89,7 @@ enum linetype {
     LT_INDENTCODE,  /* four-column-indented code; emitted verbatim */
     LT_RAWHTML,     /* raw HTML block; leaf — not paragraph text */
     LT_TABLEBLOCK,  /* Pandoc grid/simple table; column-aligned, verbatim */
-    LT_REFDEF,      /* link/footnote definition; IR only, never from classify() */
+    LT_REFDEF,      /* link/footnote definition; not from classify() */
     LT_TEXT         /* everything else: paragraphs, blockquotes, etc. */
 };
 
@@ -810,8 +810,37 @@ static int is_setext_underline(const char *line)
     return line[i] == '\0';
 }
 
+/*
+ * `[label]:` — a link reference definition, or `[^label]:` a footnote one.
+ * Returns 1 for a reference definition, 2 for a footnote definition, else 0.
+ *
+ * No whitespace is required after the colon: `[id]:x` is a definition to
+ * pandoc, which produces no block at all for it. The label must be non-empty
+ * (`[]:` / `[^]:` are not definitions).
+ */
+static int ref_def_kind(const char *line)
+{
+    int i = 0;
+    while (i < 3 && line[i] == ' ')
+        i++;
+    if (line[i] != '[')
+        return 0;
+    int footnote = (line[i + 1] == '^');
+    int label_start = i + 1 + (footnote ? 1 : 0);
+    i = label_start;
+    for (; line[i] && line[i] != ']'; i++) {
+        if (line[i] == '\\' && line[i + 1])
+            i++;
+    }
+    if (line[i] != ']' || line[i + 1] != ':')
+        return 0;
+    if (i <= label_start)
+        return 0;
+    return footnote ? 2 : 1;
+}
+
 /* A line that can carry setext text: not blank, and not itself a block
- * opener. Pandoc takes only a single line, so callers check at block start. */
+ * opener or a link/footnote definition. Pandoc takes only a single line. */
 static int setext_text_ok(const char *line)
 {
     if (is_blank(line))
@@ -822,33 +851,10 @@ static int setext_text_ok(const char *line)
         return 0;
     if (find_bullet(line) >= 0 || is_ordered(line))
         return 0;
+    /* Else `[id]: url\n====` invents a Header pandoc does not emit. */
+    if (ref_def_kind(line))
+        return 0;
     return 1;
-}
-
-/*
- * `[label]:` — a link reference definition, or `[^label]:` a footnote one.
- * Returns 1 for a reference definition, 2 for a footnote definition, else 0.
- *
- * No whitespace is required after the colon: `[id]:x` is a definition to
- * pandoc, which produces no block at all for it. prosevary's own regex
- * demanded whitespace and so treated that line as paraphrasable prose.
- */
-static int ref_def_kind(const char *line)
-{
-    int i = 0;
-    while (i < 3 && line[i] == ' ')
-        i++;
-    if (line[i] != '[')
-        return 0;
-    int footnote = (line[i + 1] == '^');
-    i++;
-    for (; line[i] && line[i] != ']'; i++) {
-        if (line[i] == '\\' && line[i + 1])
-            i++;
-    }
-    if (line[i] != ']' || line[i + 1] != ':')
-        return 0;
-    return footnote ? 2 : 1;
 }
 
 /* A reference definition's optional title, carried onto the next line. Only
@@ -3379,6 +3385,28 @@ static void process(FILE *out)
         }
 
         /*
+         * ── Setext heading ──
+         * Same rules as emit_ir: column-0 underline, single text line, before
+         * thematic break so `-----\n-----` is a heading. Must set
+         * prev_content_type so bare indented code after the heading is
+         * protected the way ATX headings already are.
+         */
+        if (i + 1 < nlines
+            && setext_text_ok(line)
+            && is_setext_underline(lines[i + 1]))
+        {
+            flush_paragraph(out);
+            fprintf(out, "%s\n", line);
+            fprintf(out, "%s\n", lines[i + 1]);
+            i++;
+            prev_was_list_ctx = 0;
+            list_content_col = 0;
+            prev_content_type = LT_HEADING;
+            had_blank = 0;
+            continue;
+        }
+
+        /*
          * ── Thematic break ──
          * Must beat list handling: "* * *" is both is_thematic_break and
          * find_bullet. Without this, fix_bullet rewrote the first marker to
@@ -3393,6 +3421,45 @@ static void process(FILE *out)
             prev_content_type = LT_TEXT;
             had_blank = 0;
             continue;
+        }
+
+        /*
+         * ── Link and footnote definitions ──
+         * Not paragraph text: skip prose passes, and set prev so a following
+         * four-column line is indented code (pandoc CodeBlock), matching
+         * emit_ir's LT_REFDEF. Title continuations (quoted) ride with a
+         * reference def; footnote defs take indented lines across blanks.
+         */
+        {
+            int def = ref_def_kind(line);
+            if (def) {
+                int last = i;
+                if (def == 1) {
+                    while (last + 1 < nlines && is_ref_title_cont(lines[last + 1]))
+                        last++;
+                } else {
+                    int j = last + 1;
+                    while (j < nlines) {
+                        if (is_blank(lines[j])) {
+                            j++;
+                            continue;
+                        }
+                        if (indent_columns(lines[j], NULL) < 4)
+                            break;
+                        last = j;
+                        j++;
+                    }
+                }
+                flush_paragraph(out);
+                for (; i <= last; i++)
+                    fprintf(out, "%s\n", lines[i]);
+                i = last;
+                prev_was_list_ctx = 0;
+                list_content_col = 0;
+                prev_content_type = LT_REFDEF;
+                had_blank = 0;
+                continue;
+            }
         }
 
         /* ── Blank line ── */

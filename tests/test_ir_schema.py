@@ -466,6 +466,21 @@ class StructureNotParagraphTests(IRTestCase):
     def test_a_bracket_without_a_colon_is_prose(self) -> None:
         self.assertEqual(self._kinds("[id] no colon\n"), ["paragraph"])
 
+    def test_empty_label_is_not_a_definition(self) -> None:
+        self.assertEqual(self._kinds("[]: http://x\n"), ["paragraph"])
+        self.assertEqual(self._kinds("[^]: note\n"), ["paragraph"])
+
+    def test_definition_line_is_not_setext_text(self) -> None:
+        # Else the IR invents a Header pandoc does not emit.
+        self.assertEqual(
+            self._kinds("[id]: http://x\n====\n"),
+            ["reference_def", "paragraph"],
+        )
+        self.assertEqual(
+            self._kinds("[id]:x\n----\n"),
+            ["reference_def", "thematic_break"],
+        )
+
 
 class ProtectedFlagTests(IRTestCase):
     """
@@ -540,7 +555,14 @@ class ProtectedFlagTests(IRTestCase):
             f"* * *\n\n"
             f"***\n\n"
             f"- - -\n\n"
-            f"_ _ _\n"
+            f"_ _ _\n\n"
+            # Code after a ref def / setext must stay protected in process()
+            # as well as in the IR (prev_content_type agreement).
+            f"[id]: http://x\n"
+            f"    after-def {arrow} code\n\n"
+            f"Setext Title\n"
+            f"====\n"
+            f"    after-setext {arrow} code\n"
         )
         src = self._write(source, "in.md")
         out = self.dir / "out.md"
@@ -558,6 +580,27 @@ class ProtectedFlagTests(IRTestCase):
         # Explicit pin: spaced star HR must not become "- * *".
         self.assertIn(b"* * *", fixed)
         self.assertNotIn(b"- * *", fixed)
+        self.assertIn(f"after-def {arrow} code".encode(), fixed)
+        self.assertIn(f"after-setext {arrow} code".encode(), fixed)
+
+    def test_process_protects_code_after_ref_def_and_setext(self) -> None:
+        arrow = "→"
+        cases = {
+            "ref def": f"[id]: http://x\n    code {arrow} here\n",
+            "setext": f"Title\n====\n    code {arrow} here\n",
+            "footnote": f"[^1]: note\n    code {arrow} here\n",
+        }
+        for name, source in cases.items():
+            with self.subTest(case=name):
+                src = self._write(source, "p.md")
+                out = self.dir / "p_out.md"
+                if out.exists():
+                    out.unlink()
+                subprocess.run(
+                    [str(MDFIX), "-q", "--technical", str(src), str(out)],
+                    capture_output=True, check=True,
+                )
+                self.assertIn(f"code {arrow} here", out.read_text(encoding="utf-8"))
 
 
 @unittest.skipUnless(PANDOC, "pandoc not installed")

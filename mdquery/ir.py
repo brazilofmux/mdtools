@@ -91,7 +91,7 @@ class Block:
             "endLine": self.end_line,
             "protected": self.protected,
         }
-        for key in ("level", "form", "htmlKind", "unterminated"):
+        for key in ("level", "form", "htmlKind", "unterminated", "style"):
             if key in self.raw:
                 out[key] = self.raw[key]
         if self.text is not None:
