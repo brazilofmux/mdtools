@@ -19,8 +19,8 @@ from typing import Iterable, List, Optional
 
 SCHEMA = "mdtools-ir-1"
 
-# Kinds this version understands. An unknown kind is passed through as
-# opaque-but-located, per the schema's stability rules.
+# Flat parents that can hide nested blocks (schema 1 has no nesting). Used by
+# under-report warnings; an unknown kind is still opaque-but-located.
 CONTAINER_KINDS = frozenset({"list", "block_quote"})
 
 

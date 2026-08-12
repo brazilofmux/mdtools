@@ -182,8 +182,9 @@ class SlugTests(unittest.TestCase):
                 self.assertEqual(slugify(text), expected)
 
     def test_inline_markup_falls_out_of_the_filter(self) -> None:
-        # Emphasis and code spans agree with Pandoc without mdquery knowing
-        # what they are: the markers are simply not slug characters.
+        # Star emphasis and code spans agree with Pandoc without mdquery
+        # knowing what they are: the markers are simply not slug characters.
+        # Underscore emphasis does not — "_" is kept (see SlugOracleTests).
         self.assertEqual(slugify("*emphasis* inside"), "emphasis-inside")
         self.assertEqual(slugify("`code` inside"), "code-inside")
         self.assertEqual(slugify("**bold** head"), "bold-head")
@@ -264,6 +265,20 @@ class SlugOracleTests(MdqueryTestCase):
         self.assertEqual([b.slug for b in outline(document)], ["linkhttpx"])
         self.assertEqual(self._pandoc_ids(path), ["link"])
 
+    def test_underscore_emphasis_is_a_known_divergence(self) -> None:
+        # Same class as links: raw IR text keeps "_", which is a slug character.
+        # Pandoc strips emphasis markers before slugging. Do not "fix" by
+        # parsing emphasis here.
+        for text, ours, pandoc in (
+            ("_emphasis_", "emphasis_", "emphasis"),
+            ("__bold__", "bold__", "bold"),
+        ):
+            with self.subTest(heading=text):
+                path = self.dir / "u.md"
+                path.write_text(f"## {text}\n", encoding="utf-8")
+                document = annotate(load([path])[0])
+                self.assertEqual([b.slug for b in outline(document)], [ours])
+                self.assertEqual(self._pandoc_ids(path), [pandoc])
 
 class AncestryTests(MdqueryTestCase):
     def test_headings_carry_their_ancestors(self) -> None:

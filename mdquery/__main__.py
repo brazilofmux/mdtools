@@ -28,6 +28,7 @@ KINDS = (
     "code_fence", "code_indented", "table", "line_block", "raw_html",
     "thematic_break",
 )
+TABLE_FORMS = ("pipe", "simple", "grid", "multiline")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -66,8 +67,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"only this kind; repeatable. One of: {', '.join(KINDS)}",
     )
     p_blocks.add_argument(
-        "--form", action="append", metavar="FORM",
-        help="only tables of this form (pipe, simple, grid, multiline)",
+        "--form", action="append", choices=TABLE_FORMS, metavar="FORM",
+        help=f"only tables of this form; repeatable. One of: {', '.join(TABLE_FORMS)}",
     )
     p_blocks.add_argument(
         "--under", metavar="SLUG",
@@ -97,7 +98,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _warn_hidden(documents, quiet: bool) -> None:
     """
-    Say so when a container hides verbatim blocks from every query.
+    Say so when a container hides fenced blocks from every query.
 
     Silence here would make `blocks --kind code_fence` look exhaustive when it
     is not. docs/ir-schema.md, "Not in schema 1".

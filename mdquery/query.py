@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Iterable, List, Optional, Sequence, Tuple
 
-from .ir import Block, Document
+from .ir import CONTAINER_KINDS, Block, Document
 from .slug import assign_slugs
 
 
@@ -97,18 +97,21 @@ def filter_blocks(
 
 def hidden_nested_blocks(document: Document) -> List[Block]:
     """
-    Containers whose span holds a verbatim construct the IR cannot see.
+    Containers whose span holds a fenced construct the IR cannot see.
 
     Schema 1 emits a flat sequence, so a fenced block inside a list item is
     part of the `list` record rather than a record of its own — and that record
-    says protected=false. Any query over code blocks or protection therefore
-    under-reports inside containers, so mdquery reports it rather than letting
-    the answer look complete. docs/ir-schema.md, "Not in schema 1".
+    says protected=false. Queries over code fences therefore under-report
+    inside containers, so mdquery reports it rather than letting the answer
+    look complete. The check is fence markers only (`` ``` `` / `~~~`); indented
+    code and raw HTML nested in lists also under-report without a warning —
+    broadening that would re-introduce grammar. docs/ir-schema.md, "Not in
+    schema 1".
     """
     suspect = []
     data = document.path.read_bytes() if document.path.is_file() else b""
     for block in document.blocks:
-        if block.kind not in ("list", "block_quote"):
+        if block.kind not in CONTAINER_KINDS:
             continue
         segment = data[block.start:block.end]
         if b"```" in segment or b"~~~" in segment:

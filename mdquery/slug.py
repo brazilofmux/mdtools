@@ -15,16 +15,18 @@ anchors follow Pandoc's rules and not GitHub's. Every rule below was read off
     duplicates                      -> '-1', '-2', …
 
 Slugs are computed from the IR's raw heading text, which still contains inline
-markup. That is deliberate: stripping `[link](url)` here would mean teaching a
-consumer Markdown, which is precisely the leak dialect-policy §2 forbids. Most
-markup drops out anyway — `*`, `` ` ``, `#` and `—` are all discarded by the
-character filter, so emphasised and code-spanned headings agree with Pandoc.
-Links in headings do not; see docs/mdquery.md.
+markup. That is deliberate: stripping `[link](url)` or `_emphasis_` here would
+mean teaching a consumer Markdown, which is precisely the leak dialect-policy
+§2 forbids. Markers that are not slug characters fall out for free (`*`, `` ` ``,
+`#`), so star-emphasis and code-spanned headings agree with Pandoc. Underscore
+emphasis and links do not — `_` is a kept character and link syntax survives
+as raw text until the IR carries inlines. See docs/mdquery.md Limits.
 """
 
 from __future__ import annotations
 
 # Kept as-is by Pandoc: letters, digits, underscore, hyphen, period, space.
+# Underscore is why "_emphasis_" does not fall out the way "*emphasis*" does.
 _KEEP_PUNCT = frozenset("_-. ")
 
 # `+smart` is pinned by dialect-policy §3, so Pandoc folds these before the

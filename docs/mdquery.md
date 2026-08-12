@@ -88,9 +88,10 @@ combining mark and gives `heading`; mdquery matches that rather than being
 more principled than the tool it has to agree with. And `+smart` is folded
 first, so `A--B` gives `ab` — the en dash it becomes is not a slug character.
 
-Emphasised and code-spanned headings agree with Pandoc for free: `*`, `` ` ``
-and `#` are simply not slug characters, so `*emphasis* inside` gives
-`emphasis-inside` without mdquery knowing what emphasis is.
+Star-emphasis and code-spanned headings agree with Pandoc for free: `*`,
+`` ` `` and `#` are simply not slug characters, so `*emphasis* inside` gives
+`emphasis-inside` without mdquery knowing what emphasis is. Underscore
+emphasis does not fall out that way — see Limits.
 
 ## Limits
 
@@ -98,10 +99,12 @@ These are consequences of what the IR carries today. Each is fixed in
 `mdfix.rl` or the schema, never by teaching mdquery Markdown.
 
 - **No inline structure.** Links, images, footnote references and citations
-  are not queryable — schema 1 stops at blocks. This is also the one place
-  identifiers diverge from Pandoc: a heading like `## [link](url)` slugs as
-  `linkhttpx` where Pandoc says `link`, because the IR reports the heading's
-  raw text and mdquery may not parse it. Pinned by a test.
+  are not queryable — schema 1 stops at blocks. Identifiers are computed from
+  **raw heading text**, so anything whose AST plain text differs from the raw
+  source can diverge from Pandoc. Pinned today:
+  - `## [link](url)` → mdquery `linkhttpx`, Pandoc `link`
+  - `## _emphasis_` → mdquery `emphasis_`, Pandoc `emphasis`
+  Full parity needs inline IR (#15 part 3).
 - **Containers hide nested blocks.** Schema 1 is a flat sequence, so a fenced
   block inside a list item is part of the `list` record. Queries over code
   blocks or protection therefore under-report inside containers. mdquery
