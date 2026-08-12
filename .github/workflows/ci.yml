@@ -52,10 +52,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - name: Install ragel
-        # Not because tests need it, but so the build never depends on which
-        # of mdfix.c / mdfix.rl checkout happened to stamp later.
-        run: sudo apt-get update && sudo apt-get install -y ragel
+      - name: Install ragel and pandoc
+        # ragel: so the build never depends on which of mdfix.c / mdfix.rl
+        # checkout happened to stamp later.
+        # pandoc: the output target. tests/test_pandoc_equivalence.py skips
+        # without it, and a silent skip is how "output is Pandoc-friendly"
+        # would go unverified.
+        run: sudo apt-get update && sudo apt-get install -y ragel pandoc
       - name: Install PyYAML
         run: python -m pip install --disable-pip-version-check -r prosevary/requirements.txt
       - name: Run tests

@@ -2446,6 +2446,17 @@ static void process(FILE *out)
         /* ── Opening code fence ── */
         struct fence_state opener;
         if (parse_fence_opener(line, &opener)) {
+            /*
+             * A fence at or left of the enclosing item's content column ends
+             * the list; an indented one is inside the item and leaves it
+             * standing. Without this the list context leaked past the fenced
+             * block, so a later four-column code block was measured against a
+             * stale threshold and went back to being rewritten as prose.
+             */
+            if (indent_columns(line, NULL) < list_content_col) {
+                prev_was_list_ctx = 0;
+                list_content_col = 0;
+            }
             flush_paragraph(out);
             fix_fence_canonical(line, i + 1, 1);
             opener.open_line = i + 1;
