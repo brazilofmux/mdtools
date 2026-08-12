@@ -5,13 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from prosevary.segment import (
-    LineKind,
-    _fence_opener,
-    _is_fence_closer,
-    indent_columns,
-    parse,
-)
+from prosevary.segment import LineKind, parse
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,44 +13,11 @@ FIXTURES = ROOT / "tests" / "fixtures" / "fences"
 MDFIX = ROOT / "mdfix" / "mdfix"
 
 
-class FenceGrammarTests(unittest.TestCase):
-    def test_closer_must_match_marker_and_opening_length(self) -> None:
-        fence = _fence_opener("````python")
-        self.assertIsNotNone(fence)
-        assert fence is not None
-
-        self.assertFalse(_is_fence_closer("```", fence))
-        self.assertFalse(_is_fence_closer("~~~~", fence))
-        self.assertFalse(_is_fence_closer("```` trailing", fence))
-        self.assertTrue(_is_fence_closer("````", fence))
-        self.assertTrue(_is_fence_closer("  `````  \t", fence))
-        self.assertFalse(_is_fence_closer("    ````", fence))
-
-    def test_backtick_info_string_cannot_contain_backticks(self) -> None:
-        self.assertIsNone(_fence_opener("```bad`info"))
-        self.assertIsNotNone(_fence_opener("~~~bad`info"))
-
-    def test_opener_accepts_list_item_indentation(self) -> None:
-        # A fence inside an ordered list item sits at content column 4+.
-        # Capping opener indent classified the block as prose and fed shell
-        # code to the wrapper/paraphraser.
-        fence = _fence_opener("    ```sh")
-        self.assertIsNotNone(fence)
-        assert fence is not None
-        self.assertEqual(fence.indent, 4)
-
-    def test_closer_indent_is_relative_to_its_opener(self) -> None:
-        # Closers stay strict, but strict *relative to the opener* — else an
-        # indented block could never be closed.
-        indented = _fence_opener("    ```sh")
-        assert indented is not None
-        self.assertTrue(_is_fence_closer("    ```", indented))
-        self.assertTrue(_is_fence_closer("       ```", indented))
-        self.assertFalse(_is_fence_closer("        ```", indented))
-
-        flush = _fence_opener("```sh")
-        assert flush is not None
-        self.assertFalse(_is_fence_closer("    ```", flush))
+# FenceGrammarTests, and the indent_columns cases that lived in
+# IndentColumnTests, tested prosevary's own fence grammar directly. That
+# grammar is gone: block structure comes from `mdfix --emit-ir`, and the same
+# rules are asserted against mdfix in MdfixTabFenceTests below and in
+# tests/test_ir_schema.py.
 
 
 class SharedFenceFixtureTests(unittest.TestCase):
@@ -206,29 +167,6 @@ class UnterminatedFenceTests(unittest.TestCase):
 class IndentColumnTests(unittest.TestCase):
     """Indentation is columns, not characters (issue #29)."""
 
-    def test_tab_advances_to_the_next_multiple_of_four(self) -> None:
-        for text, columns, chars in [
-            ("    x", 4, 4),
-            ("\tx", 4, 1),
-            (" \tx", 4, 2),
-            ("   \tx", 4, 4),
-            ("\t\tx", 8, 2),
-            ("x", 0, 0),
-            ("", 0, 0),
-        ]:
-            with self.subTest(text=text):
-                self.assertEqual(indent_columns(text), (columns, chars))
-
-    def test_tab_indented_delimiter_does_not_close_a_fence(self) -> None:
-        # One tab is four columns, past the three-column allowance, so this
-        # is fence content. Counting characters made it a closer and exposed
-        # the rest of the block — including the real closer — as prose.
-        fence = _fence_opener("```sh")
-        assert fence is not None
-        self.assertFalse(_is_fence_closer("\t```", fence))
-        self.assertTrue(_is_fence_closer("   ```", fence))
-        self.assertFalse(_is_fence_closer("    ```", fence))
-
     def test_tab_closed_fence_exposes_nothing(self) -> None:
         source = "```sh\ncode\n\t```\nAfter prose.\n"
         doc = parse(source)
@@ -237,16 +175,6 @@ class IndentColumnTests(unittest.TestCase):
             [s.text for r in doc.regions for s in r.sentences], []
         )
         self.assertEqual(doc.reconstruct({}), source)
-
-    def test_tab_indented_opener_allows_a_tab_indented_closer(self) -> None:
-        # The allowance is relative: an opener at four columns tolerates a
-        # closer at four through seven.
-        fence = _fence_opener("\t```sh")
-        assert fence is not None
-        self.assertEqual(fence.indent, 4)
-        self.assertTrue(_is_fence_closer("\t```", fence))
-        self.assertTrue(_is_fence_closer("       ```", fence))
-        self.assertFalse(_is_fence_closer("\t    ```", fence))
 
 
 class MdfixTabFenceTests(unittest.TestCase):

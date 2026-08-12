@@ -42,10 +42,9 @@ so a test can fail, and §5 records what is not built yet.
   Diagnostics (D) are produced by every layer and are not a layer.
 ```
 
-L1 through L5 and D live in **mdfix**. **Target:** everything else is a
-consumer and holds no Markdown grammar (dialect-policy §2). **Today:** that is
-true of mdquery; prosevary still re-derives blocks in `segment.py` until
-`--apply-edits` ships and the dual-grammar interim ends.
+L1 through L5 and D live in **mdfix**. Everything else is a consumer and holds
+no Markdown grammar (dialect-policy §2) — true of both mdquery and prosevary
+since the `segment.py` cut.
 
 | Layer | Owns |
 |---|---|
@@ -168,11 +167,12 @@ byte-span edits.
 
 - **Read-only** — mdquery (#15), mdcheck (#13). mdquery already matches this
   model. Cannot corrupt a manuscript.
-- **Editing (target)** — prosevary, mdterms (#16), mdlinks (#14). Return span
-  edits and never learn what a grid table is. **Today:** prosevary still
-  classifies blocks itself and reconstructs via `Document.reconstruct`; it
-  does not yet speak edit-lists to mdfix (applier is shipped; prosevary still
-  dual-grammar until it migrates).
+- **Editing** — prosevary, mdterms (#16), mdlinks (#14). Return span
+  edits and never learn what a grid table is. **Today:** prosevary takes its
+  structure from the IR and no longer classifies blocks. It still splices in
+  process via `Document.reconstruct` rather than emitting an edit list to
+  `--apply-edits`; every region now carries its byte span, so that migration
+  is mechanical.
 
 prosevary is Python, external, and does what it does: orchestration, SQLite,
 metrics, gate policy. None of that *needs* to be grammar once the applier
@@ -235,13 +235,14 @@ the failure visible instead of silent.
 resume state.**
 
 Partial edit is what spans are *for*; the L5 applier (`--apply-edits`) that
-makes it true is shipped (see [edit-schema.md](edit-schema.md)). prosevary-local
-reconstruct is still a dual-grammar mechanism until it migrates. Partial parse is a different claim: classification
-depends on fence state, front-matter state, list content column, and open raw
-HTML, and `table_block_end` needs forward lookahead. Starting mid-file without
-carrying that state produces confidently wrong answers. If streaming is wanted
-later, the resume state must be part of the schema; designing it in is cheap
-now and a retrofit later.
+makes it true is shipped (see [edit-schema.md](edit-schema.md)). prosevary
+reconstruct is still an in-process splice of IR pieces and rewritten
+paragraph regions, not an edit-list handed to mdfix. Partial parse is a
+different claim: classification depends on fence state, front-matter state,
+list content column, and open raw HTML, and `table_block_end` needs forward
+lookahead. Starting mid-file without carrying that state produces confidently
+wrong answers. If streaming is wanted later, the resume state must be part of
+the schema; designing it in is cheap now and a retrofit later.
 
 ### Q5. How is I3.1 enforced?
 
@@ -264,8 +265,8 @@ re-creates the dual-implementation problem *inside* mdfix while in flight.
 
 So: build the IR-based path beside the existing one, diff their output over the
 repository and the downstream corpora until byte-identical, and only then
-delete the old path. The same discipline that `test_tool_parity.py` provided for
-the C/Python split, applied to a C/C split.
+delete the old path. The same discipline that the retired dual-grammar parity
+harness provided for the C/Python split, applied to a C/C split.
 
 ### Q7. Where do diagnostics live?
 

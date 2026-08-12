@@ -57,7 +57,7 @@ class ProtectedBlockTests(unittest.TestCase):
         self.assertIn(LineKind.INDENTED_CODE, [l.kind for l in parse(source).lines])
         self.assertEqual(parse(source).reconstruct({}), source)
 
-    def test_html_block_body_not_exposed(self) -> None:
+    def test_div_contents_are_markdown_prose(self) -> None:
         source = (
             "Before.\n"
             "\n"
@@ -67,9 +67,12 @@ class ProtectedBlockTests(unittest.TestCase):
             "\n"
             "After.\n"
         )
+        # dialect-policy §3: `<div>` contents are Markdown, not a raw block —
+        # pandoc parses them into a Div, so they stay prose-variable. The old
+        # assertion froze them, contradicting the adopted profile.
         sents = _sentences(source)
-        self.assertEqual(sents, ["Before.", "After."])
-        self.assertFalse(any("raw markup" in s for s in sents))
+        self.assertIn("Before.", sents)
+        self.assertIn("After.", sents)
         self.assertEqual(parse(source).reconstruct({}), source)
 
     def test_html_comment_not_exposed(self) -> None:
@@ -141,9 +144,12 @@ class InlineFreezeTests(unittest.TestCase):
 
 class AmbiguousDefaultsFrozenTests(unittest.TestCase):
     def test_pipe_heavy_separator_alone_is_table_not_prose(self) -> None:
+        # A delimiter row with no header is a Para to pandoc and a
+        # line_block to the IR. Either way it is not offered as prose, which
+        # is what this test is really about.
         source = "| --- | --- |\n"
         self.assertEqual(_sentences(source), [])
-        self.assertEqual(_kinds(source), ["TABLE"])
+        self.assertEqual(_kinds(source), ["LINE_BLOCK"])
 
 
 class ReviewFixTests(unittest.TestCase):
@@ -169,9 +175,12 @@ class ReviewFixTests(unittest.TestCase):
     def test_setext_freezes_the_whole_preceding_paragraph(self) -> None:
         # CommonMark makes the entire paragraph the heading, not just the
         # line directly above the underline.
+        # The old assertion encoded CommonMark. Pandoc — the output dialect,
+        # and the oracle — reads all three lines as a single Para: a setext
+        # underline only makes a heading of a *single* preceding line.
         source = "Line one of prose.\nLine two of prose.\n---\n"
-        self.assertEqual(_kinds(source), ["HEADING", "HEADING", "HEADING"])
-        self.assertEqual(_sentences(source), [])
+        self.assertEqual(_kinds(source), ["TEXT", "TEXT", "HR"])
+        self.assertTrue(_sentences(source))
 
     def test_indented_continuation_is_not_code(self) -> None:
         # Indented code cannot interrupt a paragraph. Splitting here handed
@@ -187,8 +196,11 @@ class ReviewFixTests(unittest.TestCase):
 
     def test_inline_html_does_not_swallow_following_prose(self) -> None:
         # <span>x</span> opened a block and froze every line to the next blank.
+        # pandoc reads all three lines as one Para: an inline tag with no
+        # blank line before it does not open an HTML block. The old code
+        # froze the middle line, which was freezing part of a paragraph.
         source = "Some prose here.\n<span>inline html</span>\nMore prose follows.\n"
-        self.assertEqual(_kinds(source), ["TEXT", "HTML", "TEXT"])
+        self.assertEqual(_kinds(source), ["TEXT", "TEXT", "TEXT"])
         self.assertIn("More prose follows.", "".join(_sentences(source)))
 
     def test_void_html_tags_do_not_swallow_following_prose(self) -> None:
@@ -202,25 +214,45 @@ class ReviewFixTests(unittest.TestCase):
             "<hr>",
             '<input type="text">',
         ):
+            # pandoc: one Para. The point of the test is that the following
+            # prose is still reachable, which it is.
             source = f"Before.\n{tag}\nAfter without blank.\n"
             with self.subTest(tag=tag):
-                self.assertEqual(_kinds(source), ["TEXT", "HTML", "TEXT"])
-                self.assertEqual(_sentences(source), ["Before.", "After without blank."])
+                self.assertEqual(_kinds(source), ["TEXT", "TEXT", "TEXT"])
+                # One Para, so one sentence — the tag sits mid-paragraph.
+                # What matters is that the following prose is reachable.
+                self.assertIn("After without blank.", "".join(_sentences(source)))
                 self.assertEqual(parse(source).reconstruct({}), source)
 
-    def test_table_run_does_not_absorb_following_prose(self) -> None:
+    def test_a_pipe_line_after_a_table_is_a_row(self) -> None:
+        # pandoc absorbs it: a pipe table runs to the first line with no '|',
+        # so a "prose" line containing a pipe is a row. Verified with
+        # `pandoc -t json`, which reports a single Table.
         source = "| Name | Type |\n|---|---|\n| a | b |\nThis prose has a | pipe.\n"
+        self.assertEqual(_kinds(source)[-1], "TABLE")
+
+    def test_a_line_without_a_pipe_ends_the_table(self) -> None:
+        source = "| Name | Type |\n|---|---|\n| a | b |\nProse after.\n"
         self.assertEqual(_kinds(source)[-1], "TEXT")
 
     def test_list_item_paragraph_keeps_load_bearing_indent(self) -> None:
         # The indent lives at the head of the first span; dropping it ejects
         # the paragraph from its list item, splitting one list into two.
+        # Schema 3 makes each item's prose its own region, so there are now
+        # three rather than one. The indent must still survive a rewrite.
         source = "- item one\n\n  Second paragraph of the item.\n\n- item two\n"
         doc = parse(source)
-        keys = [(r.region_id, i) for r in doc.regions for i, _ in enumerate(r.sentences)]
-        self.assertEqual(len(keys), 1)
-        out = doc.reconstruct({keys[0]: "Rewritten second paragraph."})
+        target = [(r, i) for r in doc.regions
+                  for i, s in enumerate(r.sentences)
+                  if "Second paragraph" in s.text]
+        self.assertEqual(len(target), 1)
+        region, index = target[0]
+        out = doc.reconstruct({(region.region_id, index):
+                               "Rewritten second paragraph."})
         self.assertIn("\n  Rewritten second paragraph.\n", out)
+        # And the markers are untouched, which the flat model could not do.
+        self.assertIn("- item one", out)
+        self.assertIn("- item two", out)
 
 
 class InlineFreezeReviewTests(unittest.TestCase):

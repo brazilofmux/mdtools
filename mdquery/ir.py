@@ -146,6 +146,30 @@ def _records(paths: Iterable[Path], mdfix: Optional[str] = None) -> List[dict]:
     return out
 
 
+def raw_records(paths: Iterable[Path],
+                mdfix: Optional[str] = None) -> List[dict]:
+    """
+    Every record as mdfix emitted it — `gap` records and nested prose included.
+
+    `load` drops both, because a query for "the blocks in this file" means the
+    top-level content ones. A caller that has to reproduce the file, or that
+    edits prose nested in a list item, needs the whole sequence.
+
+    Refuses an unknown `document.schema` the same way `load` does, so
+    prosevary (the other consumer) cannot silently mis-slice spans.
+    """
+    records = _records(paths, mdfix)
+    for record in records:
+        if record.get("kind") == "document":
+            schema = record.get("schema", "")
+            if schema != SCHEMA:
+                raise IRError(
+                    f"IR schema {schema!r} is not {SCHEMA!r}; "
+                    "mdquery and mdfix are out of step"
+                )
+    return records
+
+
 def load(paths: Iterable[Path], mdfix: Optional[str] = None) -> List[Document]:
     """
     Parse `mdfix --emit-ir` output into one Document per input file.
