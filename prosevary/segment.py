@@ -50,6 +50,27 @@ _HTML_CDATA = re.compile(r"^ {0,3}<!\[CDATA\[")
 _HTML_PI = re.compile(r"^ {0,3}<\?")
 # Complete single-line HTML comment.
 _HTML_COMMENT_FULL = re.compile(r"^ {0,3}<!--.*?-->\s*$")
+# Raw HTML blocks, paired with the terminator that ends each kind.
+#
+# Pandoc keeps these as a RawBlock running to their own terminator — a blank
+# line does not end them. Representing every HTML block with one boolean and
+# stopping at the first blank exposed the contents: `alert("A → B");` inside a
+# <script> reached sentence segmentation, and a comment's body and its `-->`
+# became prose.
+#
+# `<div>` and friends are deliberately absent. Pandoc parses those into a Div
+# whose contents are markdown, so their prose *should* be reachable; only
+# these five kinds are raw.
+_RAW_HTML_BLOCKS = (
+    (re.compile(r"^ {0,3}<!--"), re.compile(r"-->")),
+    (re.compile(r"^ {0,3}<!\[CDATA\["), re.compile(r"\]\]>")),
+    (re.compile(r"^ {0,3}<\?"), re.compile(r"\?>")),
+    (re.compile(r"^ {0,3}<![A-Za-z]"), re.compile(r">")),
+    (
+        re.compile(r"^ {0,3}<(?:script|pre|style|textarea)\b", re.IGNORECASE),
+        re.compile(r"</(?:script|pre|style|textarea)\s*>", re.IGNORECASE),
+    ),
+)
 # One HTML tag: (closing slash, name, self-closing slash).
 _HTML_TAG = re.compile(r"<(/?)([a-zA-Z][\w-]*)\b[^>]*?(/?)>")
 # HTML void elements have no end tag. Without treating them as self-closing,
@@ -411,6 +432,14 @@ def _is_html_block_start(line: str) -> bool:
     )
 
 
+def _raw_html_terminator(line: str):
+    """The terminator pattern for a raw HTML opener, or None if not raw."""
+    for opener, terminator in _RAW_HTML_BLOCKS:
+        if opener.match(line):
+            return terminator
+    return None
+
+
 def _is_html_block_complete(line: str) -> bool:
     """Single-line HTML that should not open a multi-line HTML region."""
     if _HTML_COMMENT_FULL.match(line):
@@ -460,6 +489,7 @@ def classify_lines(raw_lines: Sequence[str]) -> List[Line]:
     fence: Optional[FenceState] = None
     in_fm = False
     in_html = False
+    raw_html_end = None
     i = 0
     n = len(raw_lines)
 
@@ -471,7 +501,7 @@ def classify_lines(raw_lines: Sequence[str]) -> List[Line]:
         stripped = raw.rstrip("\r\n")
 
         # ── YAML front matter ──
-        if fence is None and not in_html:
+        if fence is None and not in_html and raw_html_end is None:
             if i == 0 and stripped.strip() == "---":
                 emit(LineKind.FRONT_MATTER, raw)
                 in_fm = True
@@ -491,6 +521,14 @@ def classify_lines(raw_lines: Sequence[str]) -> List[Line]:
                 fence = None
             else:
                 emit(LineKind.FENCE, raw)
+            i += 1
+            continue
+
+        # ── Raw HTML block: runs to its own terminator, blank lines included ──
+        if raw_html_end is not None:
+            emit(LineKind.HTML, raw)
+            if raw_html_end.search(stripped):
+                raw_html_end = None
             i += 1
             continue
 
@@ -608,7 +646,13 @@ def classify_lines(raw_lines: Sequence[str]) -> List[Line]:
         # ── HTML block start ──
         if _is_html_block_start(stripped):
             emit(LineKind.HTML, raw)
-            if not _is_html_block_complete(stripped):
+            terminator = _raw_html_terminator(stripped)
+            if terminator is not None:
+                # Raw kinds close on their own terminator. One-liners such as
+                # `<!-- note -->` or `<script>x</script>` close immediately.
+                if not terminator.search(stripped[stripped.index("<") + 1:]):
+                    raw_html_end = terminator
+            elif not _is_html_block_complete(stripped):
                 in_html = True
             i += 1
             continue

@@ -147,6 +147,23 @@ class PandocEquivalenceTests(unittest.TestCase):
         )
         self._assert_pandoc_safe(source)
 
+    def test_raw_html_blocks_survive_verbatim(self) -> None:
+        # Pandoc keeps these as RawBlock through a kind-specific terminator.
+        # mdfix was converting arrows inside them — rewriting JavaScript.
+        for source in (
+            '<script>\n\nalert("A → B");\n</script>\nAfter A → B.\n',
+            "<!--\n\nnote A → B\n\n-->\nAfter A → B.\n",
+            "<style>\n\n.a { color: red }\n</style>\nAfter.\n",
+            "<pre>\n\nA → B\n</pre>\nAfter.\n",
+        ):
+            with self.subTest(source=source[:22]):
+                self._assert_pandoc_safe(source)
+
+    def test_div_contents_are_markdown_not_raw(self) -> None:
+        # The other direction: Pandoc gives a Div holding markdown, so this
+        # must stay a Div with the same block skeleton after a fix run.
+        self._assert_pandoc_safe("<div>\n\ninner A → B\n\n</div>\n\nAfter.\n")
+
     def test_output_is_idempotent_under_pandoc(self) -> None:
         _, once = self._fix(AI_DOCUMENT)
         first = once.read_text(encoding="utf-8")

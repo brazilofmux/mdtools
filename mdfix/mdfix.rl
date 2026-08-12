@@ -59,6 +59,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>   /* strncasecmp */
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -397,6 +398,54 @@ static enum linetype classify(const char *line)
     if (find_bullet(line) >= 0) return LT_BULLET;
     if (is_ordered(line))       return LT_ORDERED;
     return LT_TEXT;
+}
+
+/* Case-insensitive substring search. strcasestr is not standard C, and
+ * _POSIX_C_SOURCE hides it on some libcs. */
+static const char *ci_strstr(const char *haystack, const char *needle)
+{
+    size_t n = strlen(needle);
+    if (!n)
+        return haystack;
+    for (const char *p = haystack; *p; p++) {
+        if (strncasecmp(p, needle, n) == 0)
+            return p;
+    }
+    return NULL;
+}
+
+/*
+ * Raw HTML blocks and the terminator that ends each kind.
+ *
+ * Pandoc keeps these as a RawBlock running to their own terminator; a blank
+ * line does not end them, and the contents are passed through verbatim. mdfix
+ * had no notion of them at all, so it converted arrows and normalized
+ * punctuation inside <script>, <pre>, <style> and comments — rewriting
+ * JavaScript and CSS as though it were prose.
+ *
+ * <div> and other block-level tags are deliberately absent: Pandoc parses
+ * those into a Div whose contents are markdown, so prose inside them is
+ * ordinary prose and mdfix should keep fixing it.
+ *
+ * Returns the terminator to search for, or NULL when the line opens nothing.
+ */
+static const char *raw_html_terminator(const char *line)
+{
+    int i = 0;
+    while (i < 3 && line[i] == ' ')
+        i++;
+    const char *s = line + i;
+
+    if (strncmp(s, "<!--", 4) == 0)                 return "-->";
+    if (strncmp(s, "<![CDATA[", 9) == 0)            return "]]>";
+    if (s[0] == '<' && s[1] == '?')                 return "?>";
+    if (s[0] == '<' && s[1] == '!'
+        && isalpha((unsigned char)s[2]))            return ">";
+    if (strncasecmp(s, "<script", 7) == 0)          return "</script";
+    if (strncasecmp(s, "<pre", 4) == 0)             return "</pre";
+    if (strncasecmp(s, "<style", 6) == 0)           return "</style";
+    if (strncasecmp(s, "<textarea", 9) == 0)        return "</textarea";
+    return NULL;
 }
 
 static int is_list_type(enum linetype t)
@@ -2053,6 +2102,7 @@ static void process(FILE *out)
     int frontmatter_opened = 0;   /* have we seen the opening --- ? */
     int frontmatter_closed = 0;   /* have we seen the closing --- ? */
     struct fence_state fence = {0, 0, 0, 0, 0};
+    const char *raw_html_end = NULL;  /* terminator of an open raw HTML block */
 
     enum linetype prev_content_type = LT_BLANK;
     int prev_was_list_ctx = 0;    /* was previous content in a list context? */
@@ -2097,6 +2147,21 @@ static void process(FILE *out)
             continue;
         }
 
+        /*
+         * ── Inside a raw HTML block: hands off ──
+         * Runs to its own terminator; blank lines do not end it, and nothing
+         * inside is prose. Checked before fences so a ``` inside a <script>
+         * cannot open one.
+         */
+        if (raw_html_end) {
+            fprintf(out, "%s\n", line);
+            if (ci_strstr(line, raw_html_end))
+                raw_html_end = NULL;
+            prev_content_type = LT_TEXT;
+            had_blank = 0;
+            continue;
+        }
+
         /* ── Inside code block: hands off ── */
         if (fence.active) {
             if (is_fence_closer(line, &fence)) {
@@ -2133,6 +2198,23 @@ static void process(FILE *out)
             prev_content_type = LT_CODEFENCE;
             had_blank = 0;
             continue;
+        }
+
+        /* ── Opening raw HTML block ── */
+        {
+            const char *terminator = raw_html_terminator(line);
+            if (terminator) {
+                flush_paragraph(out);
+                fprintf(out, "%s\n", line);
+                /* Search past the opening '<' so a one-line block —
+                 * `<!-- note -->`, `<script>x()</script>`, `<!DOCTYPE html>` —
+                 * closes immediately instead of swallowing the document. */
+                if (!ci_strstr(line + 1, terminator))
+                    raw_html_end = terminator;
+                prev_content_type = LT_TEXT;
+                had_blank = 0;
+                continue;
+            }
         }
 
         /* ── Blank line ── */
