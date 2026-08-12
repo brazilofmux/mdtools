@@ -50,19 +50,30 @@ check-sync:
 	@command -v $(RAGEL) >/dev/null 2>&1 || { \
 		echo "check-sync: $(RAGEL) not found — cannot verify mdfix.c against mdfix.rl"; \
 		exit 1; }
+	@echo "check-sync: using $$($(RAGEL) --version | head -1)"
 	@tmp=$$(mktemp -d) || exit 1; \
 	cp mdfix.rl "$$tmp/" && (cd "$$tmp" && $(RAGEL) -G2 mdfix.rl -o mdfix.c) || { \
 		rm -rf "$$tmp"; echo "check-sync: ragel failed"; exit 1; }; \
 	if cmp -s mdfix.c "$$tmp/mdfix.c"; then \
 		rm -rf "$$tmp"; \
-		echo "check-sync: mdfix.c matches mdfix.rl"; \
-	else \
-		echo "check-sync: mdfix.c is NOT ragel's output for mdfix.rl."; \
-		echo "  Regenerate with: rm -f mdfix/mdfix.c && make -C mdfix"; \
-		diff mdfix.c "$$tmp/mdfix.c" | head -20; \
+		echo "check-sync: mdfix.c matches mdfix.rl byte for byte"; \
+		exit 0; \
+	fi; \
+	grep -v '^#line' mdfix.c > "$$tmp/committed.stripped"; \
+	grep -v '^#line' "$$tmp/mdfix.c" > "$$tmp/regenerated.stripped"; \
+	if cmp -s "$$tmp/committed.stripped" "$$tmp/regenerated.stripped"; then \
+		echo "check-sync: mdfix.c matches mdfix.rl (differs only in #line directives)"; \
+		echo "  Those are debug metadata whose absolute values depend on the ragel"; \
+		echo "  build; the generated code is identical, so this is not drift."; \
 		rm -rf "$$tmp"; \
-		exit 1; \
-	fi
+		exit 0; \
+	fi; \
+	echo "check-sync: mdfix.c is NOT ragel's output for mdfix.rl."; \
+	echo "  Regenerate with: rm -f mdfix/mdfix.c && make -C mdfix"; \
+	echo "  --- differences outside #line directives ---"; \
+	diff "$$tmp/committed.stripped" "$$tmp/regenerated.stripped" | head -30; \
+	rm -rf "$$tmp"; \
+	exit 1
 
 clean:
 	rm -rf mdfix mdfix-asan mdfix-asan.dSYM
