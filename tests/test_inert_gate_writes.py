@@ -107,8 +107,9 @@ class InertGateWriteTests(unittest.TestCase):
         self.assertEqual(rc, 0, msg=err)
         self.assertIn("WARNING: writing with inert gates", err)
         self.assertIn("--allow-inert-gates", err)
-        # Rewritten text may equal original if nothing accepted; stdout is the doc.
-        self.assertTrue(len(out) >= 0)
+        # stdout is the rewritten document, never the decision report.
+        self.assertIn("However", out)
+        self.assertNotIn("[0] accepted", out)
         store = Store(self.db)
         # Highest run_id should carry the unsafe note.
         row = store.conn.execute(
@@ -241,6 +242,83 @@ class DemoSynonymSafetyTests(unittest.TestCase):
             active_gates(StubSemanticEmbedder(), StubEnforcingJudge()),
             ["freeze", "tau", "judge"],
         )
+
+
+class PurgeReachabilityTests(unittest.TestCase):
+    """
+    The purge must run on every invocation, not only when seeding.
+
+    seed_demo_synonyms() is called only when the DB has no `however` rows, so
+    testing the purge by calling that method directly proves the mechanism
+    while leaving the wiring untested — and every pre-existing DB unhealed.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = Path(self.tmp.name) / "d.sqlite"
+        self.doc = Path(self.tmp.name) / "c.md"
+        self.doc.write_text("However the backend is separate.\n", encoding="utf-8")
+
+    def _legacy_db(self) -> None:
+        """A database as an older version would have left it."""
+        store = Store(self.db)
+        store.seed_demo_synonyms()
+        store.add_synonym("demonstrate", "prove", "v", "general")
+        store.add_synonym("failed", "broke", "v", "general")
+        store.conn.commit()
+        store.close()
+
+    def test_normal_run_heals_a_legacy_database(self) -> None:
+        self._legacy_db()
+        _run(["--db", str(self.db), str(self.doc)])  # plain dry run, no flags
+        store = Store(self.db)
+        self.addCleanup(store.close)
+        self.assertNotIn("prove", store.synonyms_for("demonstrate"))
+        self.assertNotIn("broke", store.synonyms_for("failed"))
+        # The rest of the seed must survive the purge.
+        self.assertIn("show", store.synonyms_for("demonstrate"))
+        self.assertTrue(store.synonyms_for("however"))
+
+    def test_purge_is_case_insensitive_on_both_columns(self) -> None:
+        store = Store(self.db)
+        store.seed_demo_synonyms()
+        store.add_synonym("demonstrate", "Prove", "v", "general")
+        store.add_synonym("Failed", "BROKE", "v", "general")
+        store.conn.commit()
+        self.assertEqual(store.purge_unsafe_synonyms(), 2)
+        self.assertNotIn("Prove", store.synonyms_for("demonstrate"))
+        self.assertNotIn("BROKE", store.synonyms_for("failed"))
+        store.close()
+
+    def test_purge_is_idempotent(self) -> None:
+        store = Store(self.db)
+        store.seed_demo_synonyms()
+        self.assertEqual(store.purge_unsafe_synonyms(), 0)
+        store.close()
+
+
+class RunNotesVisibleTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = Path(self.tmp.name) / "d.sqlite"
+        self.doc = Path(self.tmp.name) / "c.md"
+        self.doc.write_text("However the backend is separate.\n", encoding="utf-8")
+
+    def test_report_run_surfaces_the_unsafe_note(self) -> None:
+        # Writing the audit record but never showing it made the
+        # "logged in run metadata" promise unverifiable from the CLI.
+        _run(["--db", str(self.db), "-i", "--allow-inert-gates", str(self.doc)])
+        rc, out, err = _run(["--db", str(self.db), "--report-run", "1"])
+        self.assertEqual(rc, 0, msg=err)
+        self.assertIn("notes: UNSAFE: --allow-inert-gates", out)
+
+    def test_report_run_omits_notes_line_when_empty(self) -> None:
+        _run(["--db", str(self.db), str(self.doc)])  # dry run leaves notes empty
+        rc, out, err = _run(["--db", str(self.db), "--report-run", "1"])
+        self.assertEqual(rc, 0, msg=err)
+        self.assertNotIn("notes:", out)
 
 
 if __name__ == "__main__":

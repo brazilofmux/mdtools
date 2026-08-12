@@ -85,10 +85,15 @@ def report_stored_run(store: Store, run_id: int) -> int:
     semantic = not embed_model.startswith("hash-embed")
 
     accepted = sum(1 for r in rows if r["status"] == "accepted")
+    # notes carries the --allow-inert-gates record. Writing it and never
+    # showing it made the "logged in run metadata" promise unverifiable
+    # without opening sqlite by hand.
+    notes = (run["notes"] or "").strip()
     print(
         f"run {run_id}: {run['source']} — {len(rows)} sentences, {accepted} accepted\n"
         f"  tau={run['tau']}  k={run['k']}  embed={embed_model or '(unknown)'}  "
         f"judge={run['model_judge'] or '(unknown)'}"
+        + (f"\n  notes: {notes}" if notes else "")
     )
     metrics = compare(
         before, after, cosines=cosines, semantic=semantic, embed_model=embed_model
@@ -264,6 +269,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Seeded {n} synonym rows into {args.db}")
         store.close()
         return 0
+
+    # Unconditional: the seed below runs only on a fresh DB, so a database
+    # written by an earlier version would otherwise keep the meaning-changing
+    # pairs forever — exactly where they can still be applied.
+    store.purge_unsafe_synonyms()
 
     # Always ensure demo synonyms exist for offline mode
     if not store.synonyms_for("however"):
