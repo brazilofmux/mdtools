@@ -138,27 +138,66 @@ def ollama_available(base_url: str = "http://127.0.0.1:11434", timeout: float = 
         return False
 
 
+def ollama_list_models(
+    base_url: str = "http://127.0.0.1:11434", timeout: float = 1.5
+) -> Optional[List[str]]:
+    """Return model names from /api/tags, or None if the server is unreachable."""
+    try:
+        req = urllib.request.Request(f"{base_url.rstrip('/')}/api/tags", method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError):
+        return None
+    names: List[str] = []
+    for row in data.get("models") or []:
+        name = row.get("name") or row.get("model")
+        if name:
+            names.append(str(name))
+    return names
+
+
+def ollama_has_model(
+    model: str,
+    base_url: str = "http://127.0.0.1:11434",
+    timeout: float = 1.5,
+) -> bool:
+    """
+    True if Ollama lists this embedding/chat model.
+
+    Names may be bare (`nomic-embed-text`) or tagged (`nomic-embed-text:latest`).
+    """
+    names = ollama_list_models(base_url=base_url, timeout=timeout)
+    if names is None:
+        return False
+    want = model.strip()
+    if not want:
+        return False
+    for name in names:
+        if name == want or name.startswith(want + ":"):
+            return True
+    return False
+
+
 def make_embedder(kind: str = "auto", model: Optional[str] = None) -> Embedder:
     """
     kind: auto | hash | ollama | st
     """
     kind = (kind or "auto").lower()
+    embed_model = model or os.environ.get("PROSEVARY_EMBED_MODEL", "nomic-embed-text")
     if kind == "hash":
         return HashEmbedder()
     if kind == "ollama":
-        return OllamaEmbedder(model=model or os.environ.get("PROSEVARY_EMBED_MODEL", "nomic-embed-text"))
+        return OllamaEmbedder(model=embed_model)
     if kind == "st":
         return SentenceTransformerEmbedder(
             model_name=model or os.environ.get(
                 "PROSEVARY_ST_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
             )
         )
-    # auto
-    if ollama_available():
+    # auto: only use Ollama when the configured embed model is actually present.
+    if ollama_available() and ollama_has_model(embed_model):
         try:
-            return OllamaEmbedder(
-                model=model or os.environ.get("PROSEVARY_EMBED_MODEL", "nomic-embed-text")
-            )
+            return OllamaEmbedder(model=embed_model)
         except Exception:
             pass
     try:
