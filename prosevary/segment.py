@@ -29,7 +29,7 @@ class LineKind(Enum):
 
 
 _HEADING = re.compile(r"^#{1,6}\s")
-_FENCE = re.compile(r"^(`{3,}|~{3,})")
+_FENCE_OPEN = re.compile(r"^(?P<indent> {0,3})(?P<marker>`{3,}|~{3,})(?P<rest>.*)$")
 _TABLE = re.compile(r"^\|")
 _BLOCKQUOTE = re.compile(r"^>\s?")
 _LIST = re.compile(r"^(\s*)([-*+]|\d+\.)\s+")
@@ -57,6 +57,15 @@ class Sentence:
     start: int  # char offset into the joined prose region
     end: int
     region_id: int
+
+
+@dataclass(frozen=True)
+class FenceState:
+    """Delimiter information needed to recognize the matching closer."""
+
+    marker: str
+    length: int
+    indent: int
 
 
 @dataclass
@@ -115,39 +124,79 @@ class Document:
         return "".join(out)
 
 
-def classify_line(text: str, in_fence: bool, in_front_matter: bool, line_no: int) -> Tuple[LineKind, bool, bool]:
-    """Return (kind, new_in_fence, new_in_front_matter). text has no newline stripped requirement."""
-    stripped = text.rstrip("\n")
+def _fence_opener(text: str) -> Optional[FenceState]:
+    """Return a CommonMark/Pandoc fence descriptor, or None."""
+    line = text.rstrip("\r\n")
+    m = _FENCE_OPEN.fullmatch(line)
+    if m is None:
+        return None
+    run = m.group("marker")
+    # Backtick info strings cannot themselves contain a backtick. Without
+    # this guard an inline-code-looking prose line can open a block forever.
+    if run[0] == "`" and "`" in m.group("rest"):
+        return None
+    return FenceState(
+        marker=run[0],
+        length=len(run),
+        indent=len(m.group("indent")),
+    )
+
+
+def _is_fence_closer(text: str, fence: FenceState) -> bool:
+    """Whether text is a valid closer for fence."""
+    line = text.rstrip("\r\n")
+    i = 0
+    while i < len(line) and i < 3 and line[i] == " ":
+        i += 1
+    if i < len(line) and line[i] == " ":
+        return False
+    start = i
+    while i < len(line) and line[i] == fence.marker:
+        i += 1
+    if i - start < fence.length:
+        return False
+    return not line[i:].strip(" \t")
+
+
+def classify_line(
+    text: str,
+    fence: Optional[FenceState],
+    in_front_matter: bool,
+    line_no: int,
+) -> Tuple[LineKind, Optional[FenceState], bool]:
+    """Return (kind, new fence state, new front-matter state)."""
+    stripped = text.rstrip("\r\n")
     # YAML front matter: --- on line 0 opens, --- later closes.
     if line_no == 0 and stripped.strip() == "---":
-        return LineKind.FRONT_MATTER, in_fence, True
+        return LineKind.FRONT_MATTER, fence, True
     if in_front_matter:
         if stripped.strip() == "---":
-            return LineKind.FRONT_MATTER, in_fence, False
-        return LineKind.FRONT_MATTER, in_fence, True
+            return LineKind.FRONT_MATTER, fence, False
+        return LineKind.FRONT_MATTER, fence, True
 
-    if in_fence:
-        if _FENCE.match(stripped):
-            return LineKind.FENCE, False, False
-        return LineKind.FENCE, True, False
+    if fence is not None:
+        if _is_fence_closer(stripped, fence):
+            return LineKind.FENCE, None, False
+        return LineKind.FENCE, fence, False
 
-    if _FENCE.match(stripped):
-        return LineKind.FENCE, True, False
+    opener = _fence_opener(stripped)
+    if opener is not None:
+        return LineKind.FENCE, opener, False
     if not stripped.strip():
-        return LineKind.BLANK, False, False
+        return LineKind.BLANK, None, False
     if _HEADING.match(stripped):
-        return LineKind.HEADING, False, False
+        return LineKind.HEADING, None, False
     if _HR.match(stripped.strip()):
-        return LineKind.HR, False, False
+        return LineKind.HR, None, False
     if _TABLE.match(stripped):
-        return LineKind.TABLE, False, False
+        return LineKind.TABLE, None, False
     if _BLOCKQUOTE.match(stripped):
-        return LineKind.BLOCKQUOTE, False, False
+        return LineKind.BLOCKQUOTE, None, False
     if _LIST.match(stripped):
-        return LineKind.LIST, False, False
+        return LineKind.LIST, None, False
     if _HTML.match(stripped):
-        return LineKind.HTML, False, False
-    return LineKind.TEXT, False, False
+        return LineKind.HTML, None, False
+    return LineKind.TEXT, None, False
 
 
 def split_sentences(prose: str) -> List[Tuple[int, int, str]]:
@@ -195,10 +244,10 @@ def parse(source: str) -> Document:
         return Document(lines=[], regions=[])
 
     lines: List[Line] = []
-    in_fence = False
+    fence: Optional[FenceState] = None
     in_fm = False
     for i, raw in enumerate(raw_lines):
-        kind, in_fence, in_fm = classify_line(raw, in_fence, in_fm, i)
+        kind, fence, in_fm = classify_line(raw, fence, in_fm, i)
         lines.append(Line(kind=kind, text=raw, raw=raw))
 
     # Group contiguous TEXT lines into regions (broken by blank/other).

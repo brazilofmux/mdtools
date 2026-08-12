@@ -2,6 +2,7 @@
 PREFIX  ?= $(HOME)/.local
 BINDIR  ?= $(PREFIX)/bin
 LIBDIR  ?= $(PREFIX)/lib/mdtools
+PYTHON  ?= python3
 
 .PHONY: all mdfix prosevary-check install uninstall clean test
 
@@ -38,4 +39,5 @@ clean:
 
 test: mdfix prosevary-check
 	./mdfix/mdfix -h >/dev/null
+	$(PYTHON) -m unittest discover -s tests -v
 	@echo "ok"
