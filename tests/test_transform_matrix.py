@@ -54,6 +54,7 @@ NESTED_BLOCK = frozenset({
 # "alone and in every shipped profile".
 TRANSFORMS = (
     "-w",
+    "--editorial",
     "--chicago-punct",
     "--chicago-punct-2",
     "--chicago-abbrev",

@@ -5,13 +5,14 @@
  * instead of just whining about them.
  *
  * Fixes applied:
- *   1. Bullet style normalization (* and + → -)
- *   2. Missing blank line before lists (the pandoc-killer)
- *   3. Missing blank line after lists
- *   4. Bold/italic stripped from headings
+ *   1. Bullet style normalization (* and + → -) (opt-in: --editorial)
+ *   2. Missing blank line before lists (required / L2)
+ *   3. Missing blank line after lists (required / L2)
+ *   4. Bold/italic stripped from headings (opt-in: --editorial)
  *   5. Trailing whitespace normalized (opt-in: -w)
  *
- * Usage: mdfix [-i] [-n] [-v] [-q] [-w] [--chicago-punct] [--chicago-punct-2]
+ * Usage: mdfix [-i] [-n] [-v] [-q] [-w] [--editorial] [--no-required]
+ *              [--chicago-punct] [--chicago-punct-2]
  *              [--serial-comma-lint] [--chicago-abbrev] [--chicago-number-lint]
  *              [--canonical] [--canonical-lint] [--footnote-canonical]
  *              [--heading-canonical] [--fence-canonical] [--pandoc-safe-links]
@@ -220,8 +221,8 @@ static int total_issues(void)
 
 static void enable_canonical_profile(void)
 {
-    /* The editorial passes were always-on before I3.3; --canonical and
-     * --technical keep them so downstream output is unchanged. */
+    /* Profiles keep the former always-on editorial bundle so downstream
+     * output is unchanged. */
     opt_editorial = 1;
     opt_trail_ws = 1;
     opt_chicago_punct = 1;
@@ -3035,9 +3036,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
             0xE2 0x86 0x92 => {
                 if (!ctx->editorial || ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
-                     * lowering-fn mappings), not prose asides. Pass through.
-                     * Also the default: rewriting prose is an editorial
-                     * choice, so it waits for --editorial (I3.3). */
+                     * lowering-fn mappings), not prose asides. Pass through. */
                     EMIT_DATA(ts, te);
                 } else if (ctx->do_chicago_punct) {
                     int prev = ctx->oi - 1;

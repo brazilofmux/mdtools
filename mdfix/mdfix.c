@@ -7,13 +7,14 @@
  * instead of just whining about them.
  *
  * Fixes applied:
- *   1. Bullet style normalization (* and + → -)
- *   2. Missing blank line before lists (the pandoc-killer)
- *   3. Missing blank line after lists
- *   4. Bold/italic stripped from headings
+ *   1. Bullet style normalization (* and + → -) (opt-in: --editorial)
+ *   2. Missing blank line before lists (required / L2)
+ *   3. Missing blank line after lists (required / L2)
+ *   4. Bold/italic stripped from headings (opt-in: --editorial)
  *   5. Trailing whitespace normalized (opt-in: -w)
  *
- * Usage: mdfix [-i] [-n] [-v] [-q] [-w] [--chicago-punct] [--chicago-punct-2]
+ * Usage: mdfix [-i] [-n] [-v] [-q] [-w] [--editorial] [--no-required]
+ *              [--chicago-punct] [--chicago-punct-2]
  *              [--serial-comma-lint] [--chicago-abbrev] [--chicago-number-lint]
  *              [--canonical] [--canonical-lint] [--footnote-canonical]
  *              [--heading-canonical] [--fence-canonical] [--pandoc-safe-links]
@@ -70,14 +71,14 @@
 #include <unistd.h>
 
 
-#line 74 "mdfix.c"
+#line 75 "mdfix.c"
 static const int mdfix_scanner_start = 14;
 static const int mdfix_scanner_error = -1;
 
 static const int mdfix_scanner_en_main = 14;
 
 
-#line 73 "mdfix.rl"
+#line 74 "mdfix.rl"
 
 
 #define MAX_LINE  8192
@@ -228,8 +229,8 @@ static int total_issues(void)
 
 static void enable_canonical_profile(void)
 {
-    /* The editorial passes were always-on before I3.3; --canonical and
-     * --technical keep them so downstream output is unchanged. */
+    /* Profiles keep the former always-on editorial bundle so downstream
+     * output is unchanged. */
     opt_editorial = 1;
     opt_trail_ws = 1;
     opt_chicago_punct = 1;
@@ -3011,7 +3012,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 3015 "mdfix.c"
+#line 3016 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -3019,20 +3020,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 3023 "mdfix.c"
+#line 3024 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 3410 "mdfix.rl"
+#line 3409 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 3161 "mdfix.rl"
+#line 3160 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -3072,13 +3073,11 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 3035 "mdfix.rl"
+#line 3036 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial || ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
-                     * lowering-fn mappings), not prose asides. Pass through.
-                     * Also the default: rewriting prose is an editorial
-                     * choice, so it waits for --editorial (I3.3). */
+                     * lowering-fn mappings), not prose asides. Pass through. */
                     EMIT_DATA(ts, te);
                 } else if (ctx->do_chicago_punct) {
                     int prev = ctx->oi - 1;
@@ -3111,19 +3110,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 3028 "mdfix.rl"
+#line 3029 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 3028 "mdfix.rl"
+#line 3029 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 3345 "mdfix.rl"
+#line 3344 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -3147,7 +3146,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 3390 "mdfix.rl"
+#line 3389 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -3168,7 +3167,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 3368 "mdfix.rl"
+#line 3367 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -3191,13 +3190,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 3410 "mdfix.rl"
+#line 3409 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 3290 "mdfix.rl"
+#line 3289 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -3220,7 +3219,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 3203 "mdfix.rl"
+#line 3202 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_CHAR('.');
@@ -3271,13 +3270,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 3410 "mdfix.rl"
+#line 3409 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 3253 "mdfix.rl"
+#line 3252 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -3315,7 +3314,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 3312 "mdfix.rl"
+#line 3311 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -3349,7 +3348,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 3099 "mdfix.rl"
+#line 3098 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -3362,7 +3361,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 3073 "mdfix.rl"
+#line 3072 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -3376,7 +3375,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 3111 "mdfix.rl"
+#line 3110 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -3389,7 +3388,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 3086 "mdfix.rl"
+#line 3085 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -3403,7 +3402,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 3123 "mdfix.rl"
+#line 3122 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -3442,7 +3441,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 3028 "mdfix.rl"
+#line 3029 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -3455,7 +3454,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 3459 "mdfix.c"
+#line 3458 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -3481,7 +3480,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 3485 "mdfix.c"
+#line 3484 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -3525,7 +3524,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 3529 "mdfix.c"
+#line 3528 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -3574,7 +3573,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 3578 "mdfix.c"
+#line 3577 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -3593,7 +3592,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 3597 "mdfix.c"
+#line 3596 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -3619,7 +3618,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 3623 "mdfix.c"
+#line 3622 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -3668,7 +3667,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 3672 "mdfix.c"
+#line 3671 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -3748,7 +3747,7 @@ case 13:
 
 	}
 
-#line 3417 "mdfix.rl"
+#line 3416 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';

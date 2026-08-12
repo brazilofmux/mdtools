@@ -165,6 +165,7 @@ class EditorialIsOptInTests(RequiredTestCase):
     EDITORIAL = {
         "bullet style": ("* item\n", "- item\n"),
         "emphasis in a heading": ("# **Bold** Head\n", "# Bold Head\n"),
+        "bold colon": ("**Term**: x\n", "**Term:** x\n"),
         "block quote spacing": (">Quote\n", "> Quote\n"),
         "arrow aside": ("Arrow \u2192 aside.\n", "Arrow \u2014 aside.\n"),
     }
