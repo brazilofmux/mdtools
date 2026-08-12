@@ -5,6 +5,7 @@ Private toolkit for markdown structure and controlled prose variation.
 | Tool | Language | Job |
 |---|---|---|
 | **mdfix** | Ragel → C | Deterministic markdown auto-fixer (lists, headings, Chicago passes, …) |
+| **mdquery** | Python 3 | Structural queries and extraction, via mdfix's IR |
 | **prosevary** | Python 3 | Generate-then-gate lexical variation (freeze terms, embeddings, local LLM) |
 
 These used to be copy-pasted across `slow32-book`, `mush`, `religions`, and others.
@@ -15,7 +16,8 @@ tool. It fixes the input dialects, the single canonical output profile, and the
 rule that Markdown grammar lives in exactly one implementation.
 [docs/ir-schema.md](docs/ir-schema.md) is the interface that rule implies:
 `mdfix --emit-ir` reports block structure with byte spans, so a consumer never
-has to re-derive the grammar.
+has to re-derive the grammar. [docs/mdquery.md](docs/mdquery.md) is the first
+tool built on it.
 
 ## Canonical history (mdfix)
 
@@ -32,6 +34,7 @@ Import took (1). Downstream trees should install from here instead of vendoring.
 ### Requirements
 
 - **mdfix:** `cc`, optionally `ragel` (to regenerate `mdfix.c` from `mdfix.rl`)
+- **mdquery:** Python 3.10+ (stdlib only; needs a built `mdfix`)
 - **prosevary:** Python 3.10+, `PyYAML`; optional Ollama / sentence-transformers
 
 ### Install to `~/.local`
@@ -40,6 +43,7 @@ Import took (1). Downstream trees should install from here instead of vendoring.
 make install PREFIX=$HOME/.local
 # ensure ~/.local/bin is on PATH
 mdfix -h
+mdquery --help
 prosevary --help
 ```
 
@@ -49,13 +53,16 @@ Or work from a clone without installing:
 make -C mdfix
 ./mdfix/mdfix -n --no-arrow-aside chapter.md
 
+PYTHONPATH=. python3 -m mdquery outline README.md
+./scripts/mdquery stats docs/ir-schema.md
+
 PYTHONPATH=. python3 -m prosevary -v chapter.md
 ```
 
 ### Checks
 
 ```bash
-make test         # 158 offline tests, both tools (no network, ~0.5s)
+make test         # offline suite for mdfix + mdquery + prosevary (no network)
 make check-sync   # committed mdfix.c is ragel's output for mdfix.rl
 make asan         # address + UB sanitizers over the repo's own markdown
 make check        # all three — what CI runs
@@ -93,6 +100,7 @@ for technical notation pipelines (`C → IR → asm`).
 
 ```text
 mdfix/           # Ragel source, generated C, Makefile
+mdquery/          # Python package (python -m mdquery)
 prosevary/        # Python package (python -m prosevary)
 docs/             # architecture decisions (start with dialect-policy.md)
 scripts/          # install helpers
