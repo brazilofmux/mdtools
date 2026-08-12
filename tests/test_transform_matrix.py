@@ -82,6 +82,8 @@ CORPUS = {
     "footnote": "Text[^1].\n\n[^1]: Note.\n",
     "nested": "- item\n\n  ```\n  code\n  ```\n\n- next\n",
     "longpara": "word " * 40 + "\n",
+    # Issue #64: an unclosed `---` used to freeze everything after it.
+    "unclosed rule": "---\n\n# H\n\nBody text here.\n",
 }
 
 # (document, transform) -> which invariant it breaks.

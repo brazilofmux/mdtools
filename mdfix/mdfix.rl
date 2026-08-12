@@ -422,11 +422,55 @@ static int is_code_fence(const char *line)
 }
 
 /* YAML frontmatter delimiter: exactly "---" then whitespace/EOL */
+/*
+ * A YAML metadata delimiter is exactly three of its character and then
+ * nothing but whitespace. The old test accepted `---` followed by a space
+ * and anything after it, so a Pandoc dash row (`---    ----`) or any
+ * thematic break at line 1 opened front matter — and since an unclosed
+ * opener ran to EOF, one mis-read line swallowed the document.
+ *
+ * Verified with `pandoc -t json`: `----` is not a delimiter (four dashes
+ * parse as a table row), `---   ` is, and `...` closes a block that `---`
+ * opened.
+ */
+static int fmatter_delim_of(const char *line, char c)
+{
+    if (line[0] != c || line[1] != c || line[2] != c)
+        return 0;
+    int i = 3;
+    if (line[i] == c)
+        return 0;               /* four or more is not a delimiter */
+    while (line[i] == ' ' || line[i] == '\t')
+        i++;
+    return line[i] == '\0';
+}
+
 static int is_fmatter_delim(const char *line)
 {
-    return line[0] == '-' && line[1] == '-' && line[2] == '-'
-        && (line[3] == '\0' || line[3] == '\n' || line[3] == '\r'
-            || line[3] == ' '  || line[3] == '\t');
+    return fmatter_delim_of(line, '-');
+}
+
+/* Pandoc closes a metadata block with `---` or `...`. */
+static int is_fmatter_close(const char *line)
+{
+    return fmatter_delim_of(line, '-') || fmatter_delim_of(line, '.');
+}
+
+/*
+ * Index of the closing delimiter, or -1 when this file has no front matter.
+ *
+ * Returning -1 for an unclosed opener is the point. Pandoc reads `---` with
+ * no closer as a thematic break and carries on parsing; treating it as an
+ * unterminated metadata block instead freezes everything after it.
+ */
+static int frontmatter_close_line(void)
+{
+    if (nlines == 0 || !is_fmatter_delim(lines[0]))
+        return -1;
+    for (int j = 1; j < nlines; j++)
+        if (is_fmatter_close(lines[j]))
+            return j;
+    return -1;
 }
 
 static enum linetype classify(const char *line)
@@ -1412,17 +1456,16 @@ static void emit_ir(FILE *out, const char *source)
     ir_cursor = 0;
     ir_prev_last = -1;
 
-    /* Front matter: only the very first line can open it, and an unclosed
-     * block runs to EOF — both exactly as process() treats it. */
-    if (nlines > 0 && is_fmatter_delim(lines[0])) {
-        int j = 1;
-        while (j < nlines && !is_fmatter_delim(lines[j]))
-            j++;
-        int end = (j < nlines) ? j : nlines - 1;
-        ir_block(out, "frontmatter", 0, end, 1);
-        i = end + 1;
-        prev_content_type = LT_TEXT;
-        had_blank = 0;
+    /* Front matter: only the very first line can open it, and only when a
+     * closing delimiter exists. An unclosed `---` is a thematic break. */
+    {
+        int close = frontmatter_close_line();
+        if (close > 0) {
+            ir_block(out, "frontmatter", 0, close, 1);
+            i = close + 1;
+            prev_content_type = LT_TEXT;
+            had_blank = 0;
+        }
     }
 
     for (; i < nlines; i++) {
@@ -3460,9 +3503,13 @@ static int apply_scanner(char *line, int linenum)
 
 static void process(FILE *out)
 {
+    /*
+     * Decided once, up front: front matter exists only when line 0 opens it
+     * *and* a closing delimiter follows. Deciding line by line let an
+     * unclosed `---` swallow the file, since nothing ever reconsidered.
+     */
+    const int fmatter_close = frontmatter_close_line();
     int in_frontmatter     = 0;
-    int frontmatter_opened = 0;   /* have we seen the opening --- ? */
-    int frontmatter_closed = 0;   /* have we seen the closing --- ? */
     struct fence_state fence = {0, 0, 0, 0, 0};
     enum raw_html_kind raw_html = RAW_HTML_NONE;
 
@@ -3486,13 +3533,12 @@ static void process(FILE *out)
         char *line = lines[i];
         enum linetype type = classify(line);
 
-        /* ── YAML frontmatter handling ──
-         * Only the very first line can open frontmatter.
-         * The next --- closes it.  After that, --- is a thematic break.
-         */
-        if (type == LT_FMATTER && !fence.active) {
-            if (!frontmatter_opened && i == 0) {
-                frontmatter_opened = 1;
+        /* YAML frontmatter: open only at line 0 when a closer exists.
+         * Close at the precomputed line (--- or ...), not by LT_FMATTER —
+         * classify() only tags dashes, so a Pandoc `...` closer must be
+         * index-based. Later `---` is a thematic break. */
+        if (!fence.active && fmatter_close > 0) {
+            if (i == 0) {
                 in_frontmatter = 1;
                 fix_trailing_ws(line, i + 1);
                 fprintf(out, "%s\n", line);
@@ -3500,8 +3546,7 @@ static void process(FILE *out)
                 had_blank = 0;
                 continue;
             }
-            if (in_frontmatter && !frontmatter_closed) {
-                frontmatter_closed = 1;
+            if (i == fmatter_close) {
                 in_frontmatter = 0;
                 fix_trailing_ws(line, i + 1);
                 fprintf(out, "%s\n", line);
@@ -3509,8 +3554,8 @@ static void process(FILE *out)
                 had_blank = 0;
                 continue;
             }
-            /* Past frontmatter — this is a thematic break, treat as text */
-            type = LT_TEXT;
+            if (type == LT_FMATTER)
+                type = LT_TEXT;
         }
 
         /* ── Inside frontmatter: pass through, just trim whitespace ── */
