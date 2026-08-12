@@ -2,7 +2,7 @@ RAGEL  ?= ragel
 CC     ?= cc
 CFLAGS ?= -O2
 
-.PHONY: all clean asan
+.PHONY: all clean asan check-sync
 
 all: mdfix
 
@@ -16,12 +16,13 @@ mdfix: mdfix.c
 asan: mdfix.c
 	$(CC) -O1 -g -fsanitize=address,undefined -o mdfix-asan mdfix.c
 	@err=$$(mktemp); \
-	for f in ../*.md ../*/*.md; do \
+	find .. -name '*.md' -not -path '*/.git/*' -print0 \
+	| while IFS= read -r -d '' f; do \
 		for p in --canonical --technical "--canonical --pandoc-safe-links"; do \
 			./mdfix-asan -n -q $$p "$$f" >/dev/null 2>$$err || \
 				{ cat $$err; rm -f $$err; exit 1; }; \
 		done; \
-	done; \
+	done || { rm -f $$err; exit 1; }; \
 	rm -f $$err; \
 	echo "asan: clean over repo markdown"
 
@@ -29,6 +30,50 @@ asan: mdfix.c
 # Pre-generated mdfix.c is committed so builds work without ragel.
 mdfix.c: mdfix.rl
 	$(RAGEL) -G2 $< -o $@
+
+# Verify the committed mdfix.c really is ragel's output for mdfix.rl.
+#
+# The .c is generated but committed, so the two can drift: a hand-edit to the
+# .c, or a .rl change committed without regenerating, both produce a binary
+# that does not match its source. Reviewing the .rl then tells you nothing
+# about what ships.
+#
+# Regenerating into a temp directory under the *same filename* matters —
+# ragel writes the -o path into #line directives, so comparing against a
+# differently-named file reports differences that are pure artifact.
+#
+# Fails rather than skips when ragel is missing: a source-integrity check that
+# silently passes when it cannot run is worse than no check. This target is
+# deliberately not part of `make test`, so contributors without ragel can
+# still build and test from the committed .c.
+check-sync:
+	@command -v $(RAGEL) >/dev/null 2>&1 || { \
+		echo "check-sync: $(RAGEL) not found — cannot verify mdfix.c against mdfix.rl"; \
+		exit 1; }
+	@echo "check-sync: using $$($(RAGEL) --version | head -1)"
+	@tmp=$$(mktemp -d) || exit 1; \
+	cp mdfix.rl "$$tmp/" && (cd "$$tmp" && $(RAGEL) -G2 mdfix.rl -o mdfix.c) || { \
+		rm -rf "$$tmp"; echo "check-sync: ragel failed"; exit 1; }; \
+	if cmp -s mdfix.c "$$tmp/mdfix.c"; then \
+		rm -rf "$$tmp"; \
+		echo "check-sync: mdfix.c matches mdfix.rl byte for byte"; \
+		exit 0; \
+	fi; \
+	grep -v '^#line' mdfix.c > "$$tmp/committed.stripped"; \
+	grep -v '^#line' "$$tmp/mdfix.c" > "$$tmp/regenerated.stripped"; \
+	if cmp -s "$$tmp/committed.stripped" "$$tmp/regenerated.stripped"; then \
+		echo "check-sync: mdfix.c matches mdfix.rl (differs only in #line directives)"; \
+		echo "  Those are debug metadata whose absolute values depend on the ragel"; \
+		echo "  build; the generated code is identical, so this is not drift."; \
+		rm -rf "$$tmp"; \
+		exit 0; \
+	fi; \
+	echo "check-sync: mdfix.c is NOT ragel's output for mdfix.rl."; \
+	echo "  Regenerate with: rm -f mdfix/mdfix.c && make -C mdfix"; \
+	echo "  --- differences outside #line directives ---"; \
+	diff "$$tmp/committed.stripped" "$$tmp/regenerated.stripped" | head -30; \
+	rm -rf "$$tmp"; \
+	exit 1
 
 clean:
 	rm -rf mdfix mdfix-asan mdfix-asan.dSYM

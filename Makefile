@@ -4,7 +4,7 @@ BINDIR  ?= $(PREFIX)/bin
 LIBDIR  ?= $(PREFIX)/lib/mdtools
 PYTHON  ?= python3
 
-.PHONY: all mdfix prosevary-check install uninstall clean test
+.PHONY: all mdfix prosevary-check install uninstall clean test check-sync asan check
 
 all: mdfix
 
@@ -41,3 +41,18 @@ test: mdfix prosevary-check
 	./mdfix/mdfix -h >/dev/null
 	$(PYTHON) -m unittest discover -s tests -v
 	@echo "ok"
+
+# Source integrity: the committed mdfix.c must be ragel's output for mdfix.rl.
+# Requires ragel, so it is not part of `test` — building and testing from the
+# committed .c must keep working without it.
+check-sync:
+	$(MAKE) -C mdfix check-sync
+
+# Sanitizer pass over the repo's own markdown. Catches the class of bug the
+# test suite cannot see: a few bytes written past a heap allocation.
+asan:
+	$(MAKE) -C mdfix asan
+
+# Everything CI runs. Use this before opening a PR.
+check: test check-sync asan
+	@echo "check: all green"

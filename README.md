@@ -45,6 +45,29 @@ make -C mdfix
 PYTHONPATH=. python3 -m prosevary -v chapter.md
 ```
 
+### Checks
+
+```bash
+make test         # 158 offline tests, both tools (no network, ~0.5s)
+make check-sync   # committed mdfix.c is ragel's output for mdfix.rl
+make asan         # address + UB sanitizers over the repo's own markdown
+make check        # all three — what CI runs
+```
+
+`make test` deliberately does **not** require ragel, so the committed
+`mdfix.c` stays buildable without it. `check-sync` does require ragel and
+fails rather than skipping: a source-integrity check that quietly passes when
+it cannot run is worse than none.
+
+`asan` exists because the test suite cannot see a few bytes written past a
+heap allocation. A right-sized line buffer once overflowed on a
+six-character input while 140 tests stayed green.
+
+CI (`.github/workflows/ci.yml`) runs those three plus a Python 3.10–3.13
+matrix — development happens on 3.14, so nothing else verifies the floor —
+and a `-Wall -Wextra` pass. It is not `-Werror`: three warnings predate the
+workflow and live in generated code.
+
 ### Book / mush consumers
 
 ```makefile
