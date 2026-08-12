@@ -155,8 +155,14 @@ instead of deleting a character.
 
 ### Pipe tables and line blocks
 
-Both start with `|`, and the delimiter row is the only thing that separates
-them. Pinned with `pandoc -t json`:
+A leading `|` is not required: `a | b` over `--|--` is a Table. The delimiter
+row is the whole discriminator, which is what keeps prose containing a pipe
+from becoming a table. Both forms run to the first line with no `|`, and a
+header line that merely continues a paragraph starts nothing — pandoc reads
+`Intro.` / `a | b` / `--|--` as one Para.
+
+For the leading-`|` forms, the delimiter row is also what separates a table
+from a line block. Pinned with `pandoc -t json`:
 
 ```text
 | a | b | / |---|---| / | 1 | 2 |   -> Table
@@ -176,7 +182,6 @@ and Pandoc reports something richer:
 | Construct | Pandoc | IR | Consequence |
 |---|---|---|---|
 | Definition list | `DefinitionList` | `paragraph` | not queryable |
-| Pipe table without leading `\|` | `Table` | `paragraph` | missing from table queries |
 | Display math `$$` | `Para` with `Math` | `paragraph` | §7 gap 2 |
 | Raw LaTeX block | `RawBlock` | `paragraph` | §7 gap 3 |
 

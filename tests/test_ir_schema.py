@@ -431,6 +431,47 @@ class BlockKindTests(IRTestCase):
                 tables = [r for r in self._ir(source)[1:] if r["kind"] == "table"]
                 self.assertEqual([t["form"] for t in tables], [form])
 
+    def test_pipe_table_without_a_leading_bar(self) -> None:
+        # Pandoc reads `a | b` over `--|--` as a Table. Reporting it as a
+        # paragraph handed table rows to any consumer editing prose (#65).
+        self.assertEqual(self._kinds("a | b\n--|--\n1 | 2\n"), ["table"])
+        self.assertEqual(self._kinds("a | b\n--|--\n"), ["table"])
+        self.assertEqual(self._ir("a | b\n--|--\n1 | 2\n")[1]["form"], "pipe")
+
+    def test_a_pipe_alone_is_not_a_table(self) -> None:
+        # The delimiter row is the whole discriminator, so prose containing a
+        # pipe must stay prose — the expensive direction to get wrong.
+        for source in ("Either a | b is fine.\n",
+                       "Either a | b.\nOr c | d.\n",
+                       "--|--\n",
+                       "a | b\n-----\n1 | 2\n"):
+            with self.subTest(source=source):
+                self.assertNotIn("table", self._kinds(source))
+
+    def test_a_header_continuing_a_paragraph_is_not_a_table(self) -> None:
+        # `Intro.` then `a | b` then `--|--` is one Para to pandoc: the header
+        # is a lazy continuation, so no table starts.
+        self.assertEqual(self._kinds("Intro.\na | b\n--|--\n1 | 2\n"),
+                         ["paragraph"])
+
+    def test_block_openers_are_not_headerless_table_headers(self) -> None:
+        # Headerless recognition must not invent a Table over lines our
+        # classifier takes as other openers (heading, list, quote, ref-def).
+        # Inventing structure is the unsafe direction for the IR.
+        for name, source in (
+            ("heading", "# Name | Role\n---|---\nAlice | Eng\n"),
+            ("bullet", "- a | b\n--|--\n1 | 2\n"),
+            ("blockquote", "> a | b\n--|--\n1 | 2\n"),
+            ("ref_def", "[a | b]: http://example.com\n--|--\n"),
+        ):
+            with self.subTest(opener=name):
+                self.assertNotIn("table", self._kinds(source),
+                                 msg=f"IR kinds: {self._kinds(source)}")
+
+    def test_a_pipe_table_ends_at_the_first_line_without_a_pipe(self) -> None:
+        self.assertEqual(self._kinds("a | b\n--|--\n1 | 2\nProse.\n"),
+                         ["table", "paragraph"])
+
     def test_line_block_is_not_a_table(self) -> None:
         # The delimiter row is the only difference; see docs/ir-schema.md.
         self.assertEqual(self._kinds("| a | b |\n| 1 | 2 |\n"), ["line_block"])
@@ -813,7 +854,6 @@ class KnownDivergenceTests(IRTestCase):
 
     DIVERGENCES = {
         "definition list": ("Term\n:   Def\n", "DefinitionList"),
-        "pipe table without leading bar": ("a | b\n--|--\n1 | 2\n", "Table"),
         "display math": ("$$\nx\n$$\n", "Para"),
         "raw latex": ("\\begin{verbatim}\nx\n\\end{verbatim}\n", "RawBlock"),
     }

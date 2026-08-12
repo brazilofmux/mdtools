@@ -942,8 +942,40 @@ static int is_thematic_break(const char *line)
     return count >= 3;
 }
 
-static int is_wrappable(const char *line, enum linetype type)
+static int is_pipe_delim_row(const char *line);
+static int is_headerless_table_header(const char *line);
+
+/*
+ * Lines belonging to a pipe table, marked once per file.
+ *
+ * is_wrappable sees one line at a time; a headerless table needs the next-line
+ * delim to be recognized, so --wrap must use the same multi-line rule as
+ * emit_ir or it will join header to delimiter.
+ */
+static unsigned char pipe_table_line[MAX_LINES];
+
+static void mark_pipe_tables(void)
 {
+    memset(pipe_table_line, 0, (size_t)nlines);
+    for (int i = 0; i + 1 < nlines; i++) {
+        int start = 0;
+        if (is_pipe_delim_row(lines[i + 1])) {
+            if (is_table_line(lines[i]) || is_headerless_table_header(lines[i]))
+                start = 1;
+        }
+        if (!start)
+            continue;
+        int j = i;
+        while (j < nlines && strchr(lines[j], '|'))
+            pipe_table_line[j++] = 1;
+        i = j - 1;
+    }
+}
+
+static int is_wrappable_at(const char *line, enum linetype type, int index)
+{
+    if (index >= 0 && index < nlines && pipe_table_line[index])
+        return 0;
     if (type != LT_TEXT)
         return 0;
     if (is_table_line(line))
@@ -954,6 +986,7 @@ static int is_wrappable(const char *line, enum linetype type)
         return 0;
     return 1;
 }
+
 
 /* ═══════════════════════════════════════════════════════════════════
  * Structural IR — see docs/ir-schema.md
@@ -1001,6 +1034,32 @@ static int is_pipe_delim_row(const char *line)
         }
     }
     return dash && bar;
+}
+
+/*
+ * Header of a pipe table without a leading '|'. Must be prose: not a block
+ * opener Pandoc would take instead (heading, list, quote, ref-def, fence).
+ * Shared by emit_ir and mark_pipe_tables so wrap and IR agree.
+ */
+static int is_headerless_table_header(const char *line)
+{
+    if (strchr(line, '|') == NULL)
+        return 0;
+    if (is_table_line(line))
+        return 0;
+    if (is_blank(line))
+        return 0;
+    if (is_heading(line))
+        return 0;
+    if (find_bullet(line) >= 0 || is_ordered(line))
+        return 0;
+    if (is_blockquote_line(line))
+        return 0;
+    if (ref_def_kind(line))
+        return 0;
+    if (is_code_fence(line))
+        return 0;
+    return 1;
 }
 
 static void ir_json_string(FILE *out, const char *s)
@@ -1564,16 +1623,32 @@ static void emit_ir(FILE *out, const char *source)
             continue;
         }
 
-        /* ── Pipe table, or the line block it would otherwise be mistaken for ──
-         * The delimiter row is the discriminator; see is_pipe_delim_row.
-         * Neither is byte-protected by mdfix today (dialect-policy §7 gaps
-         * 1 and 4), which is what "protected": false records. */
-        if (is_table_line(line)) {
+        /*
+         * ── Pipe table, or the line block it would otherwise be mistaken for ──
+         *
+         * The delimiter row is the discriminator (is_pipe_delim_row). A leading
+         * '|' is not required: `a | b` over `--|--` is a Table (#65). Headerless
+         * headers must be prose only (is_headerless_table_header) — heading,
+         * list, quote, and ref-def openers still win. A header continuing a
+         * paragraph is absorbed earlier (lazy continuation), as in pandoc.
+         * Both forms run to the first line with no '|'. Neither is
+         * byte-protected today (dialect-policy §7 gaps 1 and 4).
+         */
+        int leading_pipe = is_table_line(line);
+        int headerless = is_headerless_table_header(line)
+                         && i + 1 < nlines && is_pipe_delim_row(lines[i + 1]);
+        if (leading_pipe || headerless) {
+            int is_table = headerless
+                || (i + 1 < nlines && is_pipe_delim_row(lines[i + 1]));
             int j = i;
-            while (j < nlines && is_table_line(lines[j]))
-                j++;
+            if (is_table)
+                while (j < nlines && strchr(lines[j], '|') != NULL)
+                    j++;
+            else
+                while (j < nlines && is_table_line(lines[j]))
+                    j++;
             int end = j - 1;
-            if (end > i && is_pipe_delim_row(lines[i + 1])) {
+            if (is_table && end > i) {
                 ir_open(out, "table", i, end, 0);
                 fputs(",\"form\":\"pipe\"}\n", out);
             } else {
@@ -3510,6 +3585,8 @@ static void process(FILE *out)
      */
     const int fmatter_close = frontmatter_close_line();
     int in_frontmatter     = 0;
+
+    mark_pipe_tables();
     struct fence_state fence = {0, 0, 0, 0, 0};
     enum raw_html_kind raw_html = RAW_HTML_NONE;
 
@@ -3868,7 +3945,7 @@ static void process(FILE *out)
         }
 
         /* Write the (possibly modified) line */
-        if (opt_wrap_width > 0 && is_wrappable(line, type)) {
+        if (opt_wrap_width > 0 && is_wrappable_at(line, type, i)) {
             para_lines_buf[npara++] = line;
         } else {
             flush_paragraph(out);
