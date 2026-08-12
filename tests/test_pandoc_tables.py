@@ -1,0 +1,187 @@
+"""
+Pandoc grid and simple tables are protected regions (issue #28).
+
+Unlike a GFM pipe table, where `|` delimits the cells, these forms carry
+their structure in *column position*. Converting an arrow to an em-dash
+shortens a cell and moves every column after it, so both tools must treat
+these lines as verbatim rather than merely unwrappable.
+
+The grammar was pinned against `pandoc -t json` rather than read off the
+spec, because the conditions are not obvious:
+
+    Right Left / --- ---- / 12 34   -> Table
+    Right Left / --- ----           -> Para Para       (no body row)
+    --- ----   / 12 34              -> HorizontalRule  (no header line)
+    Title      / -------            -> Header          (setext; no spaces)
+
+Multiline tables are deliberately out of scope here — they span blank lines
+and need different machinery. See the module-level note in test_tool_parity.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+from prosevary.segment import LineKind, parse
+
+
+ROOT = Path(__file__).resolve().parents[1]
+MDFIX = ROOT / "mdfix" / "mdfix"
+PANDOC = shutil.which("pandoc")
+ARROW = "→"
+
+SIMPLE = f"Right     Left\n-------   -------\n12        A {ARROW} B\n123       123\n\nAfter.\n"
+GRID = (
+    "+---------+---------+\n"
+    "| Header  | Second  |\n"
+    "+=========+=========+\n"
+    f"| A {ARROW} B   | cell    |\n"
+    "+---------+---------+\n"
+    "\nAfter.\n"
+)
+
+
+def _kinds(source: str) -> list[str]:
+    return [line.kind.name for line in parse(source).lines]
+
+
+def _sentences(source: str) -> list[str]:
+    return [s.text for r in parse(source).regions for s in r.sentences]
+
+
+class ProsevaryTableTests(unittest.TestCase):
+    def test_simple_table_is_protected(self) -> None:
+        self.assertEqual(_sentences(SIMPLE), ["After."])
+        self.assertEqual(_kinds(SIMPLE)[:4], ["TABLE"] * 4)
+        self.assertEqual(parse(SIMPLE).reconstruct({}), SIMPLE)
+
+    def test_grid_table_is_protected(self) -> None:
+        self.assertEqual(_sentences(GRID), ["After."])
+        self.assertEqual(_kinds(GRID)[:5], ["TABLE"] * 5)
+        self.assertEqual(parse(GRID).reconstruct({}), GRID)
+
+    def test_grid_borders_are_not_exposed_as_prose(self) -> None:
+        # `+---------+---------+` used to arrive as a sentence.
+        self.assertFalse([s for s in _sentences(GRID) if "+" in s])
+
+    # --- the negatives, each verified against pandoc -----------------------
+
+    def test_setext_underline_is_still_a_heading(self) -> None:
+        self.assertEqual(_kinds("Title\n-------\n\nBody.\n")[:2],
+                         ["HEADING", "HEADING"])
+
+    def test_dash_row_without_a_header_is_a_thematic_break(self) -> None:
+        self.assertEqual(_kinds("---    ----\n12     34\n")[0], "HR")
+
+    def test_dash_row_without_a_body_row_is_not_a_table(self) -> None:
+        kinds = _kinds("Right  Left\n---    ----\n\nBody.\n")
+        self.assertNotIn("TABLE", kinds)
+
+    def test_thematic_break_is_untouched(self) -> None:
+        self.assertEqual(_kinds("Para one.\n\n-----\n\nPara two.\n")[2], "HR")
+
+    def test_pipe_tables_still_work(self) -> None:
+        source = f"| a | b |\n|---|---|\n| A {ARROW} B | 2 |\n\nAfter.\n"
+        self.assertEqual(_sentences(source), ["After."])
+
+
+class MdfixTableTests(unittest.TestCase):
+    def setUp(self) -> None:
+        if not MDFIX.is_file():
+            raise unittest.SkipTest(f"{MDFIX} not built; run `make -C mdfix`")
+        source = ROOT / "mdfix" / "mdfix.c"
+        if source.is_file() and source.stat().st_mtime > MDFIX.stat().st_mtime:
+            raise AssertionError(
+                f"{MDFIX} is older than {source} — rebuild with `make -C mdfix`"
+            )
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+
+    def _fix(self, source: str, *flags: str) -> str:
+        src, out = self.dir / "t.md", self.dir / "t_out.md"
+        if out.exists():
+            out.unlink()
+        src.write_text(source, encoding="utf-8")
+        result = subprocess.run(
+            [str(MDFIX), "-q", *(flags or ("--technical",)), str(src), str(out)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        return out.read_text(encoding="utf-8")
+
+    def test_simple_table_survives_technical_byte_for_byte(self) -> None:
+        self.assertEqual(self._fix(SIMPLE), SIMPLE)
+
+    def test_grid_table_survives_technical_byte_for_byte(self) -> None:
+        self.assertEqual(self._fix(GRID), GRID)
+
+    def test_cell_width_is_never_changed(self) -> None:
+        # The arrow is what a prose pass would rewrite; doing so would shorten
+        # the cell and move every column after it.
+        for source in (SIMPLE, GRID):
+            with self.subTest(source=source[:14]):
+                self.assertIn(f"A {ARROW} B", self._fix(source))
+
+    def test_prose_after_a_table_is_still_fixed(self) -> None:
+        source = SIMPLE.replace("After.", f"After A {ARROW} B.")
+        self.assertNotIn(f"After A {ARROW} B.", self._fix(source))
+
+    def test_negatives_are_still_treated_as_prose(self) -> None:
+        for name, source in (
+            ("setext", f"Title A {ARROW} B\n-------\n\nBody.\n"),
+            ("thematic", f"Para A {ARROW} B.\n\n-----\n\nPara two.\n"),
+            ("no body row", f"Right A {ARROW} B\n---    ----\n\nBody.\n"),
+            ("plain prose", f"Prose A {ARROW} B here.\n"),
+        ):
+            with self.subTest(case=name):
+                self.assertNotIn(f"A {ARROW} B", self._fix(source))
+
+    def test_idempotent(self) -> None:
+        for source in (SIMPLE, GRID):
+            with self.subTest(source=source[:14]):
+                once = self._fix(source)
+                self.assertEqual(self._fix(once), once)
+
+
+@unittest.skipUnless(PANDOC, "pandoc not installed")
+class PandocTableOracleTests(unittest.TestCase):
+    """The grammar came from pandoc; assert the output still parses as a Table."""
+
+    def setUp(self) -> None:
+        if not MDFIX.is_file():
+            raise unittest.SkipTest(f"{MDFIX} not built")
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+
+    def _blocks(self, path: Path) -> list[str]:
+        result = subprocess.run(
+            [PANDOC, "-f", "markdown", "-t", "json", str(path)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        return [b["t"] for b in json.loads(result.stdout)["blocks"]]
+
+    def test_table_block_survives_a_fix_run(self) -> None:
+        for name, source in (("simple", SIMPLE), ("grid", GRID)):
+            with self.subTest(case=name):
+                src, out = self.dir / "a.md", self.dir / "b.md"
+                if out.exists():
+                    out.unlink()
+                src.write_text(source, encoding="utf-8")
+                subprocess.run(
+                    [str(MDFIX), "-q", "--technical", str(src), str(out)],
+                    capture_output=True, text=True, check=True,
+                )
+                self.assertEqual(self._blocks(src), self._blocks(out))
+                self.assertIn("Table", self._blocks(out))
+
+
+if __name__ == "__main__":
+    unittest.main()
