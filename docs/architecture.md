@@ -53,7 +53,7 @@ since the `segment.py` cut.
 | **L3 Optional** | Transforms the caller asks for, which may never break L2 — [transforms.md](transforms.md) |
 | **L4 Interface** | Emitting IR, accepting IR and edits, validating both |
 | **L5 Output** | Turning IR plus edits back into bytes — [edit-schema.md](edit-schema.md) |
-| **D Diagnostics** | Located, rule-identified warnings and errors from any layer |
+| **D Diagnostics** | Located, rule-identified warnings and errors from any layer — [diagnostics.md](diagnostics.md) |
 
 ## 2. Invariants
 
@@ -144,10 +144,14 @@ Each has an identifier so issues and tests can cite it.
 ### D — Diagnostics
 
 - **ID.1 Located.** Every diagnostic carries a path, a byte span, and a line.
+  *(Issue #12: `mdfix --diagnostics`; see [diagnostics.md](diagnostics.md).
+  Spans are line-level.)*
 - **ID.2 Identified.** Every diagnostic carries a stable rule ID, so a
   consumer can suppress or gate on one without matching English text.
 - **ID.3 Machine-readable.** Diagnostics are available as JSONL on a stream
-  separate from the document.
+  separate from the document. *(Done: JSONL on stderr, which they own — the
+  human summary and `-v` lines are suppressed, because a progress line
+  interleaved with the stream makes it unparseable.)*
 
 ## 3. What "Pandoc-friendly" means
 
