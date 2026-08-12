@@ -148,7 +148,7 @@ Load-bearing extensions, with the behavior each one buys:
 | `+line_blocks` | `\|`-prefixed lines are `LineBlock`, whitespace- and line-count-significant. See §7. |
 | `+yaml_metadata_block` | Front matter is metadata, not prose. |
 | `+footnotes`, `+inline_notes` | Footnote definitions are structure, not paragraphs. |
-| `+escaped_line_breaks`, `-hard_line_breaks` | A two-space line ending is a hard break under this profile. **`mdfix -w` / `--canonical` currently collapse trailing spaces to one** and destroy hard breaks — see §7. |
+| `+escaped_line_breaks`, `-hard_line_breaks` | A two-space line ending is a hard break under this profile. **`-w`, `--canonical`, `--wrap`, and `--technical` currently destroy hard breaks** — see §7. |
 | `+smart` | See §4 — typographic output should be invariant under this flag. |
 | `+auto_identifiers`, `-gfm_auto_identifiers` | Heading anchors follow Pandoc's slug rules, which mdlinks (#14) will depend on. |
 | `+fenced_divs`, `+native_divs`, `+bracketed_spans`, `+native_spans` | Div and span syntax is structure to preserve, not prose. |
@@ -306,12 +306,12 @@ Each was found by running the tools against Pandoc while pinning this profile
    prosevary freezes the whole row.
 
 5. **Hard breaks under `-w`, `--canonical`, `--wrap` and `--technical`.**
-   Profile requires two trailing spaces to mean a hard break.
-   `fix_trailing_ws` collapses any trailing run to one space, so these turn
-   hard breaks into soft ones. The transform sweep in
-   `tests/test_transform_matrix.py` found this to be wider than first
-   recorded — `--wrap` and `--technical` were not listed — which is the kind
-   of thing a matrix finds and a reviewer does not.
+   Profile requires two trailing spaces to mean a hard break. Two separate
+   sites destroy them: `fix_trailing_ws` (when `opt_trail_ws` is set — `-w`
+   and profiles that enable it) collapses any trailing run to one space;
+   wrap’s `flush_paragraph` (pure `--wrap`, and `--technical` which enables
+   wrap) trims *all* trailing whitespace before emit/join. Closing this gap
+   needs both paths. See `tests/test_transform_matrix.py`.
 
 6. **Chicago ellipsis.** Under `--chicago-punct`, `--chicago-punct-2`,
    `--canonical` and `--technical`, spaced or run ellipses become ASCII

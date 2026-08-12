@@ -40,8 +40,18 @@ STRUCTURAL_INLINE = frozenset({
     "LineBreak", "Link", "Image", "Code", "Math", "Note", "RawInline", "Cite",
 })
 
-# Every optional transform mdfix offers. `--technical` and `--canonical` are
-# profiles, included because I3.1 covers "alone and in every shipped profile".
+# Nested block kinds counted for I2.1 so losing an inner CodeBlock / Para
+# inside a list item is visible (top-level block *order* is tracked separately).
+NESTED_BLOCK = frozenset({
+    "Para", "Plain", "CodeBlock", "RawBlock", "BlockQuote",
+    "OrderedList", "BulletList", "DefinitionList",
+    "Header", "HorizontalRule", "Table", "Div", "LineBlock", "Figure",
+})
+
+# Optional rewrite transforms and shipped profiles. Lint-only flags
+# (`--serial-comma-lint`, `--chicago-number-lint`, `--canonical-lint`) are
+# omitted: they do not rewrite. Profiles are included because I3.1 covers
+# "alone and in every shipped profile".
 TRANSFORMS = (
     "-w",
     "--chicago-punct",
@@ -73,11 +83,8 @@ CORPUS = {
     "longpara": "word " * 40 + "\n",
 }
 
-# (document, transform) -> which invariant it breaks, and why.
-#
-# Both are dialect-policy §7 gaps. The sweep found each to be broader than the
-# policy recorded: hard breaks are destroyed by --wrap and --technical too, not
-# only by -w and --canonical.
+# (document, transform) -> which invariant it breaks.
+# dialect-policy §7 gaps 5 and 6, pinned as full dicts so a kind change fails.
 KNOWN_VIOLATIONS = {
     ("hardbreak", "-w"): "I2.1",
     ("hardbreak", "--canonical"): "I2.1",
@@ -133,28 +140,33 @@ class IdempotenceTests(MatrixTestCase):
 class NonInterferenceTests(MatrixTestCase):
     """I3.1: the sweep that would have caught #49 and §7 gap 5."""
 
-    def _structure(self, text: str) -> tuple[list[str], Counter]:
+    def _structure(self, text: str) -> tuple[list[str], Counter, Counter]:
         result = subprocess.run(
             [PANDOC, "-f", "markdown", "-t", "json"],
             input=text, capture_output=True, text=True, check=True,
         )
         document = json.loads(result.stdout)
-        blocks: list[str] = []
+        top_blocks: list[str] = []
+        nested_blocks: Counter = Counter()
         inline: Counter = Counter()
 
-        def walk(node) -> None:
+        def walk(node, *, at_top: bool = False) -> None:
             if isinstance(node, list):
                 for item in node:
-                    walk(item)
+                    walk(item, at_top=at_top)
             elif isinstance(node, dict) and "t" in node:
-                if node["t"] in STRUCTURAL_INLINE:
-                    inline[node["t"]] += 1
-                walk(node.get("c"))
+                kind = node["t"]
+                if at_top:
+                    top_blocks.append(kind)
+                elif kind in NESTED_BLOCK:
+                    nested_blocks[kind] += 1
+                if kind in STRUCTURAL_INLINE:
+                    inline[kind] += 1
+                walk(node.get("c"), at_top=False)
 
         for block in document["blocks"]:
-            blocks.append(block["t"])
-            walk(block.get("c"))
-        return blocks, inline
+            walk(block, at_top=True)
+        return top_blocks, nested_blocks, inline
 
     def _render(self, text: str, fmt: str) -> str:
         return subprocess.run(
@@ -169,7 +181,7 @@ class NonInterferenceTests(MatrixTestCase):
             for transform in TRANSFORMS:
                 after_text = self._fix(text, transform)
                 after = self._structure(after_text)
-                if before[0] != after[0] or before[1] != after[1]:
+                if before != after:
                     found[(name, transform)] = "I2.1"
                     continue
                 # I2.2 applies to typography mdtools *emits*. If the transform
@@ -183,19 +195,22 @@ class NonInterferenceTests(MatrixTestCase):
 
     def test_violations_are_exactly_the_known_ones(self) -> None:
         found = self._violations()
-        new = {k: v for k, v in found.items() if k not in KNOWN_VIOLATIONS}
-        fixed = {k: v for k, v in KNOWN_VIOLATIONS.items() if k not in found}
+        # Full dict equality: a cell that stays broken but switches class
+        # (I2.1 ↔ I2.2) must fail, not only appear/disappear of keys.
+        new = {k: v for k, v in found.items() if KNOWN_VIOLATIONS.get(k) != v}
+        fixed = {k: v for k, v in KNOWN_VIOLATIONS.items() if found.get(k) != v}
         self.assertFalse(
             new,
-            "new I3.1 violations — an optional transform broke a required "
-            f"guarantee: {new}",
+            "new or reclassified I3.1 violations — an optional transform "
+            f"broke a required guarantee (or changed class): {new}",
         )
         self.assertFalse(
             fixed,
-            "these violations are gone, which is good news: remove them from "
-            "KNOWN_VIOLATIONS and from dialect-policy §7 in the same change: "
+            "these violations are gone or reclassified — update "
+            "KNOWN_VIOLATIONS and dialect-policy §7 in the same change: "
             f"{fixed}",
         )
+        self.assertEqual(found, KNOWN_VIOLATIONS)
 
     def test_the_sweep_is_actually_running(self) -> None:
         # Without this, a corpus or transform list that silently emptied would
@@ -217,16 +232,33 @@ class KnownViolationDetailTests(MatrixTestCase):
     """
 
     def test_trailing_space_collapse_destroys_a_hard_break(self) -> None:
-        # §7 gap 5. Two trailing spaces are a hard break under the pinned
-        # profile; -w collapses any run to one and the LineBreak disappears.
+        # §7 gap 5 / fix_trailing_ws path. Two trailing spaces are a hard
+        # break under the pinned profile; -w collapses any run to one.
         source = "line one  \nline two\n"
         self.assertIn("LineBreak", self._native(source))
         self.assertNotIn("LineBreak", self._native(self._fix(source, "-w")))
+
+    def test_wrap_trailing_trim_destroys_a_hard_break(self) -> None:
+        # §7 gap 5 / flush_paragraph path. Pure --wrap never sets
+        # opt_trail_ws; it still strips the two-space hard break.
+        source = "line one  \nline two\n"
+        self.assertIn("LineBreak", self._native(source))
+        self.assertNotIn(
+            "LineBreak",
+            self._native(self._fix(source, "--wrap=78")),
+        )
 
     def test_chicago_emits_ascii_ellipsis(self) -> None:
         # §7 gap 6. The mark mdtools emits must not be smart-dependent;
         # U+2026 is the target.
         out = self._fix("He paused . . . then spoke.\n", "--canonical")
+        self.assertIn("...", out)
+        self.assertNotIn("…", out)
+
+    def test_chicago_punct_2_emits_ascii_ellipsis_from_spaced_run(self) -> None:
+        # --chicago-punct-2 can produce smart-dependent "..." by stripping
+        # spaces before "." without going through the ellipsis normalizer.
+        out = self._fix("He paused . . . then spoke.\n", "--chicago-punct-2")
         self.assertIn("...", out)
         self.assertNotIn("…", out)
 
