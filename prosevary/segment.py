@@ -42,10 +42,16 @@ _TABLE_LEADING = re.compile(r"^\|")
 # Pandoc grid tables: `+---+---+` / `+===+===+` borders and `| … |` rows.
 _GRID_BORDER = re.compile(r"^ {0,3}\+[-=+]+\+\s*$")
 _GRID_ROW = re.compile(r"^ {0,3}\|.*\|\s*$")
-# Pandoc simple tables: two or more dash runs separated by spaces. The spaces
-# are what distinguish this from a setext underline or a thematic break, both
-# of which are a single unbroken run.
-_SIMPLE_DASH_ROW = re.compile(r"^ {0,3}-{2,}(?: +-{2,})+\s*$")
+# Pandoc simple tables: two or more dash runs separated by whitespace. The
+# separation is what distinguishes this from a setext underline or a thematic
+# break, both of which are a single unbroken run.
+#
+# Tabs count. Pandoc expands them before parsing, so `----\t----` is a table
+# exactly as `----    ----` is — confirmed with `pandoc -t json` on tabs in
+# the dash row, the header, and the body. mdfix accepted them and this side
+# did not, so the same document was a frozen table to one tool and
+# paraphrasable prose to the other.
+_SIMPLE_DASH_ROW = re.compile(r"^ {0,3}-{2,}(?:[ \t]+-{2,})+[ \t]*$")
 _BLOCKQUOTE = re.compile(r"^>\s?")
 _LIST = re.compile(r"^(\s*)([-*+]|\d+\.)\s+")
 _HR = re.compile(r"^(\*\s*){3,}$|^(-\s*){3,}$|^(_\s*){3,}$")

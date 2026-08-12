@@ -85,6 +85,25 @@ class ProsevaryTableTests(unittest.TestCase):
     def test_thematic_break_is_untouched(self) -> None:
         self.assertEqual(_kinds("Para one.\n\n-----\n\nPara two.\n")[2], "HR")
 
+    def test_tab_separated_dash_row_is_a_table(self) -> None:
+        # Pandoc expands tabs before parsing, so `----\t----` is a table
+        # exactly as `----    ----` is — verified with `pandoc -t json` on
+        # tabs in the dash row, the header, and the body. mdfix accepted
+        # them and this side did not.
+        source = f"Right\tLeft\n----\t----\n12\tA {ARROW} B\n\nAfter.\n"
+        self.assertEqual(_sentences(source), ["After."])
+        self.assertEqual(_kinds(source)[:3], ["TABLE"] * 3)
+        self.assertEqual(parse(source).reconstruct({}), source)
+
+    def test_mixed_space_and_tab_separators(self) -> None:
+        self.assertEqual(
+            _kinds(f"Right\tLeft\n---- \t ----\n12\t34\n")[:3], ["TABLE"] * 3
+        )
+
+    def test_single_dash_group_is_not_a_dash_row(self) -> None:
+        # `--- - ---` has a one-character group; not a table on either side.
+        self.assertNotIn("TABLE", _kinds("Head  Second\n--- - ---\n12  34\n"))
+
     def test_pipe_tables_still_work(self) -> None:
         source = f"| a | b |\n|---|---|\n| A {ARROW} B | 2 |\n\nAfter.\n"
         self.assertEqual(_sentences(source), ["After."])
