@@ -27,6 +27,16 @@ _SHA = re.compile(r"\b[0-9a-f]{7,40}\b")
 _SHOUT = re.compile(r"\b[A-Z][A-Z0-9][A-Z0-9+^_-]*\b")
 # SLOW-32 and similar product names
 _PRODUCT = re.compile(r"\bSLOW-?\d+\b", re.IGNORECASE)
+# Structural Markdown/Pandoc inline forms: freeze the whole match so a rewrite
+# cannot drop a destination, image target, citation, attribute, or footnote ref.
+# Destination-aware patterns keep the full construct, not just the label text.
+_INLINE_IMAGE = re.compile(r"!\[[^\]]*\]\([^)]+\)")
+_INLINE_LINK = re.compile(r"(?<!!)\[[^\]]+\]\([^)]+\)")
+_INLINE_REF_LINK = re.compile(r"(?<!!)\[[^\]]+\]\[[^\]]*\]")
+_AUTOLINK = re.compile(r"<https?://[^>\s]+>|<mailto:[^>\s]+>", re.IGNORECASE)
+_FOOTNOTE_REF = re.compile(r"\[\^[^\]]+\]")
+_CITATION = re.compile(r"(?<![A-Za-z0-9])@[\w:-]+")
+_PANDOC_ATTR = re.compile(r"\{[#.][^}]*\}")
 
 
 @dataclass
@@ -75,6 +85,18 @@ def sentence_freeze(text: str, glossary: Iterable[str]) -> FreezeSet:
     fs = FreezeSet()
     for m in _INLINE_CODE.finditer(text):
         fs.spans.append(m.group(0))
+    # Structural inlines before looser token patterns so destinations stay whole.
+    for pat in (
+        _INLINE_IMAGE,
+        _INLINE_LINK,
+        _INLINE_REF_LINK,
+        _AUTOLINK,
+        _FOOTNOTE_REF,
+        _PANDOC_ATTR,
+        _CITATION,
+    ):
+        for m in pat.finditer(text):
+            fs.spans.append(m.group(0))
     for m in _PATHISH.finditer(text):
         fs.spans.append(m.group(0))
     for m in _SHA.finditer(text):
