@@ -113,6 +113,13 @@ class RequiredByDefaultTests(RequiredTestCase):
         self.assertIn("--no-required", help_text)
         self.assertIn("Pandoc-readable", help_text)
 
+    def test_trailing_atx_hashes_stay_opt_in(self) -> None:
+        # After the R3/heading-canonical split, bare mdfix must not strip
+        # trailing hashes; only --heading-canonical may.
+        source = "# Title ###\n"
+        self.assertEqual(self._fix(source), source)
+        self.assertEqual(self._fix(source, "--heading-canonical"), "# Title\n")
+
 
 @unittest.skipUnless(PANDOC, "pandoc not installed")
 class OptionalIsGenuinelyOptionalTests(RequiredTestCase):
