@@ -50,6 +50,12 @@
  * Compile: ragel -G2 mdfix.rl -o mdfix.c && cc -O2 -o mdfix mdfix.c
  */
 
+/* getline, fdopen, fsync: POSIX.1-2008. Must precede every include, or a
+ * packaging build that overrides CFLAGS with -std=c11 loses the declarations
+ * on glibc — a hard error on GCC 14+/Clang 16+, an implicit int-returning
+ * call on anything older. */
+#define _POSIX_C_SOURCE 200809L
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1406,7 +1412,13 @@ static int read_all(FILE *fp)
         while (nread > 0 && (buf[nread - 1] == '\n' || buf[nread - 1] == '\r'))
             buf[--nread] = '\0';
 
-        if (nread >= MAX_LINE - 1) {
+        /*
+         * ">" not ">=": a line of exactly MAX_LINE-1 content bytes plus its
+         * NUL fills the buffer exactly. The old guard rejected that length
+         * while the message named it as the limit, so a user at the boundary
+         * was told 8191 was both too long and the maximum.
+         */
+        if (nread > MAX_LINE - 1) {
             fprintf(stderr,
                 "error: line %d is %zd bytes (limit %d). "
                 "mdfix refuses to silently split or truncate long lines.\n",
@@ -1423,7 +1435,22 @@ static int read_all(FILE *fp)
             free_lines();
             return 1;
         }
-        lines[nlines] = malloc((size_t)nread + 1);
+        /*
+         * MAX_LINE, not nread + 1. Every fixer mutates lines[i] in place and
+         * several of them lengthen it — heading `#Title` -> `# Title`,
+         * blockquote `>q` -> `> q`, footnote defs, abbreviation commas,
+         * autolink brackets. They bound themselves by MAX_LINE because that
+         * is how large this allocation has always been.
+         *
+         * Right-sizing here left those guards checking the wrong number, so
+         * any expanding fix wrote past the end of the heap block. ASan
+         * confirmed overflows on inputs as small as "#Title\n", on this
+         * repo's own README under --technical, and on the -i write path —
+         * corrupting the heap while writing the user's file. The test suite
+         * passed throughout, because a few bytes past a small malloc rarely
+         * shows without a sanitizer.
+         */
+        lines[nlines] = malloc(MAX_LINE);
         if (!lines[nlines]) {
             perror("malloc failed, out of memory");
             free(buf);
@@ -2562,7 +2589,23 @@ static int write_inplace(const char *input_path)
  */
 static int run_canonical_lint(const char *input_path)
 {
-    char tmp_path[] = "/tmp/mdfix-lint.XXXXXX";
+    /*
+     * Honour TMPDIR. Lint must not need write access to the tree it inspects
+     * (a read-only checkout is a normal thing to lint), so the temp lives
+     * outside it — but hardcoding /tmp fails in sandboxes where /tmp is
+     * absent or read-only and TMPDIR points somewhere usable.
+     */
+    const char *tmpdir = getenv("TMPDIR");
+    if (!tmpdir || !*tmpdir)
+        tmpdir = "/tmp";
+    char tmp_path[PATH_MAX];
+    int n = snprintf(tmp_path, sizeof(tmp_path),
+                     "%s%smdfix-lint.XXXXXX",
+                     tmpdir, (tmpdir[strlen(tmpdir) - 1] == '/') ? "" : "/");
+    if (n < 0 || (size_t)n >= sizeof(tmp_path)) {
+        fprintf(stderr, "canonical-lint: temp path too long\n");
+        return 1;
+    }
     int fd = mkstemp(tmp_path);
     if (fd < 0) {
         fprintf(stderr, "canonical-lint: can't create temp file: ");
@@ -2855,7 +2898,15 @@ int main(int argc, char *argv[])
         int exit_code = 0;
         for (int i = 0; i < npos; i++) {
             int rc = process_file(pos[i], NULL);
-            if (rc != 0)
+            /*
+             * A hard error (1: unreadable, overlong line, I/O failure) must
+             * outrank a lint failure (2). Last-writer-wins let a later
+             * non-canonical file overwrite an earlier 1, so CI reported "not
+             * canonical" and nobody learned a file had been skipped entirely.
+             */
+            if (rc == 1)
+                exit_code = 1;
+            else if (rc != 0 && exit_code == 0)
                 exit_code = rc;
         }
         return exit_code;

@@ -50,9 +50,11 @@ class LongLineTests(unittest.TestCase):
         self.assertFalse(out.exists())
 
     def test_line_at_limit_is_accepted(self) -> None:
+        # MAX_CONTENT is the capacity, so exactly that much must be accepted.
+        # The guard used to reject it while the error message named it as the
+        # limit, and this test had to compensate with MAX_CONTENT - 1.
         path = self.dir / "edge.md"
-        # nread >= MAX_CONTENT fails; one less is fine.
-        path.write_text("x" * (MAX_CONTENT - 1) + "\n", encoding="utf-8")
+        path.write_text("x" * MAX_CONTENT + "\n", encoding="utf-8")
         out = self.dir / "out.md"
         result = _run(["-q", str(path), str(out)])
         self.assertEqual(result.returncode, 0, msg=result.stderr)
@@ -60,10 +62,12 @@ class LongLineTests(unittest.TestCase):
 
     def test_line_at_limit_plus_one_fails(self) -> None:
         path = self.dir / "edge.md"
-        path.write_text("x" * MAX_CONTENT + "\n", encoding="utf-8")
+        path.write_text("x" * (MAX_CONTENT + 1) + "\n", encoding="utf-8")
         result = _run(["-n", "-q", str(path)])
         self.assertEqual(result.returncode, 1)
-        self.assertIn(str(MAX_CONTENT), result.stderr)
+        # The message must name the largest accepted length, not the rejected one.
+        self.assertIn(f"limit {MAX_CONTENT}", result.stderr)
+        self.assertIn(str(MAX_CONTENT + 1), result.stderr)
 
 
 class CanonicalLintContentTests(unittest.TestCase):
@@ -102,18 +106,40 @@ class CanonicalLintContentTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("failed", result.stderr)
 
-    def test_expansion_detected(self) -> None:
-        # A fix that lengthens the line must still fail the gate.
-        path = self.dir / "arrow.md"
-        path.write_text("A -> B pipeline.\n", encoding="utf-8")
-        # Without --no-arrow-aside, → conversion may apply under canonical?
-        # Canonical enables chicago punct etc. Use always-on * → -
-        path.write_text("* expanded bullet that will change\n", encoding="utf-8")
-        before = path.read_bytes()
-        result = _run(["--canonical-lint", str(path)])
-        self.assertEqual(result.returncode, 2)
-        # Input file must not have been modified (lint is no-write).
-        self.assertEqual(path.read_bytes(), before)
+    def test_line_lengthening_fixes_are_detected(self) -> None:
+        # A fix that *lengthens* the line must still fail the gate. The earlier
+        # version of this test wrote an arrow case and then overwrote the same
+        # path with a `*` → `-` substitution, which is length-preserving — so
+        # the stated invariant was never exercised, and the second write made
+        # the first two lines dead code.
+        #
+        # These inputs matter beyond the gate: each drives an in-place fixer
+        # that grows the line, which is exactly what overflowed a right-sized
+        # line allocation. Run under `make asan` to check that directly.
+        cases = {
+            "heading.md": "#Title\n",            # -> "# Title"
+            "quote.md": ">Quoted text here\n",   # -> "> Quoted text here"
+            "footnote.md": "[^1]:note text\n",   # -> "[^1]: note text"
+        }
+        for name, text in cases.items():
+            with self.subTest(case=name):
+                path = self.dir / name
+                path.write_text(text, encoding="utf-8")
+                before = path.read_bytes()
+
+                result = _run(["--canonical-lint", str(path)])
+                self.assertEqual(result.returncode, 2, msg=result.stderr)
+                # Lint is no-write: the input must be untouched.
+                self.assertEqual(path.read_bytes(), before)
+
+                # And the fix really does lengthen the line.
+                out = self.dir / (name + ".out")
+                fixed = _run(["-q", "--canonical", str(path), str(out)])
+                self.assertEqual(fixed.returncode, 0, msg=fixed.stderr)
+                self.assertGreater(
+                    len(out.read_bytes()), len(before),
+                    msg=f"{name}: expected the canonical fix to grow the line",
+                )
 
 
 if __name__ == "__main__":

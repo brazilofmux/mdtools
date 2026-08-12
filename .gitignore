@@ -1,5 +1,7 @@
 # Built binaries
 mdfix/mdfix
+mdfix/mdfix-asan
+mdfix/mdfix-asan.dSYM/
 
 # Python
 __pycache__/
