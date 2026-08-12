@@ -385,6 +385,103 @@ class BlockKindTests(IRTestCase):
                          ["paragraph", "thematic_break", "paragraph"])
 
 
+class StructureNotParagraphTests(IRTestCase):
+    """
+    Constructs that Pandoc does not render as paragraphs, and that a prose
+    pass must never be handed.
+
+    These were reported as `paragraph` until prosevary needed to stop carrying
+    its own classifier. Reporting a section heading or a link definition as
+    prose is only safe for a reader; a tool that rewrites text would paraphrase
+    them. Every rule here is pinned with `pandoc -t json`.
+    """
+
+    def test_setext_headings(self) -> None:
+        for source, level in (("Title\n=====\n", 1), ("Title\n-----\n", 2)):
+            with self.subTest(source=source):
+                record = self._ir(source)[1]
+                self.assertEqual(record["kind"], "heading")
+                self.assertEqual(record["level"], level)
+                self.assertEqual(record["style"], "setext")
+                self.assertEqual(record["text"], "Title")
+                self.assertEqual((record["line"], record["endLine"]), (1, 2))
+
+    def test_atx_headings_say_so_too(self) -> None:
+        self.assertEqual(self._ir("# Title\n")[1]["style"], "atx")
+
+    def test_underline_must_start_at_column_zero(self) -> None:
+        # CommonMark allows up to three spaces; pandoc's markdown reader does
+        # not, and it is the output dialect. One space is already too far.
+        self.assertEqual(self._kinds("Title\n ===\n"), ["paragraph"])
+        self.assertEqual(self._kinds("Title\n===\n"), ["heading"])
+
+    def test_setext_text_may_be_indented(self) -> None:
+        self.assertEqual(self._kinds("   Title\n===\n"), ["heading"])
+
+    def test_setext_text_is_a_single_line(self) -> None:
+        self.assertEqual(self._kinds("Line one\nline two\n=====\n"),
+                         ["paragraph"])
+
+    def test_a_rule_under_a_rule_is_a_heading(self) -> None:
+        # The text line may itself look like a thematic break; pandoc agrees.
+        self.assertEqual(self._kinds("-----\n-----\n"), ["heading"])
+
+    def test_a_rule_after_a_blank_is_still_a_rule(self) -> None:
+        self.assertEqual(self._kinds("Para.\n\n-----\n\nBody.\n"),
+                         ["paragraph", "thematic_break", "paragraph"])
+
+    def test_simple_tables_still_win(self) -> None:
+        self.assertEqual(self._kinds("Right  Left\n-----  ----\n12     34\n"),
+                         ["table"])
+
+    def test_reference_definitions(self) -> None:
+        self.assertEqual(self._kinds("[id]: http://x\n\nBody.\n"),
+                         ["reference_def", "paragraph"])
+
+    def test_reference_definition_without_a_space(self) -> None:
+        # `[id]:x` is a definition to pandoc, which emits no block for it.
+        # prosevary's regex demanded whitespace and called this prose.
+        self.assertEqual(self._kinds("[id]:x\n\nBody.\n"),
+                         ["reference_def", "paragraph"])
+
+    def test_reference_definition_takes_a_quoted_title(self) -> None:
+        record = self._ir('[id]: http://x\n   "Title"\n\nBody.\n')[1]
+        self.assertEqual(record["kind"], "reference_def")
+        self.assertEqual((record["line"], record["endLine"]), (1, 2))
+
+    def test_reference_definition_does_not_take_indented_prose(self) -> None:
+        # An indented plain line after a definition is a code block.
+        self.assertEqual(self._kinds("[id]: http://x\n    indented\n"),
+                         ["reference_def", "code_indented"])
+
+    def test_footnote_definitions(self) -> None:
+        self.assertEqual(self._kinds("[^1]: Note.\n\nBody.\n"),
+                         ["footnote_def", "paragraph"])
+
+    def test_footnote_definition_spans_a_blank_line(self) -> None:
+        record = self._ir("[^1]: One.\n\n    Two.\n\nBody.\n")[1]
+        self.assertEqual(record["kind"], "footnote_def")
+        self.assertEqual((record["line"], record["endLine"]), (1, 3))
+
+    def test_a_bracket_without_a_colon_is_prose(self) -> None:
+        self.assertEqual(self._kinds("[id] no colon\n"), ["paragraph"])
+
+    def test_empty_label_is_not_a_definition(self) -> None:
+        self.assertEqual(self._kinds("[]: http://x\n"), ["paragraph"])
+        self.assertEqual(self._kinds("[^]: note\n"), ["paragraph"])
+
+    def test_definition_line_is_not_setext_text(self) -> None:
+        # Else the IR invents a Header pandoc does not emit.
+        self.assertEqual(
+            self._kinds("[id]: http://x\n====\n"),
+            ["reference_def", "paragraph"],
+        )
+        self.assertEqual(
+            self._kinds("[id]:x\n----\n"),
+            ["reference_def", "thematic_break"],
+        )
+
+
 class ProtectedFlagTests(IRTestCase):
     """
     `protected` makes dialect-policy §7 machine-readable. A consumer reads it
@@ -458,7 +555,14 @@ class ProtectedFlagTests(IRTestCase):
             f"* * *\n\n"
             f"***\n\n"
             f"- - -\n\n"
-            f"_ _ _\n"
+            f"_ _ _\n\n"
+            # Code after a ref def / setext must stay protected in process()
+            # as well as in the IR (prev_content_type agreement).
+            f"[id]: http://x\n"
+            f"    after-def {arrow} code\n\n"
+            f"Setext Title\n"
+            f"====\n"
+            f"    after-setext {arrow} code\n"
         )
         src = self._write(source, "in.md")
         out = self.dir / "out.md"
@@ -476,13 +580,38 @@ class ProtectedFlagTests(IRTestCase):
         # Explicit pin: spaced star HR must not become "- * *".
         self.assertIn(b"* * *", fixed)
         self.assertNotIn(b"- * *", fixed)
+        self.assertIn(f"after-def {arrow} code".encode(), fixed)
+        self.assertIn(f"after-setext {arrow} code".encode(), fixed)
+
+    def test_process_protects_code_after_ref_def_and_setext(self) -> None:
+        arrow = "→"
+        cases = {
+            "ref def": f"[id]: http://x\n    code {arrow} here\n",
+            "setext": f"Title\n====\n    code {arrow} here\n",
+            "footnote": f"[^1]: note\n    code {arrow} here\n",
+        }
+        for name, source in cases.items():
+            with self.subTest(case=name):
+                src = self._write(source, "p.md")
+                out = self.dir / "p_out.md"
+                if out.exists():
+                    out.unlink()
+                subprocess.run(
+                    [str(MDFIX), "-q", "--technical", str(src), str(out)],
+                    capture_output=True, check=True,
+                )
+                self.assertIn(f"code {arrow} here", out.read_text(encoding="utf-8"))
 
 
 @unittest.skipUnless(PANDOC, "pandoc not installed")
 class PandocOracleTests(IRTestCase):
     """The IR claims to describe Markdown; Pandoc decides whether it does."""
 
-    # Front matter is metadata rather than a block, so it has no counterpart.
+    # Kinds Pandoc emits no block for: front matter is metadata, and link and
+    # footnote definitions are definitions. Verified — `[id]: http://x` on its
+    # own produces an empty block list.
+    NO_PANDOC_BLOCK = frozenset({"frontmatter", "reference_def", "footnote_def"})
+
     EQUIVALENT = {
         "heading": {"Header"},
         "paragraph": {"Para", "Plain"},
@@ -505,7 +634,8 @@ class PandocOracleTests(IRTestCase):
 
     def test_sample_agrees_block_for_block(self) -> None:
         path = self._write(SAMPLE)
-        ours = [r for r in self._ir(SAMPLE)[1:] if r["kind"] != "frontmatter"]
+        ours = [r for r in self._ir(SAMPLE)[1:]
+                if r["kind"] not in self.NO_PANDOC_BLOCK]
         theirs = self._pandoc_blocks(path)
         self.assertEqual(len(ours), len(theirs))
         for mine, other in zip(ours, theirs):
@@ -521,7 +651,7 @@ class PandocOracleTests(IRTestCase):
             with self.subTest(document=name):
                 data = path.read_bytes()
                 ours = [r for r in self._ir(data, Path(name).name)[1:]
-                        if r["kind"] != "frontmatter"]
+                        if r["kind"] not in self.NO_PANDOC_BLOCK]
                 theirs = self._pandoc_blocks(path)
                 self.assertEqual(
                     len(ours), len(theirs),
@@ -544,7 +674,6 @@ class KnownDivergenceTests(IRTestCase):
     """
 
     DIVERGENCES = {
-        "setext heading": ("Title\n=====\n", "Header"),
         "definition list": ("Term\n:   Def\n", "DefinitionList"),
         "pipe table without leading bar": ("a | b\n--|--\n1 | 2\n", "Table"),
         "display math": ("$$\nx\n$$\n", "Para"),
@@ -567,7 +696,7 @@ class KnownDivergenceTests(IRTestCase):
         text = SCHEMA_DOC.read_text(encoding="utf-8")
         section = text.split("## Known divergences", 1)
         self.assertEqual(len(section), 2, "schema doc lost its divergence list")
-        for name in ("Setext", "Definition list", "Display math", "Raw LaTeX"):
+        for name in ("Definition list", "Display math", "Raw LaTeX"):
             with self.subTest(row=name):
                 self.assertIn(name, section[1])
 

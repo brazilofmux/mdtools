@@ -89,6 +89,7 @@ enum linetype {
     LT_INDENTCODE,  /* four-column-indented code; emitted verbatim */
     LT_RAWHTML,     /* raw HTML block; leaf — not paragraph text */
     LT_TABLEBLOCK,  /* Pandoc grid/simple table; column-aligned, verbatim */
+    LT_REFDEF,      /* link/footnote definition; not from classify() */
     LT_TEXT         /* everything else: paragraphs, blockquotes, etc. */
 };
 
@@ -779,6 +780,96 @@ static int is_blockquote_line(const char *line)
     return *p == '>';
 }
 
+/*
+ * Setext headings, and link/footnote definitions.
+ *
+ * All three are structure that the block IR reported as `paragraph`, which is
+ * only safe for a reader. prosevary edits prose, and handing it a section
+ * heading or a link definition to paraphrase corrupts the manuscript — so
+ * these are the constructs the IR had to grow before consumers could stop
+ * carrying their own classifier. Each rule is pinned with `pandoc -t json`.
+ *
+ * The underline must start at column 0. CommonMark allows up to three spaces;
+ * pandoc's `markdown` reader does not, and it is the output dialect:
+ *
+ *     Title / ===        -> Header      text may be indented 0-3
+ *     Title /  ===       -> Para        one space is already too far
+ *     ----- / -----      -> Header      the text line may itself look like a rule
+ *     Para. / <blank> / -----  -> HorizontalRule
+ */
+static int is_setext_underline(const char *line)
+{
+    char c = line[0];
+    if (c != '=' && c != '-')
+        return 0;
+    int i = 0;
+    while (line[i] == c)
+        i++;
+    while (line[i] == ' ' || line[i] == '\t')
+        i++;
+    return line[i] == '\0';
+}
+
+/*
+ * `[label]:` — a link reference definition, or `[^label]:` a footnote one.
+ * Returns 1 for a reference definition, 2 for a footnote definition, else 0.
+ *
+ * No whitespace is required after the colon: `[id]:x` is a definition to
+ * pandoc, which produces no block at all for it. The label must be non-empty
+ * (`[]:` / `[^]:` are not definitions).
+ */
+static int ref_def_kind(const char *line)
+{
+    int i = 0;
+    while (i < 3 && line[i] == ' ')
+        i++;
+    if (line[i] != '[')
+        return 0;
+    int footnote = (line[i + 1] == '^');
+    int label_start = i + 1 + (footnote ? 1 : 0);
+    i = label_start;
+    for (; line[i] && line[i] != ']'; i++) {
+        if (line[i] == '\\' && line[i + 1])
+            i++;
+    }
+    if (line[i] != ']' || line[i + 1] != ':')
+        return 0;
+    if (i <= label_start)
+        return 0;
+    return footnote ? 2 : 1;
+}
+
+/* A line that can carry setext text: not blank, and not itself a block
+ * opener or a link/footnote definition. Pandoc takes only a single line. */
+static int setext_text_ok(const char *line)
+{
+    if (is_blank(line))
+        return 0;
+    if (is_heading(line))
+        return 0;
+    if (is_blockquote_line(line))
+        return 0;
+    if (find_bullet(line) >= 0 || is_ordered(line))
+        return 0;
+    /* Else `[id]: url\n====` invents a Header pandoc does not emit. */
+    if (ref_def_kind(line))
+        return 0;
+    return 1;
+}
+
+/* A reference definition's optional title, carried onto the next line. Only
+ * a quote or paren continues it — an indented plain line is a code block,
+ * verified with `[id]: http://x` followed by four spaces of text. */
+static int is_ref_title_cont(const char *line)
+{
+    int i = 0;
+    while (line[i] == ' ' || line[i] == '\t')
+        i++;
+    if (i == 0)
+        return 0;
+    return line[i] == '"' || line[i] == '\'' || line[i] == '(';
+}
+
 static int is_thematic_break(const char *line)
 {
     const char *p = line;
@@ -1228,7 +1319,7 @@ static void ir_emit_heading(FILE *out, int i)
     inline_plain(text, plain, sizeof plain);
 
     ir_open(out, "heading", i, i, 0);
-    fprintf(out, ",\"level\":%d,\"text\":", level);
+    fprintf(out, ",\"level\":%d,\"style\":\"atx\",\"text\":", level);
     ir_json_string(out, text);
     fputs(",\"plain\":", out);
     ir_json_string(out, plain);
@@ -1401,6 +1492,46 @@ static void emit_ir(FILE *out, const char *source)
             continue;
         }
 
+        /*
+         * ── Setext heading ──
+         * Before the thematic-break branch on purpose: `-----` under `-----`
+         * is a heading whose text happens to look like a rule, and pandoc
+         * agrees. A dash run after a *blank* has no text line above it and
+         * falls through to the break branch below.
+         */
+        if (i + 1 < nlines
+            && setext_text_ok(line)
+            && is_setext_underline(lines[i + 1]))
+        {
+            int level = (lines[i + 1][0] == '=') ? 1 : 2;
+            char text[MAX_LINE];
+            int start = 0;
+            while (line[start] == ' ' || line[start] == '\t')
+                start++;
+            int end = (int)strlen(line);
+            while (end > start
+                   && (line[end - 1] == ' ' || line[end - 1] == '\t'))
+                end--;
+            int n = end - start;
+            memcpy(text, line + start, (size_t)n);
+            text[n] = '\0';
+
+            char plain[MAX_LINE];
+            inline_plain(text, plain, sizeof plain);
+
+            ir_open(out, "heading", i, i + 1, 0);
+            fprintf(out, ",\"level\":%d,\"style\":\"setext\",\"text\":", level);
+            ir_json_string(out, text);
+            fputs(",\"plain\":", out);
+            ir_json_string(out, plain);
+            fputs("}\n", out);
+            i++;
+            prev_content_type = LT_HEADING;
+            list_content_col = 0;
+            had_blank = 0;
+            continue;
+        }
+
         /* ── Thematic break ── */
         if (is_thematic_break(line)) {
             ir_block(out, "thematic_break", i, i, 1);
@@ -1408,6 +1539,50 @@ static void emit_ir(FILE *out, const char *source)
             list_content_col = 0;
             had_blank = 0;
             continue;
+        }
+
+        /*
+         * ── Link and footnote definitions ──
+         * Pandoc emits no block for either: they are definitions, like front
+         * matter. They must never reach a prose pass, which is why they are
+         * their own kinds rather than paragraphs.
+         *
+         * The two continue differently, and both were checked against pandoc.
+         * A reference definition takes only a quoted title on the next line —
+         * an indented plain line after it is a code block. A footnote
+         * definition takes indented continuations and survives a blank line.
+         */
+        {
+            int def = ref_def_kind(line);
+            if (def) {
+                int last = i;
+                if (def == 1) {
+                    while (last + 1 < nlines && is_ref_title_cont(lines[last + 1]))
+                        last++;
+                } else {
+                    int j = last + 1;
+                    while (j < nlines) {
+                        if (is_blank(lines[j])) {
+                            j++;
+                            continue;
+                        }
+                        if (indent_columns(lines[j], NULL) < 4)
+                            break;
+                        last = j;
+                        j++;
+                    }
+                }
+                ir_block(out, def == 1 ? "reference_def" : "footnote_def",
+                         i, last, 0);
+                i = last;
+                /* Not LT_TEXT: a definition is not paragraph text, so
+                 * indented code may follow it with no blank line. Pandoc
+                 * reads `[id]: http://x` then four spaces as a CodeBlock. */
+                prev_content_type = LT_REFDEF;
+                list_content_col = 0;
+                had_blank = 0;
+                continue;
+            }
         }
 
         /* ── List ──
@@ -3210,6 +3385,30 @@ static void process(FILE *out)
         }
 
         /*
+         * ── Setext heading ──
+         * Same rules as emit_ir: column-0 underline, single text line, before
+         * thematic break so `-----\n-----` is a heading. Must set
+         * prev_content_type so bare indented code after the heading is
+         * protected the way ATX headings already are.
+         */
+        if (i + 1 < nlines
+            && setext_text_ok(line)
+            && is_setext_underline(lines[i + 1]))
+        {
+            flush_paragraph(out);
+            /* Title is structural but not byte-protected (same as ATX). */
+            apply_scanner(line, i + 1);
+            fprintf(out, "%s\n", line);
+            fprintf(out, "%s\n", lines[i + 1]);
+            i++;
+            prev_was_list_ctx = 0;
+            list_content_col = 0;
+            prev_content_type = LT_HEADING;
+            had_blank = 0;
+            continue;
+        }
+
+        /*
          * ── Thematic break ──
          * Must beat list handling: "* * *" is both is_thematic_break and
          * find_bullet. Without this, fix_bullet rewrote the first marker to
@@ -3224,6 +3423,49 @@ static void process(FILE *out)
             prev_content_type = LT_TEXT;
             had_blank = 0;
             continue;
+        }
+
+        /*
+         * ── Link and footnote definitions ──
+         * Not paragraph text: skip prose passes, and set prev so a following
+         * four-column line is indented code (pandoc CodeBlock), matching
+         * emit_ir's LT_REFDEF. Title continuations (quoted) ride with a
+         * reference def; footnote defs take indented lines across blanks.
+         */
+        {
+            int def = ref_def_kind(line);
+            if (def) {
+                int last = i;
+                if (def == 1) {
+                    while (last + 1 < nlines && is_ref_title_cont(lines[last + 1]))
+                        last++;
+                } else {
+                    int j = last + 1;
+                    while (j < nlines) {
+                        if (is_blank(lines[j])) {
+                            j++;
+                            continue;
+                        }
+                        if (indent_columns(lines[j], NULL) < 4)
+                            break;
+                        last = j;
+                        j++;
+                    }
+                }
+                flush_paragraph(out);
+                for (; i <= last; i++) {
+                    /* Structural canonicalization only — no prose scanner. */
+                    if (def == 2)
+                        fix_footnote_def(lines[i], i + 1);
+                    fprintf(out, "%s\n", lines[i]);
+                }
+                i = last;
+                prev_was_list_ctx = 0;
+                list_content_col = 0;
+                prev_content_type = LT_REFDEF;
+                had_blank = 0;
+                continue;
+            }
         }
 
         /* ── Blank line ── */
