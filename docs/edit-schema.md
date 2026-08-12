@@ -68,7 +68,9 @@ document rather than fail. One integer catches it.
 one string and turns "the file moved underneath me" from silent corruption
 into a refusal naming the edit.
 
-`start == end` inserts. An edit list may be in any order; the applier sorts.
+`start == end` inserts. An edit list may be in any order; the applier sorts
+by start, then end, then original input order (so same-offset inserts are
+stable).
 
 ## Validation (I4.2)
 
