@@ -23,7 +23,7 @@ so a test can fail, and §5 records what is not built yet.
                                          │ IR
                           ┌──────────────▼──────────────┐
                           │ L3  Optional transforms      │
-                          │     wrap, Chicago, canonical │
+                          │     wrap, Chicago, flags     │
                           └──────────────┬──────────────┘
                                          │ IR
        prosevary,         ┌──────────────▼──────────────┐
@@ -42,8 +42,10 @@ so a test can fail, and §5 records what is not built yet.
   Diagnostics (D) are produced by every layer and are not a layer.
 ```
 
-L1 through L5 and D live in **mdfix**. Everything else is a consumer and holds
-no Markdown grammar, per dialect-policy §2.
+L1 through L5 and D live in **mdfix**. **Target:** everything else is a
+consumer and holds no Markdown grammar (dialect-policy §2). **Today:** that is
+true of mdquery; prosevary still re-derives blocks in `segment.py` until
+`--apply-edits` ships and the dual-grammar interim ends.
 
 | Layer | Owns |
 |---|---|
@@ -77,12 +79,16 @@ Each has an identifier so issues and tests can cite it.
 - **I2.1 AST preservation.** For any input, `pandoc -t json` of the output
   equals `pandoc -t json` of the input, except where a required transform
   exists precisely to repair a construct Pandoc would misread.
-- **I2.2 Reader-flag independence.** Output renders identically under
-  `markdown` and `markdown-smart`. This is what makes literal Unicode
-  punctuation a correctness rule rather than a style rule (dialect-policy §4).
+- **I2.2 Reader-flag independence for emitted typography.** Marks that mdtools
+  *emits* (em dashes, curly quotes, ellipsis) render identically under
+  `markdown` and `markdown-smart`. This is dialect-policy §4: smart-invariance
+  of **output we produce**, not a requirement that every bare pass convert
+  author ASCII shorthand. *(Chicago/`--canonical` live in L3 and must still
+  satisfy this when they run — see I3.1.)*
 - **I2.3 Required is the default.** Producing Pandoc-friendly output is not
-  opt-in. *(Today: `--canonical` is opt-in, so a bare `mdfix` run carries no
-  such guarantee.)*
+  opt-in. *(Today: always-on structural fixes exist — blank lines around lists,
+  bullets, arrow aside, … — but no profile is designated L2/required; I2.2 and
+  the rest of `--canonical` remain opt-in, so I2.3 is false.)*
 
 ### L3 — Optional transforms
 
@@ -90,7 +96,7 @@ Each has an identifier so issues and tests can cite it.
   in every shipped profile, the output still satisfies I2.1 and I2.2. This is
   a test matrix, not a promise. *(Today false: `-w` destroys two-space hard
   breaks; `--wrap` miscounts non-ASCII width, issue #49; Chicago emits ASCII
-  `...`, which violates I2.2.)*
+  `...`, which violates I2.2 for emitted typography.)*
 - **I3.2 Idempotence.** Applying a transform twice equals applying it once.
 - **I3.3 Opt-in.** No optional transform runs unless requested.
 
@@ -139,15 +145,20 @@ spaces.
 
 ## 4. Consumers
 
-A consumer speaks JSONL to mdfix over a subprocess and contains no Markdown
-grammar. It reads structure from the IR and writes changes as byte-span edits.
+**Target:** a consumer speaks JSONL to mdfix over a subprocess and contains no
+Markdown grammar. It reads structure from the IR and writes changes as
+byte-span edits.
 
-- **Read-only** — mdquery (#15), mdcheck (#13). Cannot corrupt a manuscript.
-- **Editing** — prosevary, mdterms (#16), mdlinks (#14). Return span edits and
-  never learn what a grid table is.
+- **Read-only** — mdquery (#15), mdcheck (#13). mdquery already matches this
+  model. Cannot corrupt a manuscript.
+- **Editing (target)** — prosevary, mdterms (#16), mdlinks (#14). Return span
+  edits and never learn what a grid table is. **Today:** prosevary still
+  classifies blocks itself and reconstructs via `Document.reconstruct`; it
+  does not yet speak edit-lists to mdfix (`--apply-edits` is unshipped; §5).
 
 prosevary is Python, external, and does what it does: orchestration, SQLite,
-metrics, gate policy. None of that is grammar.
+metrics, gate policy. None of that *needs* to be grammar once the applier
+lands.
 
 ## 5. Where we are
 
@@ -205,12 +216,14 @@ the failure visible instead of silent.
 **Recommend: partial *edit*, yes. Partial *parse*, only with an explicit
 resume state.**
 
-Partial edit already works — that is what spans are for. Partial parse is a
-different claim: classification depends on fence state, front-matter state,
-list content column, and open raw HTML, and `table_block_end` needs forward
-lookahead. Starting mid-file without carrying that state produces confidently
-wrong answers. If streaming is wanted later, the resume state must be part of
-the schema; designing it in is cheap now and a retrofit later.
+Partial edit is what spans are *for*; the L5 applier that makes it true is
+not shipped (§5 / #12). prosevary-local reconstruct is a different,
+dual-grammar mechanism. Partial parse is a different claim: classification
+depends on fence state, front-matter state, list content column, and open raw
+HTML, and `table_block_end` needs forward lookahead. Starting mid-file without
+carrying that state produces confidently wrong answers. If streaming is wanted
+later, the resume state must be part of the schema; designing it in is cheap
+now and a retrofit later.
 
 ### Q5. How is I3.1 enforced?
 
