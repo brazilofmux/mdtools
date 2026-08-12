@@ -142,9 +142,10 @@ The multiline form — a dash run, a header, a column row, body rows that may
 span blank lines, and a closing dash run — works too.
 
 Simple, grid and multiline tables carry their structure in **column
-position**, so they are reproduced byte for byte. Pipe tables are not: their
-cells still take punctuation passes, so a `→` inside a pipe cell may become an
-em dash. If that matters, use a grid table.
+position**, so they are reproduced byte for byte. Pipe tables are not: when
+editorial or Chicago passes run (including under `--canonical` /
+`--technical`), a `→` inside a pipe cell may become an em dash. If that
+matters, use a grid table.
 
 ### Block quotes, breaks, definitions
 
@@ -238,9 +239,9 @@ flag. `--editorial` turns on the editorial set; `--canonical` and
 Things that are easy to write and will not mean what you expect.
 
 **Two trailing spaces are a hard break** — and `-w`, `--canonical`, `--wrap`
-and `--technical` all collapse them, turning the hard break into a soft one.
-Until #49 and the related gap are closed, use an explicit `<br>` if the
-break matters.
+and `--technical` all collapse them, turning the hard break into a soft one
+(dialect-policy §7 gap 5). Until hard-break preservation is fixed, use an
+explicit `<br>` if the break matters.
 
 **`--wrap` measures bytes, not display columns.** Greek and Cyrillic prose
 wraps at about 35 columns instead of 78, and unspaced CJK cannot break at all.
