@@ -3202,32 +3202,22 @@ static int fix_trailing_ws(char *line, int linenum)
 static const char *para_lines_buf[MAX_LINES];
 static int npara = 0;
 
-/*
- * Wrap to display columns — issue #49.
- *
- * This measured bytes, so Greek and Cyrillic prose wrapped at about 35
- * columns instead of 78 (two bytes per letter) and unspaced CJK could not
- * break at all. A column is what a reader sees, and for East Asian wide
- * characters that is two of them.
- *
- * Width comes from the vendored libutf table (vendor/utf_width.c), which is
- * Unicode 16.0 East Asian Width plus combining-mark detection. A combining
- * mark costs zero, so a decomposed accent no longer eats a column.
- */
-static int utf8_char_len(unsigned char c)
+/* Validated UTF-8 length of the code point at s[i] (I1.1 already enforced). */
+static int utf8_sequence_len(const unsigned char *s, int avail, const char **why);
+
+static int utf8_cp_len(const char *s, int i, int end)
 {
-    if (c < 0x80) return 1;
-    if (c < 0xE0) return 2;
-    if (c < 0xF0) return 3;
-    return 4;
+    const char *why = NULL;
+    int n = utf8_sequence_len((const unsigned char *)s + i, end - i, &why);
+    return n > 0 ? n : 1;
 }
 
-/* Display columns spanned by [from, to). */
+/* Display columns spanned by [from, to). Wide = 2, combining = 0. */
 static int display_columns(const char *text, int from, int to)
 {
     int cols = 0;
     for (int i = from; i < to; ) {
-        int n = utf8_char_len((unsigned char)text[i]);
+        int n = utf8_cp_len(text, i, to);
         if (i + n > to)
             break;
         cols += mdfix_display_width((const unsigned char *)text + i);
@@ -3236,6 +3226,10 @@ static int display_columns(const char *text, int from, int to)
     return cols;
 }
 
+/*
+ * Wrap on display columns (mdfix_display_width): break only at ASCII spaces.
+ * Unspaced tokens (including CJK without spaces) are not split.
+ */
 static void emit_wrapped(FILE *out, const char *text, int width)
 {
     int len = (int)strlen(text);
@@ -3247,11 +3241,7 @@ static void emit_wrapped(FILE *out, const char *text, int width)
             return;
         }
 
-        /*
-         * Last space that still leaves the line within `width` columns.
-         * Advancing by code point rather than by byte is the fix: the old
-         * loop counted `i - pos` bytes against a column budget.
-         */
+        /* Last ASCII space whose preceding display width is still <= width. */
         int break_at = -1;
         int cols = 0;
         for (int i = pos; i < len; ) {
@@ -3260,15 +3250,15 @@ static void emit_wrapped(FILE *out, const char *text, int width)
             cols += mdfix_display_width((const unsigned char *)text + i);
             if (cols > width)
                 break;
-            i += utf8_char_len((unsigned char)text[i]);
+            i += utf8_cp_len(text, i, len);
         }
 
         if (break_at <= pos) {
-            /* No space within the budget — run on to the next one rather
-             * than splitting a word, which is what this always did. */
+            /* No break opportunity in budget: emit the whole token
+             * through the next space (do not split). */
             break_at = pos;
             while (break_at < len && text[break_at] != ' ')
-                break_at += utf8_char_len((unsigned char)text[break_at]);
+                break_at += utf8_cp_len(text, break_at, len);
             if (break_at >= len) {
                 fprintf(out, "%s\n", text + pos);
                 return;
@@ -3284,19 +3274,15 @@ static void emit_wrapped(FILE *out, const char *text, int width)
 }
 
 /*
- * Should line i be joined to line i+1?  Only if the current line looks
- * like it was hard-wrapped (long enough to be near the target width).
- * Short lines signal an intentional paragraph/stanza break.
+ * Join only if the current line looks hard-wrapped (near the target width
+ * in display columns). Short lines are intentional breaks.
  */
 static int should_join(const char *line, int wrap_width)
 {
     int len = (int)strlen(line);
-    /* Trim trailing whitespace for length check */
     while (len > 0 && (line[len - 1] == ' ' || line[len - 1] == '\t'))
         len--;
-    /* A line shorter than 60% of the wrap width is probably intentionally
-     * short — a title, a metadata line, a list-like structure, etc. */
-    return len >= (wrap_width * 3 / 5);
+    return display_columns(line, 0, len) >= (wrap_width * 3 / 5);
 }
 
 static void flush_paragraph(FILE *out)

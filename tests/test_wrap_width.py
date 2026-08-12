@@ -1,16 +1,4 @@
-"""
-Wrapping measures display columns, not bytes (issue #49).
-
-`--wrap` counted bytes, so Greek and Cyrillic prose wrapped at about 35
-columns instead of 78 — two bytes per letter — and mixed scripts were worse.
-A column is what a reader sees, and for an East Asian wide character that is
-two of them.
-
-Width comes from the libutf table vendored at `mdfix/vendor/utf_width.c`,
-which is Unicode 16.0 East Asian Width plus combining-mark detection. These
-tests check the outcome rather than the table: what matters is the width of
-the lines mdfix writes.
-"""
+"""Wrap output lines must be <= N display columns; unspaced CJK stays one line."""
 
 from __future__ import annotations
 
@@ -23,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MDFIX = ROOT / "mdfix" / "mdfix"
 VENDOR = ROOT / "mdfix" / "vendor" / "utf_width.c"
+VENDOR_H = ROOT / "mdfix" / "vendor" / "utf_width.h"
 
 
 def columns(text: str) -> int:
@@ -41,11 +30,17 @@ class WrapWidthTests(unittest.TestCase):
     def setUp(self) -> None:
         if not MDFIX.is_file():
             raise unittest.SkipTest(f"{MDFIX} not built; run `make -C mdfix`")
-        source = ROOT / "mdfix" / "mdfix.c"
-        if source.is_file() and source.stat().st_mtime > MDFIX.stat().st_mtime:
-            raise AssertionError(
-                f"{MDFIX} is older than {source} — rebuild with `make -C mdfix`"
-            )
+        sources = [
+            ROOT / "mdfix" / "mdfix.c",
+            VENDOR,
+            VENDOR_H,
+        ]
+        bin_mtime = MDFIX.stat().st_mtime
+        for source in sources:
+            if source.is_file() and source.stat().st_mtime > bin_mtime:
+                raise AssertionError(
+                    f"{MDFIX} is older than {source} — rebuild with `make -C mdfix`"
+                )
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.dir = Path(self.tmp.name)
@@ -97,11 +92,21 @@ class WrapWidthTests(unittest.TestCase):
         self.assertTrue(all(len(line) == 74 for line in lines[:-1]))
 
     def test_a_combining_mark_costs_no_column(self) -> None:
-        # "e" + U+0301 is one column, not two. Counting it would shorten
-        # every line carrying a decomposed accent.
-        decomposed = unicodedata.normalize("NFD", "échappé ") * 20
-        for line in self._wrap(decomposed.strip() + "\n"):
-            self.assertLessEqual(columns(line), self.WIDTH)
+        # "e" + U+0301 is one column, not two. A wrong width-1 charge would
+        # under-fill NFD relative to NFC; pin both fill and parity.
+        base = "échappé "
+        nfc = unicodedata.normalize("NFC", base) * 20
+        nfd = unicodedata.normalize("NFD", base) * 20
+        nfc_lines = self._wrap(nfc.strip() + "\n")
+        nfd_lines = self._wrap(nfd.strip() + "\n")
+        self.assertEqual(len(nfc_lines), len(nfd_lines))
+        for line in nfd_lines:
+            self.assertLessEqual(columns(line), self.WIDTH, line)
+        for line in nfd_lines[:-1]:
+            self.assertGreater(columns(line), self.WIDTH // 2, line)
+        # Same visual width per line once combining marks are ignored.
+        for a, b in zip(nfc_lines, nfd_lines):
+            self.assertEqual(columns(a), columns(b), (a, b))
 
     def test_unspaced_cjk_is_left_on_one_line(self) -> None:
         # Deliberate: `east_asian_line_breaks` is off in the pinned profile

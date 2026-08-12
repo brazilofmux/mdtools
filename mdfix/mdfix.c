@@ -3210,32 +3210,22 @@ static int fix_trailing_ws(char *line, int linenum)
 static const char *para_lines_buf[MAX_LINES];
 static int npara = 0;
 
-/*
- * Wrap to display columns — issue #49.
- *
- * This measured bytes, so Greek and Cyrillic prose wrapped at about 35
- * columns instead of 78 (two bytes per letter) and unspaced CJK could not
- * break at all. A column is what a reader sees, and for East Asian wide
- * characters that is two of them.
- *
- * Width comes from the vendored libutf table (vendor/utf_width.c), which is
- * Unicode 16.0 East Asian Width plus combining-mark detection. A combining
- * mark costs zero, so a decomposed accent no longer eats a column.
- */
-static int utf8_char_len(unsigned char c)
+/* Validated UTF-8 length of the code point at s[i] (I1.1 already enforced). */
+static int utf8_sequence_len(const unsigned char *s, int avail, const char **why);
+
+static int utf8_cp_len(const char *s, int i, int end)
 {
-    if (c < 0x80) return 1;
-    if (c < 0xE0) return 2;
-    if (c < 0xF0) return 3;
-    return 4;
+    const char *why = NULL;
+    int n = utf8_sequence_len((const unsigned char *)s + i, end - i, &why);
+    return n > 0 ? n : 1;
 }
 
-/* Display columns spanned by [from, to). */
+/* Display columns spanned by [from, to). Wide = 2, combining = 0. */
 static int display_columns(const char *text, int from, int to)
 {
     int cols = 0;
     for (int i = from; i < to; ) {
-        int n = utf8_char_len((unsigned char)text[i]);
+        int n = utf8_cp_len(text, i, to);
         if (i + n > to)
             break;
         cols += mdfix_display_width((const unsigned char *)text + i);
@@ -3244,6 +3234,10 @@ static int display_columns(const char *text, int from, int to)
     return cols;
 }
 
+/*
+ * Wrap on display columns (mdfix_display_width): break only at ASCII spaces.
+ * Unspaced tokens (including CJK without spaces) are not split.
+ */
 static void emit_wrapped(FILE *out, const char *text, int width)
 {
     int len = (int)strlen(text);
@@ -3255,11 +3249,7 @@ static void emit_wrapped(FILE *out, const char *text, int width)
             return;
         }
 
-        /*
-         * Last space that still leaves the line within `width` columns.
-         * Advancing by code point rather than by byte is the fix: the old
-         * loop counted `i - pos` bytes against a column budget.
-         */
+        /* Last ASCII space whose preceding display width is still <= width. */
         int break_at = -1;
         int cols = 0;
         for (int i = pos; i < len; ) {
@@ -3268,15 +3258,15 @@ static void emit_wrapped(FILE *out, const char *text, int width)
             cols += mdfix_display_width((const unsigned char *)text + i);
             if (cols > width)
                 break;
-            i += utf8_char_len((unsigned char)text[i]);
+            i += utf8_cp_len(text, i, len);
         }
 
         if (break_at <= pos) {
-            /* No space within the budget — run on to the next one rather
-             * than splitting a word, which is what this always did. */
+            /* No break opportunity in budget: emit the whole token
+             * through the next space (do not split). */
             break_at = pos;
             while (break_at < len && text[break_at] != ' ')
-                break_at += utf8_char_len((unsigned char)text[break_at]);
+                break_at += utf8_cp_len(text, break_at, len);
             if (break_at >= len) {
                 fprintf(out, "%s\n", text + pos);
                 return;
@@ -3292,19 +3282,15 @@ static void emit_wrapped(FILE *out, const char *text, int width)
 }
 
 /*
- * Should line i be joined to line i+1?  Only if the current line looks
- * like it was hard-wrapped (long enough to be near the target width).
- * Short lines signal an intentional paragraph/stanza break.
+ * Join only if the current line looks hard-wrapped (near the target width
+ * in display columns). Short lines are intentional breaks.
  */
 static int should_join(const char *line, int wrap_width)
 {
     int len = (int)strlen(line);
-    /* Trim trailing whitespace for length check */
     while (len > 0 && (line[len - 1] == ' ' || line[len - 1] == '\t'))
         len--;
-    /* A line shorter than 60% of the wrap width is probably intentionally
-     * short — a title, a metadata line, a list-like structure, etc. */
-    return len >= (wrap_width * 3 / 5);
+    return display_columns(line, 0, len) >= (wrap_width * 3 / 5);
 }
 
 static void flush_paragraph(FILE *out)
@@ -3641,7 +3627,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 3645 "mdfix.c"
+#line 3631 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -3649,20 +3635,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 3653 "mdfix.c"
+#line 3639 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 4038 "mdfix.rl"
+#line 4024 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 3789 "mdfix.rl"
+#line 3775 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -3702,7 +3688,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 3665 "mdfix.rl"
+#line 3651 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial || ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -3739,19 +3725,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 3658 "mdfix.rl"
+#line 3644 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 3658 "mdfix.rl"
+#line 3644 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 3973 "mdfix.rl"
+#line 3959 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -3775,7 +3761,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 4018 "mdfix.rl"
+#line 4004 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -3796,7 +3782,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 3996 "mdfix.rl"
+#line 3982 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -3819,13 +3805,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 4038 "mdfix.rl"
+#line 4024 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 3918 "mdfix.rl"
+#line 3904 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -3848,7 +3834,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 3831 "mdfix.rl"
+#line 3817 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_CHAR('.');
@@ -3899,13 +3885,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 4038 "mdfix.rl"
+#line 4024 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 3881 "mdfix.rl"
+#line 3867 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -3943,7 +3929,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 3940 "mdfix.rl"
+#line 3926 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -3977,7 +3963,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 3727 "mdfix.rl"
+#line 3713 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -3990,7 +3976,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 3701 "mdfix.rl"
+#line 3687 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4004,7 +3990,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 3739 "mdfix.rl"
+#line 3725 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4017,7 +4003,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 3714 "mdfix.rl"
+#line 3700 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4031,7 +4017,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 3751 "mdfix.rl"
+#line 3737 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -4070,7 +4056,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 3658 "mdfix.rl"
+#line 3644 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -4083,7 +4069,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 4087 "mdfix.c"
+#line 4073 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -4109,7 +4095,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 4113 "mdfix.c"
+#line 4099 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -4153,7 +4139,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 4157 "mdfix.c"
+#line 4143 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -4202,7 +4188,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 4206 "mdfix.c"
+#line 4192 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -4221,7 +4207,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 4225 "mdfix.c"
+#line 4211 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -4247,7 +4233,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 4251 "mdfix.c"
+#line 4237 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -4296,7 +4282,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 4300 "mdfix.c"
+#line 4286 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -4376,7 +4362,7 @@ case 13:
 
 	}
 
-#line 4045 "mdfix.rl"
+#line 4031 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';
