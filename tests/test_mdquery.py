@@ -27,7 +27,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from mdquery import __main__ as cli
-from mdquery.ir import IRError, load
+from mdquery.ir import SCHEMA, IRError, load
 from mdquery.query import annotate, filter_blocks, outline, section_span
 from mdquery.slug import assign_slugs, slugify
 
@@ -561,7 +561,7 @@ class IRPlumbingTests(MdqueryTestCase):
         path.write_text("# A\n", encoding="utf-8")
         with unittest_env(MDFIX=str(MDFIX)):
             document = load([path])[0]
-        self.assertEqual(document.schema, "mdtools-ir-1")
+        self.assertEqual(document.schema, SCHEMA)
 
     def test_bad_mdfix_override_is_rejected(self) -> None:
         with unittest_env(MDFIX=str(self.dir / "nothing")):

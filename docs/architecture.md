@@ -125,7 +125,10 @@ Each has an identifier so issues and tests can cite it.
 - **I5.3 Round-trip identity.** If the IR is ever serialized rather than
   spliced, `parse → serialize` is byte-identical for unmodified input. This is
   the invariant that forces the IR to be **lossless** rather than merely
-  descriptive. See Q1.
+  descriptive. See Q1. *(Groundwork done in #56: schema 2 is total —
+  concatenating every record's span reproduces the input byte for byte, so a
+  serializer can no longer silently normalize a blank run, a hard break, or a
+  line ending. The serializer itself is still L5 work.)*
 
 ### D — Diagnostics
 

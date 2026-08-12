@@ -1,4 +1,4 @@
-# Structural IR — schema `mdtools-ir-1`
+# Structural IR — schema `mdtools-ir-2`
 
 Status: shipped, 2026-08-12. Implements the reader half of the boundary in
 [dialect-policy.md](dialect-policy.md) §2.
@@ -9,7 +9,7 @@ tool is meant to consume instead of re-deriving the grammar.
 
 ```console
 $ mdfix --emit-ir README.md | head -3
-{"kind":"document","schema":"mdtools-ir-1","source":"README.md","bytes":3184,"lines":118}
+{"kind":"document","schema":"mdtools-ir-2","source":"README.md","bytes":3184,"lines":118}
 {"kind":"heading","start":0,"end":9,"line":1,"endLine":1,"protected":false,"level":1,"text":"mdtools","plain":"mdtools"}
 {"kind":"paragraph","start":11,"end":76,"line":3,"endLine":3,"protected":false}
 ```
@@ -24,8 +24,12 @@ These are the properties a consumer may rely on, and each has a test.
    locate correctly.
 2. **`end` excludes the line terminator.** A consumer splicing a replacement
    never has to guess whether it owns the newline.
-3. **Records are non-overlapping and in source order.** Blank lines between
-   blocks are simply not covered by any record; the gaps are separators.
+3. **Records are total, contiguous, and in source order.** Concatenating every
+   record's span reproduces the input **byte for byte**. Nothing is skipped:
+   line terminators, blank runs, a leading BOM and any trailing bytes arrive as
+   `gap` records. This is what lets a transform know exactly what it is
+   changing, and it is checkable without reference to the parser that produced
+   it — see architecture.md I5.3.
 4. **The first record is the header** (`"kind":"document"`), carrying the
    schema name so a consumer can refuse a version it does not understand.
    Several files may share one stream — each begins a new header.
@@ -53,6 +57,7 @@ closed, the flag flips and the consumer sees it.
 | `kind` | Extra fields | `protected` | Pandoc block |
 |---|---|---|---|
 | `document` | `schema`, `source`, `bytes`, `lines` | — | header record |
+| `gap` | | `false` | *none — inter-block bytes* |
 | `frontmatter` | | `true` | metadata |
 | `heading` | `level`, `style`, `text`, `plain` | `false` | `Header` |
 | `paragraph` | | `false` | `Para` |
@@ -66,6 +71,13 @@ closed, the flag flips and the consumer sees it.
 | `thematic_break` | | `true` | `HorizontalRule` |
 | `reference_def` | | `false` | *none — a definition* |
 | `footnote_def` | | `false` | *none — a definition* |
+
+`gap` records carry everything between content blocks: the terminator ending
+one block, the blank lines before the next, a leading BOM, and whatever
+trails the last block. They are **not protected** — mdfix's list-spacing fixes
+insert and remove blank lines, so claiming otherwise would be false. A
+consumer asking "what blocks are in this file" filters them out; a serializer
+must not.
 
 `table.form` is one of `pipe`, `simple`, `grid`, `multiline`. The last three
 are `protected`; **`pipe` is not** — mdfix rewrites punctuation inside pipe
@@ -172,7 +184,11 @@ one benefits every consumer at once.
 
 ## Stability
 
-`mdtools-ir-1` may gain **new optional fields** and **new block kinds** without
+Schema 2 changed guarantee 3 — records became total rather than merely
+non-overlapping — which is why the name moved from `mdtools-ir-1`. Adding the
+`gap` kind alone would not have required it.
+
+`mdtools-ir-2` may gain **new optional fields** and **new block kinds** without
 a schema bump; a consumer must ignore fields it does not recognize and should
 treat an unknown `kind` as opaque-but-located. Removing a field, changing a
 field's meaning, or changing what `start`/`end` measure requires a new schema

@@ -919,7 +919,7 @@ static int is_wrappable(const char *line, enum linetype type)
  * rather than rediscover §7's compatibility table by experiment.
  * ═══════════════════════════════════════════════════════════════════ */
 
-#define IR_SCHEMA "mdtools-ir-1"
+#define IR_SCHEMA "mdtools-ir-2"
 
 /*
  * A pipe-table delimiter row: `|---|---|`, `--|--`, `|:--|--:|`.
@@ -979,8 +979,48 @@ static void ir_json_string(FILE *out, const char *s)
  * the block's text and nothing else — a consumer splicing a replacement never
  * has to guess whether it owns the newline.
  */
+/*
+ * Totality — architecture.md I5.3, issue #56.
+ *
+ * Schema 1 covered the blocks and nothing else: line terminators, the blank
+ * runs between blocks, a leading BOM, and any trailing bytes belonged to no
+ * record at all. A serializer built on that would have silently normalized
+ * every one of them — one blank line where the author left three, a lost hard
+ * break, a rewritten line ending.
+ *
+ * Schema 2 attributes every byte. `gap` records carry the runs between blocks,
+ * so concatenating all record spans in source order reproduces the input byte
+ * for byte, which is a property a test can check without reference to the
+ * parser that produced it.
+ *
+ * A gap is *not* protected: mdfix's list-spacing fixes insert and remove blank
+ * lines, so claiming it reproduces them byte for byte would be false.
+ */
+static long long ir_cursor;      /* first byte not yet attributed to a record */
+static int       ir_prev_last;   /* 0-based last line of the previous record */
+
+static void ir_gap(FILE *out, long long from, long long to, int line, int end_line)
+{
+    if (to <= from)
+        return;
+    if (line < 1)
+        line = 1;
+    if (end_line < line)
+        end_line = line;
+    fprintf(out,
+        "{\"kind\":\"gap\",\"start\":%lld,\"end\":%lld,"
+        "\"line\":%d,\"endLine\":%d,\"protected\":false}\n",
+        from, to, line, end_line);
+}
+
 static void ir_open(FILE *out, const char *kind, int i0, int i1, int protectd)
 {
+    /*
+     * Everything between the previous record and this one. The first gap byte
+     * is the terminator of the previous record's last line; the last is the
+     * terminator of the line before this record starts.
+     */
+    ir_gap(out, ir_cursor, line_off[i0], ir_prev_last + 2, i0);
     fprintf(out,
         "{\"kind\":\"%s\",\"start\":%lld,\"end\":%lld,"
         "\"line\":%d,\"endLine\":%d,\"protected\":%s",
@@ -989,6 +1029,8 @@ static void ir_open(FILE *out, const char *kind, int i0, int i1, int protectd)
         line_off[i1] + line_bytes[i1],
         i0 + 1, i1 + 1,
         protectd ? "true" : "false");
+    ir_cursor = line_off[i1] + line_bytes[i1];
+    ir_prev_last = i1;
 }
 
 static void ir_block(FILE *out, const char *kind, int i0, int i1, int protectd)
@@ -1352,6 +1394,12 @@ static void emit_ir(FILE *out, const char *source)
     int had_blank = 1;
     int i = 0;
 
+    /* Byte 0 onwards is unattributed until the first record claims it; a
+     * leading BOM is the usual occupant. ir_prev_last = -1 makes the first
+     * gap report line 1. */
+    ir_cursor = 0;
+    ir_prev_last = -1;
+
     /* Front matter: only the very first line can open it, and an unclosed
      * block runs to EOF — both exactly as process() treats it. */
     if (nlines > 0 && is_fmatter_delim(lines[0])) {
@@ -1661,6 +1709,10 @@ static void emit_ir(FILE *out, const char *source)
             had_blank = 0;
         }
     }
+
+    /* Whatever is left: the final terminator, trailing blank lines, or the
+     * whole file when it contains no blocks at all. */
+    ir_gap(out, ir_cursor, src_bytes, ir_prev_last + 2, nlines);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
