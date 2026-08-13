@@ -66,6 +66,7 @@
 #include <ctype.h>
 #include "vendor/utf_width.h"
 #include "vendor/utf_nfc.h"
+#include "vendor/utf_word.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -73,14 +74,14 @@
 #include <unistd.h>
 
 
-#line 77 "mdfix.c"
+#line 78 "mdfix.c"
 static const int mdfix_scanner_start = 14;
 static const int mdfix_scanner_error = -1;
 
 static const int mdfix_scanner_en_main = 14;
 
 
-#line 76 "mdfix.rl"
+#line 77 "mdfix.rl"
 
 
 #define MAX_LINE  8192
@@ -1397,36 +1398,65 @@ static void dest_bare(const char *s, int len, int *off, int *out_len)
 }
 
 /*
- * Word-ish for the intraword-underscore rule, UTF-8 aware.
+ * Start of the code point ending at `at`, or -1 if there is none.
  *
- * Byte-based isalnum treats every multibyte letter as punctuation, so
- * `漢字_の_強調` lost its underscores. Any lead/continuation byte counts as
- * word-ish here so CJK/Greek/Cyrillic keep intraword underscores like Pandoc.
- * Symbols above U+007F are over-accepted (one-sided: keep text rather than
- * delete); proper classification needs Unicode tables, not mdfix.rl.
+ * Continuation bytes are 10xxxxxx, so walking back past them lands on the
+ * lead byte. Bounded by `from` so a malformed sequence cannot walk out of
+ * the buffer.
  */
-static int is_wordish_byte(unsigned char c)
+static int utf8_prev_start(const char *s, int from, int at)
 {
-    return isalnum(c) || c >= 0x80;
+    if (at <= from)
+        return -1;
+    int k = at - 1;
+    while (k > from && ((unsigned char)s[k] & 0xC0) == 0x80)
+        k--;
+    return k;
+}
+
+/*
+ * Is the code point starting at `at` a word character?
+ *
+ * `mdfix_is_word` is Unicode's answer — Alphabetic + Nd + Mn + Mc, from the
+ * table libutf grew for exactly these two call sites (brazilofmux/utf#3).
+ * Both used to approximate it as "any byte >= 0x80", which kept
+ * `漢字_の_強調` literal but also called `。@key` an email address.
+ *
+ * Pc is *not* in the set, and that is what this call site needs: the
+ * intraword-underscore rule is deciding about the underscore, and Pandoc
+ * agrees — `_@key` is a citation, so `_` does not make the `@` an address.
+ */
+static int is_word_at(const char *s, int at, int end)
+{
+    if (at < 0 || at >= end)
+        return 0;
+    return mdfix_is_word((const unsigned char *)s + at,
+                         (const unsigned char *)s + end);
 }
 
 /* Emphasis flanking, simplified from CommonMark. `_` additionally refuses to
- * open after, or close before, an alphanumeric — that is +intraword_underscores,
- * which keeps `a_b_c` and `漢字_の_強調` literal. */
-static int emphasis_can_open(char marker, unsigned char before, unsigned char after)
+ * open after, or close before, a word character — that is
+ * +intraword_underscores, which keeps `a_b_c` and `漢字_の_強調` literal. */
+static int emphasis_can_open(char marker, const char *s, int from, int at,
+                             int after_at, int end)
 {
+    unsigned char after = (after_at < end) ? (unsigned char)s[after_at] : '\0';
     if (after == '\0' || after == ' ' || after == '\t')
         return 0;
-    if (marker == '_' && is_wordish_byte(before))
+    if (marker == '_' && is_word_at(s, utf8_prev_start(s, from, at), end))
         return 0;
     return 1;
 }
 
-static int emphasis_can_close(char marker, unsigned char before, unsigned char after)
+static int emphasis_can_close(char marker, const char *s, int from, int at,
+                              int after_at, int end)
 {
+    (void)at;
+    unsigned char before = (utf8_prev_start(s, from, at) >= 0)
+                         ? (unsigned char)s[utf8_prev_start(s, from, at)] : '\0';
     if (before == '\0' || before == ' ' || before == '\t')
         return 0;
-    if (marker == '_' && is_wordish_byte(after))
+    if (marker == '_' && is_word_at(s, after_at, end))
         return 0;
     return 1;
 }
@@ -1510,10 +1540,10 @@ static size_t inline_plain_range(const char *src, int from, int to,
             int run = 0;
             while (i + run < to && src[i + run] == marker)
                 run++;
-            unsigned char before = (i > from) ? (unsigned char)src[i - 1] : '\0';
-            unsigned char after = (i + run < to) ? (unsigned char)src[i + run] : '\0';
-            int can_open = emphasis_can_open(marker, before, after);
-            int can_close = emphasis_can_close(marker, before, after);
+            int can_open = emphasis_can_open(marker, src, from, i,
+                                             i + run, to);
+            int can_close = emphasis_can_close(marker, src, from, i,
+                                               i + run, to);
 
             int matched = -1;
             if (can_close) {
@@ -1802,15 +1832,29 @@ static int citation_key_len(const char *s)
     return i;
 }
 
-/* A word character or `.` before `@` makes an email, not a citation.
- * `c >= 0x80` matches is_wordish_byte: miss `。@key` rather than invent
- * after a real letter. */
+/*
+ * A word character or `.` before `@` makes an email, not a citation.
+ *
+ * Unicode's answer now, not a byte test: `café@x`, `текст@key` and `用户@host`
+ * are addresses, while `。@key`, `—@key` and `”@key` are citations. The old
+ * `>= 0x80` approximation got the first group right and the second wrong,
+ * because it could not tell a letter from a full-width stop.
+ *
+ * `_` is not a word character here, and Pandoc agrees — `_@key` and `a_@key`
+ * are both citations. That is why libutf keeps Pc out of `utf_is_word` and
+ * exposes it separately.
+ */
 static int citation_follows_word(const char *text, int at)
 {
     if (at <= 0)
         return 0;
-    unsigned char c = (unsigned char)text[at - 1];
-    return is_wordish_byte(c) || c == '.';
+    if (text[at - 1] == '.')
+        return 1;
+    int prev = utf8_prev_start(text, 0, at);
+    if (prev < 0)
+        return 0;
+    return mdfix_is_word((const unsigned char *)text + prev,
+                         (const unsigned char *)text + at);
 }
 
 /* Does the bracket opening at `at` hold at least one citation key?
@@ -4273,7 +4317,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 4277 "mdfix.c"
+#line 4321 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -4281,20 +4325,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 4285 "mdfix.c"
+#line 4329 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 4671 "mdfix.rl"
+#line 4715 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 4421 "mdfix.rl"
+#line 4465 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -4334,7 +4378,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 4297 "mdfix.rl"
+#line 4341 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial || ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -4371,19 +4415,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 4290 "mdfix.rl"
+#line 4334 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 4290 "mdfix.rl"
+#line 4334 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 4606 "mdfix.rl"
+#line 4650 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -4407,7 +4451,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 4651 "mdfix.rl"
+#line 4695 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -4428,7 +4472,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 4629 "mdfix.rl"
+#line 4673 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -4451,13 +4495,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 4671 "mdfix.rl"
+#line 4715 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 4551 "mdfix.rl"
+#line 4595 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -4480,7 +4524,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 4463 "mdfix.rl"
+#line 4507 "mdfix.rl"
 	{te = p+1;{
                 /*
                  * Either Chicago flag answers "is this run an ellipsis?"
@@ -4531,13 +4575,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 4671 "mdfix.rl"
+#line 4715 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 4513 "mdfix.rl"
+#line 4557 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -4576,7 +4620,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 4573 "mdfix.rl"
+#line 4617 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -4610,7 +4654,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 4359 "mdfix.rl"
+#line 4403 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4623,7 +4667,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 4333 "mdfix.rl"
+#line 4377 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4637,7 +4681,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 4371 "mdfix.rl"
+#line 4415 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4650,7 +4694,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 4346 "mdfix.rl"
+#line 4390 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4664,7 +4708,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 4383 "mdfix.rl"
+#line 4427 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -4703,7 +4747,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 4290 "mdfix.rl"
+#line 4334 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -4716,7 +4760,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 4720 "mdfix.c"
+#line 4764 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -4742,7 +4786,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 4746 "mdfix.c"
+#line 4790 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -4786,7 +4830,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 4790 "mdfix.c"
+#line 4834 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -4835,7 +4879,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 4839 "mdfix.c"
+#line 4883 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -4854,7 +4898,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 4858 "mdfix.c"
+#line 4902 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -4880,7 +4924,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 4884 "mdfix.c"
+#line 4928 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -4929,7 +4973,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 4933 "mdfix.c"
+#line 4977 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -5009,7 +5053,7 @@ case 13:
 
 	}
 
-#line 4678 "mdfix.rl"
+#line 4722 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';

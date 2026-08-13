@@ -64,6 +64,7 @@
 #include <ctype.h>
 #include "vendor/utf_width.h"
 #include "vendor/utf_nfc.h"
+#include "vendor/utf_word.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -1389,36 +1390,65 @@ static void dest_bare(const char *s, int len, int *off, int *out_len)
 }
 
 /*
- * Word-ish for the intraword-underscore rule, UTF-8 aware.
+ * Start of the code point ending at `at`, or -1 if there is none.
  *
- * Byte-based isalnum treats every multibyte letter as punctuation, so
- * `漢字_の_強調` lost its underscores. Any lead/continuation byte counts as
- * word-ish here so CJK/Greek/Cyrillic keep intraword underscores like Pandoc.
- * Symbols above U+007F are over-accepted (one-sided: keep text rather than
- * delete); proper classification needs Unicode tables, not mdfix.rl.
+ * Continuation bytes are 10xxxxxx, so walking back past them lands on the
+ * lead byte. Bounded by `from` so a malformed sequence cannot walk out of
+ * the buffer.
  */
-static int is_wordish_byte(unsigned char c)
+static int utf8_prev_start(const char *s, int from, int at)
 {
-    return isalnum(c) || c >= 0x80;
+    if (at <= from)
+        return -1;
+    int k = at - 1;
+    while (k > from && ((unsigned char)s[k] & 0xC0) == 0x80)
+        k--;
+    return k;
+}
+
+/*
+ * Is the code point starting at `at` a word character?
+ *
+ * `mdfix_is_word` is Unicode's answer — Alphabetic + Nd + Mn + Mc, from the
+ * table libutf grew for exactly these two call sites (brazilofmux/utf#3).
+ * Both used to approximate it as "any byte >= 0x80", which kept
+ * `漢字_の_強調` literal but also called `。@key` an email address.
+ *
+ * Pc is *not* in the set, and that is what this call site needs: the
+ * intraword-underscore rule is deciding about the underscore, and Pandoc
+ * agrees — `_@key` is a citation, so `_` does not make the `@` an address.
+ */
+static int is_word_at(const char *s, int at, int end)
+{
+    if (at < 0 || at >= end)
+        return 0;
+    return mdfix_is_word((const unsigned char *)s + at,
+                         (const unsigned char *)s + end);
 }
 
 /* Emphasis flanking, simplified from CommonMark. `_` additionally refuses to
- * open after, or close before, an alphanumeric — that is +intraword_underscores,
- * which keeps `a_b_c` and `漢字_の_強調` literal. */
-static int emphasis_can_open(char marker, unsigned char before, unsigned char after)
+ * open after, or close before, a word character — that is
+ * +intraword_underscores, which keeps `a_b_c` and `漢字_の_強調` literal. */
+static int emphasis_can_open(char marker, const char *s, int from, int at,
+                             int after_at, int end)
 {
+    unsigned char after = (after_at < end) ? (unsigned char)s[after_at] : '\0';
     if (after == '\0' || after == ' ' || after == '\t')
         return 0;
-    if (marker == '_' && is_wordish_byte(before))
+    if (marker == '_' && is_word_at(s, utf8_prev_start(s, from, at), end))
         return 0;
     return 1;
 }
 
-static int emphasis_can_close(char marker, unsigned char before, unsigned char after)
+static int emphasis_can_close(char marker, const char *s, int from, int at,
+                              int after_at, int end)
 {
+    (void)at;
+    unsigned char before = (utf8_prev_start(s, from, at) >= 0)
+                         ? (unsigned char)s[utf8_prev_start(s, from, at)] : '\0';
     if (before == '\0' || before == ' ' || before == '\t')
         return 0;
-    if (marker == '_' && is_wordish_byte(after))
+    if (marker == '_' && is_word_at(s, after_at, end))
         return 0;
     return 1;
 }
@@ -1502,10 +1532,10 @@ static size_t inline_plain_range(const char *src, int from, int to,
             int run = 0;
             while (i + run < to && src[i + run] == marker)
                 run++;
-            unsigned char before = (i > from) ? (unsigned char)src[i - 1] : '\0';
-            unsigned char after = (i + run < to) ? (unsigned char)src[i + run] : '\0';
-            int can_open = emphasis_can_open(marker, before, after);
-            int can_close = emphasis_can_close(marker, before, after);
+            int can_open = emphasis_can_open(marker, src, from, i,
+                                             i + run, to);
+            int can_close = emphasis_can_close(marker, src, from, i,
+                                               i + run, to);
 
             int matched = -1;
             if (can_close) {
@@ -1794,15 +1824,29 @@ static int citation_key_len(const char *s)
     return i;
 }
 
-/* A word character or `.` before `@` makes an email, not a citation.
- * `c >= 0x80` matches is_wordish_byte: miss `。@key` rather than invent
- * after a real letter. */
+/*
+ * A word character or `.` before `@` makes an email, not a citation.
+ *
+ * Unicode's answer now, not a byte test: `café@x`, `текст@key` and `用户@host`
+ * are addresses, while `。@key`, `—@key` and `”@key` are citations. The old
+ * `>= 0x80` approximation got the first group right and the second wrong,
+ * because it could not tell a letter from a full-width stop.
+ *
+ * `_` is not a word character here, and Pandoc agrees — `_@key` and `a_@key`
+ * are both citations. That is why libutf keeps Pc out of `utf_is_word` and
+ * exposes it separately.
+ */
 static int citation_follows_word(const char *text, int at)
 {
     if (at <= 0)
         return 0;
-    unsigned char c = (unsigned char)text[at - 1];
-    return is_wordish_byte(c) || c == '.';
+    if (text[at - 1] == '.')
+        return 1;
+    int prev = utf8_prev_start(text, 0, at);
+    if (prev < 0)
+        return 0;
+    return mdfix_is_word((const unsigned char *)text + prev,
+                         (const unsigned char *)text + at);
 }
 
 /* Does the bracket opening at `at` hold at least one citation key?

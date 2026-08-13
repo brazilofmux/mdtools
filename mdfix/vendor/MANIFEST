@@ -1,0 +1,19 @@
+# Fingerprints for the vendored libutf extracts.
+#
+# `tests/test_vendor_manifest.py` checks these on every run. "VENDORED, DO NOT
+# EDIT" is a comment, and a comment stops nobody: a hand-edit to fix something
+# locally, or a re-extraction that ran against a dirty tree, both look exactly
+# like the file that was reviewed. This is what makes them look different.
+#
+# It does not check the copy against libutf — that needs libutf present, and
+# these files exist so a build does not. It checks that the bytes are the ones
+# somebody verified, which is the part that erodes silently.
+#
+# Refreshing is meant to be deliberate: re-extract, run the oracle sweep in
+# docs/vendoring.md against the real library, then update this file in the
+# same commit as the extract.
+#
+# sha256  file  upstream-commit
+2025afc874e8230c83d3e154d79104ba3ce7592ad2e31d660fcc9785f4dfadaf  utf_width.c  8ad858510181
+9c11fba2c05c59cc3bbf661d284a05e69e0d8a2455b30b9917563e1ccaf71014  utf_nfc.c  d3f660a
+d446f5c9736728db703d7d2c7cee4cd6d49c4d3e96befb5d15f5360726341737  utf_word.c  3d4cdaf
