@@ -261,8 +261,10 @@ class TotalityTests(IRTestCase):
                 self.assertEqual(cursor, len(data))
 
     def test_hard_breaks_are_inside_a_record(self) -> None:
-        # dialect-policy §7 gap 5: two trailing spaces are a hard break, and
-        # a serializer must be able to see them to preserve them.
+        # Two trailing spaces are a hard break, and a serializer must be
+        # able to see them to preserve them — the fixers now do
+        # (dialect-policy §7, gap closed), and a serializer will need the
+        # same bytes.
         data = b"line one  \nline two\n"
         records = [r for r in self._ir_raw(data)[1:] if not r.get("depth")]
         joined = b"".join(data[r["start"]:r["end"]] for r in records)

@@ -3244,52 +3244,103 @@ static void lint_serial_comma(const char *line, int linenum)
     }
 }
 
-/*
- * Fix 5: Normalize trailing whitespace (opt-in via -w).
- *
- * In markdown, a single trailing space is a deliberate line break.
- * So we don't nuke all trailing whitespace — instead we:
- *   - Strip all trailing tabs
- *   - Collapse multiple trailing spaces down to at most one
- * Net effect: intentional line breaks survive, sloppy whitespace doesn't.
- */
-static int fix_trailing_ws(char *line, int linenum)
+/* Trailing tab: leave the line alone — expansion depends on width and
+ * --tab-stop, which the fixer must not encode. */
+static int trailing_has_tab(const char *line)
 {
-    (void)linenum;
+    int len = (int)strlen(line);
+    int k = len;
+    while (k > 0 && (line[k - 1] == ' ' || line[k - 1] == '\t'))
+        k--;
+    if (k == 0)
+        return 0;                  /* whitespace-only: a blank line */
+    for (int j = k; j < len; j++)
+        if (line[j] == '\t')
+            return 1;
+    return 0;
+}
+
+/* Two+ trailing spaces, some content, and a following content line.
+ * index < 0 keeps the break (conservative). */
+static int is_hard_break(const char *line, int index)
+{
+    int len = (int)strlen(line);
+    if (len < 3 || line[len - 1] != ' ' || line[len - 2] != ' ')
+        return 0;
+
+    int k = len;
+    while (k > 0 && (line[k - 1] == ' ' || line[k - 1] == '\t'))
+        k--;
+    if (k == 0)
+        return 0;
+
+    if (index < 0)
+        return 1;
+    if (index + 1 >= nlines)
+        return 0;
+    const char *next = lines[index + 1];
+    while (*next == ' ' || *next == '\t')
+        next++;
+    return *next != '\0';
+}
+
+/* Odd-length trailing backslash run: `foo\ ` is a literal `\`, not a break. */
+static int ends_with_unescaped_backslash(const char *line, int content_len)
+{
+    int n = 0;
+    while (content_len > 0 && line[content_len - 1] == '\\') {
+        n++;
+        content_len--;
+    }
+    return n % 2 == 1;
+}
+
+static int fix_trailing_ws(char *line, int linenum, int index)
+{
     if (!opt_trail_ws)
         return 0;
+    if (trailing_has_tab(line))
+        return 0;
+
+    if (is_hard_break(line, index)) {
+        /* Normalize to exactly two: the break survives, and a five-space
+         * ending stops being five bytes nobody can see. */
+        int len = (int)strlen(line);
+        int orig = len;
+        while (len > 0 && (line[len - 1] == ' ' || line[len - 1] == '\t'))
+            len--;
+        line[len] = ' ';
+        line[len + 1] = ' ';
+        line[len + 2] = '\0';
+        if (len + 2 != orig)
+            record_fix(FIX_TRAILING_WS, linenum);
+        return len + 2 != orig;
+    }
 
     int len = (int)strlen(line);
     int orig = len;
 
-    /* Strip all trailing whitespace first */
     while (len > 0 && (line[len - 1] == ' ' || line[len - 1] == '\t'))
         len--;
 
     if (len == orig)
-        return 0;   /* nothing to do */
+        return 0;
 
-    /* Count how many trailing spaces (not tabs) we had */
-    int trailing_spaces = 0;
-    for (int j = len; j < orig; j++) {
-        if (line[j] == ' ')
-            trailing_spaces++;
-    }
-
-    /* If there were any spaces, preserve exactly one */
-    if (trailing_spaces > 0) {
+    /* Keep one space after an unescaped `\`: stripping it makes
+     * `foo\ \nbar` into an escaped LineBreak under +escaped_line_breaks. */
+    if (ends_with_unescaped_backslash(line, len) && orig > len
+        && line[len] == ' ') {
         line[len] = ' ';
         line[len + 1] = '\0';
-    } else {
-        line[len] = '\0';
-    }
-
-    /* Only count as a fix if we actually changed something */
-    if ((int)strlen(line) != orig) {
+        if (len + 1 == orig)
+            return 0;
         record_fix(FIX_TRAILING_WS, linenum);
         return 1;
     }
-    return 0;
+
+    line[len] = '\0';
+    record_fix(FIX_TRAILING_WS, linenum);
+    return 1;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -3329,14 +3380,18 @@ static int display_columns(const char *text, int from, int to)
  * Wrap on display columns (mdfix_display_width): break only at ASCII spaces.
  * Unspaced tokens (including CJK without spaces) are not split.
  */
-static void emit_wrapped(FILE *out, const char *text, int width)
+static void emit_wrapped_break(FILE *out, const char *text, int width,
+                               int hard)
 {
     int len = (int)strlen(text);
     int pos = 0;
 
+    /* `hard` puts the two spaces back on the *last* line this unit emits, not
+     * on the first. Wrapping may turn one source line into several, and a
+     * break belongs where the author put it — at the end. */
     while (pos < len) {
         if (display_columns(text, pos, len) <= width) {
-            fprintf(out, "%s\n", text + pos);
+            fprintf(out, "%s%s\n", text + pos, hard ? "  " : "");
             return;
         }
 
@@ -3359,7 +3414,7 @@ static void emit_wrapped(FILE *out, const char *text, int width)
             while (break_at < len && text[break_at] != ' ')
                 break_at += utf8_cp_len(text, break_at, len);
             if (break_at >= len) {
-                fprintf(out, "%s\n", text + pos);
+                fprintf(out, "%s%s\n", text + pos, hard ? "  " : "");
                 return;
             }
         }
@@ -3403,19 +3458,39 @@ static void flush_paragraph(FILE *out)
     for (int i = 0; i < npara; i++) {
         const char *s = para_lines_buf[i];
         int slen = (int)strlen(s);
-        /* Trim trailing whitespace before joining */
+
+        /* Trailing tab: emit verbatim so its column (and tab-stop) stay. */
+        if (trailing_has_tab(s)) {
+            if (pos > 0) {
+                joined[pos] = '\0';
+                emit_wrapped_break(out, joined, opt_wrap_width, 0);
+                pos = 0;
+            }
+            fprintf(out, "%s\n", s);
+            continue;
+        }
+
+        /* Hard break ends the wrap unit. index unknown → conservative. */
+        int hard = (i < npara - 1) && is_hard_break(s, -1);
+
         while (slen > 0 && (s[slen - 1] == ' ' || s[slen - 1] == '\t'))
             slen--;
+        /* Keep one space after `\` when this fragment is emitted as a line
+         * end; a join space already protects a mid-paragraph `\`. */
+        int will_flush = (i == npara - 1 || hard
+                          || !should_join(s, opt_wrap_width));
+        if (!hard && will_flush && ends_with_unescaped_backslash(s, slen)
+            && slen < (int)strlen(s) && s[slen] == ' ')
+            slen++;
 
         if (pos + slen >= MAX_PARA)
             slen = MAX_PARA - pos - 1;
         memcpy(joined + pos, s, slen);
         pos += slen;
 
-        /* If this line is short or is the last, flush the accumulated text */
-        if (i == npara - 1 || !should_join(s, opt_wrap_width)) {
+        if (will_flush) {
             joined[pos] = '\0';
-            emit_wrapped(out, joined, opt_wrap_width);
+            emit_wrapped_break(out, joined, opt_wrap_width, hard);
             pos = 0;
         } else {
             /* Join with next line via space */
@@ -4406,7 +4481,7 @@ static void process(FILE *out)
         if (!fence.active && fmatter_close > 0) {
             if (i == 0) {
                 in_frontmatter = 1;
-                fix_trailing_ws(line, i + 1);
+                fix_trailing_ws(line, i + 1, i);
                 fprintf(out, "%s\n", line);
                 prev_content_type = LT_TEXT;
                 had_blank = 0;
@@ -4414,7 +4489,7 @@ static void process(FILE *out)
             }
             if (i == fmatter_close) {
                 in_frontmatter = 0;
-                fix_trailing_ws(line, i + 1);
+                fix_trailing_ws(line, i + 1, i);
                 fprintf(out, "%s\n", line);
                 prev_content_type = LT_TEXT;
                 had_blank = 0;
@@ -4426,7 +4501,7 @@ static void process(FILE *out)
 
         /* ── Inside frontmatter: pass through, just trim whitespace ── */
         if (in_frontmatter) {
-            fix_trailing_ws(line, i + 1);
+            fix_trailing_ws(line, i + 1, i);
             fprintf(out, "%s\n", line);
             continue;
         }
@@ -4452,7 +4527,7 @@ static void process(FILE *out)
             if (is_fence_closer(line, &fence)) {
                 fix_fence_canonical(line, i + 1, 0);
                 fence.active = 0;
-                fix_trailing_ws(line, i + 1);
+                fix_trailing_ws(line, i + 1, i);
             }
             fprintf(out, "%s\n", line);
             continue;
@@ -4477,7 +4552,7 @@ static void process(FILE *out)
             fix_fence_canonical(line, i + 1, 1);
             opener.open_line = i + 1;
             fence = opener;
-            fix_trailing_ws(line, i + 1);
+            fix_trailing_ws(line, i + 1, i);
             fprintf(out, "%s\n", line);
             /* Not LT_TEXT: indented code may follow a fence with no blank. */
             prev_content_type = LT_CODEFENCE;
@@ -4723,7 +4798,7 @@ static void process(FILE *out)
         apply_scanner(line, i + 1);
 
         /* Apply post-scanner C fixers */
-        fix_trailing_ws(line, i + 1);
+        fix_trailing_ws(line, i + 1, i);
         fix_bullet(line, i + 1);
         fix_heading_fmt(line, i + 1);
         fix_heading_space(line, i + 1);

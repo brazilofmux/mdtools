@@ -191,7 +191,8 @@ class SlugTests(unittest.TestCase):
 
     def test_ascii_shorthand_is_folded_first(self) -> None:
         # +smart is pinned by §3, so Pandoc folds these before slugging and
-        # then drops them. §7 gap 6 means mdfix can still emit ASCII `...`.
+        # then drops them. The remaining Chicago-ellipsis gap in §7 means
+        # mdfix can still emit ASCII `...`.
         self.assertEqual(slugify("A--B"), "ab")
         self.assertEqual(slugify("A---B"), "ab")
         self.assertEqual(slugify("Ellipsis..."), "ellipsis")

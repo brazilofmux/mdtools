@@ -252,10 +252,15 @@ flag. `--editorial` turns on the editorial set; `--canonical` and
 
 Things that are easy to write and will not mean what you expect.
 
-**Two trailing spaces are a hard break** — and `-w`, `--canonical`, `--wrap`
-and `--technical` all collapse them, turning the hard break into a soft one
-(dialect-policy §7 gap 5). Until hard-break preservation is fixed, use an
-explicit `<br>` if the break matters.
+**Two trailing spaces are a hard break**, and every pass preserves one — a
+longer run is normalized to exactly two, and `--wrap` puts them on the last
+line it emits rather than joining across the break. You can write one and
+expect it to survive.
+
+The exception is a **trailing tab**. Pandoc expands it to the next tab stop,
+so whether it means a break depends on how wide the line is and on
+`--tab-stop`; mdfix will not guess, so it leaves those lines exactly as it
+found them and `-w` does not clean them up. Write two spaces.
 
 **Unspaced CJK will not wrap.** `--wrap` measures display columns, so Greek,
 Cyrillic and mixed scripts fill the line properly and a wide character counts
