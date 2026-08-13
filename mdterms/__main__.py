@@ -17,11 +17,11 @@ from typing import List, Optional, Sequence
 from mdquery.ir import IRError
 from mdtools_cli.contract import (
     FINDINGS, OK, USAGE, add_common, add_verbs, apply_edits, fail,
-    resolve_config, resolve_mdfix, write_edits,
+    resolve_config, resolve_mdfix, sarif, write_edits,
 )
 from mdtools_cli.config import ConfigError
 
-from .check import edits_for, scan
+from .check import edits_for, scan, usage
 from .glossary import GlossaryError, find, freeze_set, load
 
 
@@ -33,6 +33,14 @@ def _parser() -> argparse.ArgumentParser:
                "block, table or link definition is left alone.",
     )
     parser.add_argument("files", nargs="*", type=Path)
+    # Deliberately outside the output group below: --report is a different
+    # question, not a different format, so `--report --diagnostics` composes
+    # and gives the same table as JSONL.
+    parser.add_argument(
+        "--report", action="store_true",
+        help="repository consistency: which files use each term, and which "
+             "introduce it. Combines with --diagnostics for JSONL",
+    )
     parser.add_argument(
         "--glossary", type=Path, metavar="PATH",
         help="glossary_terms.yaml (default: mdtools.toml, then walk up "
@@ -50,6 +58,10 @@ def _parser() -> argparse.ArgumentParser:
         help="write an edit list for `mdfix --apply-edits` on stdout",
     )
     out.add_argument(
+        "--sarif", action="store_true",
+        help="SARIF 2.1.0 on stdout, for a CI system that ingests it",
+    )
+    out.add_argument(
         "--freeze", action="store_true",
         help="print the freeze set — every spelling prosevary must preserve",
     )
@@ -58,6 +70,15 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parser().parse_args(argv)
+
+    if args.report and (args.edits or args.freeze or args.sarif
+                        or args.fix or args.diff):
+        # Checked before anything else runs: further down, whichever branch
+        # comes first in the source would silently win and the other flag
+        # would look accepted.
+        return fail("mdterms",
+                    "--report describes the corpus; it does not produce "
+                    "edits, a freeze set, SARIF or repairs")
 
     start = args.files[0] if args.files else None
     try:
@@ -98,6 +119,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if missing:
         return USAGE
 
+    if args.report:
+        # Describe the corpus; do not scan for findings first (that would
+        # walk the IR twice) and do not gate.
+        try:
+            rows = usage(args.files, terms, mdfix)
+        except IRError as exc:
+            return fail("mdterms", str(exc))
+        if args.diagnostics:
+            for row in rows:
+                print(json.dumps(row, ensure_ascii=False))
+        else:
+            for row in rows:
+                where = ", ".join(row["used_in"]) or "nowhere"
+                print(f"{row['term']}: used in {where}")
+                if row["expansion"]:
+                    intro = ", ".join(row["introduced_in"]) or "nowhere"
+                    print(f"  introduced in {intro}")
+        return OK
+
     findings = []
     try:
         for path in args.files:
@@ -134,6 +174,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         for finding in remaining:
             print(f"{finding.path}:{finding.line}: {finding.message}")
         return FINDINGS if remaining else OK
+
+    if args.sarif:
+        print(json.dumps(sarif("mdterms", findings), indent=2))
+        return FINDINGS if findings else OK
 
     if args.diagnostics:
         for finding in findings:

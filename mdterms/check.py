@@ -173,11 +173,86 @@ def _in_span(pos: int, spans: Sequence[tuple]) -> bool:
     return any(a <= pos < b for a, b in spans)
 
 
+def _ends_as_words(head: str, wanted: str) -> bool:
+    """True if `head` ends with `wanted` as whole words, not a suffix."""
+    if not head.endswith(wanted):
+        return False
+    if len(head) == len(wanted):
+        return True
+    return not head[len(head) - len(wanted) - 1].isalnum()
+
+
+def _expansion_then_term(text: str, start: int, expansion: str,
+                         term: str, case_sensitive: bool) -> bool:
+    """True if `text[start:]` is `expansion (TERM)` (this match starts it)."""
+    i = start
+    n = len(text)
+    for word in expansion.split():
+        while i < n and text[i].isspace():
+            i += 1
+        if text[i:i + len(word)].casefold() != word.casefold():
+            return False
+        i += len(word)
+    while i < n and text[i].isspace():
+        i += 1
+    if i >= n or text[i] != "(":
+        return False
+    i += 1
+    got = text[i:i + len(term)]
+    if case_sensitive:
+        if got != term:
+            return False
+    elif got.casefold() != term.casefold():
+        return False
+    i += len(term)
+    return i < n and text[i] == ")"
+
+
+def _introduces(text: str, start: int, end: int, expansion: str,
+                term: str, case_sensitive: bool) -> bool:
+    """
+    Is the occurrence at [start, end) part of an introduction?
+
+    Two shapes, and only two:
+
+        intermediate representation (IR)      expansion, then the term
+        IR (intermediate representation)      the term, then the expansion
+
+    The first match of the term may be a word *inside* the expansion
+    (YAML / YAML Ain't Markup Language). That still counts as shape 1.
+    """
+    wanted = " ".join(expansion.split()).casefold()
+
+    before = text[:start].rstrip()
+    if before.endswith("("):
+        head = " ".join(before[:-1].split()).casefold()
+        if _ends_as_words(head, wanted):
+            return True
+
+    after = text[end:].lstrip()
+    if after.startswith("("):
+        close = after.find(")")
+        if close > 0:
+            inner = " ".join(after[1:close].split()).casefold()
+            if inner == wanted:
+                return True
+
+    if _expansion_then_term(text, start, expansion, term, case_sensitive):
+        return True
+    return False
+
+
 def scan(path: Path, terms: Sequence[Term],
          mdfix: str | None = None) -> List[Finding]:
     """Every terminology violation in the prose of `path`."""
     data = path.read_bytes()
     findings: List[Finding] = []
+    terms = [t for t in terms if t.applies_to(path)]
+
+    # First prose use of each term needing an introduction, in document
+    # order, with whether that use introduced it. Collected during the walk
+    # and judged after, because "first" is only knowable once the walk ends.
+    first_use: dict = {}
 
     for record in raw_records([path], mdfix):
         if record.get("kind") not in PROSE_KINDS:
@@ -186,6 +261,25 @@ def scan(path: Path, terms: Sequence[Term],
         protected = _protected_spans(chunk)
 
         for term in terms:
+            if term.expansion and term.term not in first_use:
+                for match in _word_pattern(
+                        term.term, term.case_sensitive).finditer(chunk):
+                    # A term inside inline code or a URL is not prose use, so
+                    # it neither counts as a first use nor introduces one.
+                    if _in_span(match.start(), protected):
+                        continue
+                    prefix = chunk[:match.start()].encode("utf-8")
+                    first_use[term.term] = (
+                        term,
+                        record["start"] + len(prefix),
+                        len(match.group(0).encode("utf-8")),
+                        record["line"] + chunk[:match.start()].count("\n"),
+                        _introduces(chunk, match.start(), match.end(),
+                                    term.expansion, term.term,
+                                    term.case_sensitive),
+                    )
+                    break
+
             for bad in term.forbidden:
                 for match in _word_pattern(bad, term.case_sensitive).finditer(chunk):
                     # Byte offsets, not character offsets: the IR speaks bytes
@@ -209,8 +303,85 @@ def scan(path: Path, terms: Sequence[Term],
                                     " (inside a protected span; "
                                     "not fixed automatically)")),
                     ))
+    for term, start, length, line, introduced in first_use.values():
+        if introduced:
+            continue
+        findings.append(Finding(
+            path=str(path),
+            rule="terms.undefined-acronym",
+            severity="warning",
+            line=line,
+            start=start,
+            end=start + length,
+            found=term.term,
+            expected=term.term,
+            # Never auto-fixed: introducing a term is a wording decision.
+            fixable=False,
+            message=(f"{term.term!r} is used before it is introduced; "
+                     f"write {term.expansion + ' (' + term.term + ')'!r} "
+                     f"at first use"),
+        ))
+
     findings.sort(key=lambda f: (f.start, f.end))
     return findings
+
+
+def usage(paths: Sequence[Path], terms: Sequence[Term],
+          mdfix: str | None = None) -> List[dict]:
+    """
+    Which documents use which terms, and which introduce them (#16).
+
+    The consistency question a per-file report cannot answer: a term
+    introduced in one chapter and assumed in the next reads fine in isolation
+    and badly in order. This says where each term appears and where its
+    expansion was actually written out, so the gap is visible at a glance.
+
+    Counts prose uses only — a term in a code span is not the reader meeting
+    the word.
+    """
+    # One IR walk per file (not per term). introduced_in follows scan():
+    # only the first prose use may count as the introduction.
+    by_term = {
+        t.term: {"used_in": [], "introduced_in": [], "expansion": t.expansion}
+        for t in terms
+    }
+    for path in paths:
+        applicable = [t for t in terms if t.applies_to(path)]
+        if not applicable:
+            continue
+        data = path.read_bytes()
+        hits = {t.term: 0 for t in applicable}
+        first: dict = {}
+        for record in raw_records([path], mdfix):
+            if record.get("kind") not in PROSE_KINDS:
+                continue
+            chunk = data[record["start"]:record["end"]].decode(
+                "utf-8", "replace")
+            protected = _protected_spans(chunk)
+            for term in applicable:
+                pattern = _word_pattern(term.term, term.case_sensitive)
+                for match in pattern.finditer(chunk):
+                    if _in_span(match.start(), protected):
+                        continue
+                    hits[term.term] += 1
+                    if term.term not in first:
+                        first[term.term] = bool(
+                            term.expansion
+                            and _introduces(chunk, match.start(), match.end(),
+                                            term.expansion, term.term,
+                                            term.case_sensitive))
+        for term in applicable:
+            if hits[term.term]:
+                by_term[term.term]["used_in"].append(str(path))
+            if first.get(term.term):
+                by_term[term.term]["introduced_in"].append(str(path))
+    return [
+        {"kind": "term-usage", "term": name,
+         "expansion": row["expansion"],
+         "used_in": row["used_in"],
+         "introduced_in": row["introduced_in"]}
+        for name, row in by_term.items()
+    ]
 
 
 def edits_for(findings: Iterable[Finding]) -> List[dict]:

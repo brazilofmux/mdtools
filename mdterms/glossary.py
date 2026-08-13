@@ -8,11 +8,16 @@ Extends the schema prosevary already reads, so one file serves both:
         aliases: [Slow-32]         # acceptable; frozen, never rewritten
         forbidden: [SLOW32, slow32]  # rewritten to `term`
         case_sensitive: true       # default; false ignores case when matching
+        expansion: SLOW 32-bit ISA # must introduce the term at first use
+        exempt: ["CHANGELOG.md"]   # glob patterns this term does not apply to
 
 `aliases` and `forbidden` differ in intent and that difference is the point.
 An alias is a spelling you tolerate — prosevary freezes it so a paraphrase
 cannot touch it. A forbidden variant is one you want gone, and mdterms will
 rewrite it.
+
+`expansion` requires the words next to the term at first prose use.
+`exempt` skips a term's rules on matching paths (e.g. a changelog).
 """
 
 from __future__ import annotations
@@ -37,6 +42,34 @@ class Term:
     aliases: List[str] = field(default_factory=list)
     forbidden: List[str] = field(default_factory=list)
     case_sensitive: bool = True
+    # The words the term stands for. When set, a document must introduce the
+    # term the first time it uses it.
+    expansion: str = ""
+    # Glob patterns, matched against the path as given, where this term's
+    # rules do not apply.
+    exempt: List[str] = field(default_factory=list)
+
+    def applies_to(self, path) -> bool:
+        """
+        False where the term is exempt.
+
+        A pattern with no `/` matches the file name only (`CHANGELOG.md`
+        wherever it lives). A pattern with `/` matches a normalized POSIX
+        path (`./` stripped; also as a suffix of a longer path).
+        """
+        import fnmatch
+        posix = Path(path).as_posix()
+        if posix.startswith("./"):
+            posix = posix[2:]
+        name = Path(path).name
+        for pattern in self.exempt:
+            if "/" in pattern:
+                p = pattern[2:] if pattern.startswith("./") else pattern
+                if fnmatch.fnmatch(posix, p) or fnmatch.fnmatch(posix, "*/" + p):
+                    return False
+            elif fnmatch.fnmatch(name, pattern):
+                return False
+        return True
 
     @property
     def frozen(self) -> List[str]:
@@ -85,12 +118,25 @@ def load(path: Path) -> List[Term]:
                 raise GlossaryError(
                     f"{path}: entry {n} has an empty forbidden spelling")
             forbidden.append(s)
+        exempt: List[str] = []
+        for g in entry.get("exempt") or []:
+            s_g = str(g)
+            if not s_g:
+                raise GlossaryError(
+                    f"{path}: entry {n} has an empty exempt pattern")
+            exempt.append(s_g)
+        expansion = str(entry.get("expansion") or "")
         term = Term(
             term=name,
             aliases=aliases,
             forbidden=forbidden,
             case_sensitive=bool(entry.get("case_sensitive", True)),
+            expansion=expansion,
+            exempt=exempt,
         )
+        if expansion and expansion.casefold() == name.casefold():
+            raise GlossaryError(
+                f"{path}: `{name}` expands to itself, which is meaningless")
         # A spelling cannot be both tolerated and forbidden; that would make
         # the fix non-deterministic, and mdterms only applies unambiguous ones.
         #
