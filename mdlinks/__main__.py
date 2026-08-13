@@ -26,7 +26,7 @@ def _parser() -> argparse.ArgumentParser:
         epilog="Anchors follow Pandoc's auto_identifiers, so a link this "
                "accepts is one Pandoc resolves.",
     )
-    parser.add_argument("files", nargs="+", type=Path)
+    parser.add_argument("files", nargs="*", type=Path)
     parser.add_argument("--mdfix", metavar="PATH",
                         help="mdfix binary (default: $MDFIX, sibling, PATH)")
     out = parser.add_mutually_exclusive_group()
@@ -53,8 +53,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parser().parse_args(argv)
 
     # --edits is per document; other positionals are search scope. Include
-    # the target automatically so `mdlinks --edits a.md b.md` works.
+    # the target automatically so `mdlinks --edits a.md b.md` works — and so
+    # `mdlinks --edits a.md` alone works too, which is why `files` is optional
+    # rather than required.
     files = list(args.files)
+    if not files and args.edits is None:
+        print("mdlinks: no input files", file=sys.stderr)
+        return 2
     if args.edits is not None:
         if not args.edits.is_file():
             print(f"mdlinks: {args.edits}: not a file", file=sys.stderr)

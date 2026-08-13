@@ -47,12 +47,21 @@ class Suggestion:
     reason: str = ""
     # True when a unique candidate exists but cannot be written bare.
     unwritable: bool = False
+    # "high" for an exact match, "medium" for a nearest-neighbour one. The
+    # split is exact-versus-fuzzy and nothing finer: an edit-distance winner
+    # is a different *kind* of answer from an identifier that matched, and
+    # there is no ratio between them worth inventing a number for.
+    confidence: str = "high"
 
     @property
     def confident(self) -> bool:
         return self.replacement is not None
 
     def to_edit(self) -> dict:
+        # severity / confidence / explanation are issue #12's edit model.
+        # mdfix does not act on them — it applies a "medium" edit exactly as
+        # it applies a "high" one — but `mdfix --apply-edits --diff` shows
+        # them, so a reviewer sees the judgement rather than a byte range.
         target = self.finding.target
         return {
             "start": target.start,
@@ -60,6 +69,9 @@ class Suggestion:
             "replacement": self.replacement,
             "rule": self.finding.rule,
             "expect": target.destination,
+            "severity": self.finding.severity,
+            "confidence": self.confidence,
+            "explanation": self.reason,
         }
 
 
@@ -106,7 +118,8 @@ def _near(broken: str, options: Sequence[str]) -> List[str]:
     return sorted(option for d, option in scored if d == best)
 
 
-def _anchor_candidates(broken: str, anchors: Sequence[str]) -> Tuple[List[str], str]:
+def _anchor_candidates(broken: str,
+                       anchors: Sequence[str]) -> Tuple[List[str], str, str]:
     """
     Anchors that might be meant by `broken`, best tier first.
 
@@ -115,25 +128,27 @@ def _anchor_candidates(broken: str, anchors: Sequence[str]) -> Tuple[List[str], 
     wins outright, even if a later tier would have found more.
     """
     if not anchors:
-        return [], ""
+        return [], "", "high"
 
     # 1. The author wrote the heading's *text* where its identifier belongs —
     #    `#Installation Guide` for `installation-guide`. Deterministic, and by
     #    far the most common way a hand-written anchor is wrong.
     slugged = slugify(broken)
     if slugged and slugged in anchors:
-        return [slugged], "the heading's identifier for that text"
+        return [slugged], "the heading's identifier for that text", "high"
 
     # 2. Case, which Pandoc's identifiers do not carry.
     folded = [a for a in anchors if a.casefold() == broken.casefold()]
     if folded:
-        return sorted(set(folded)), "the same anchor, differently cased"
+        return sorted(set(folded)), "the same anchor, differently cased", "high"
 
     # 3. A typo, or a heading whose wording moved.
     near = _near(broken, anchors)
     if near:
-        return near, "the closest anchor in that file"
-    return [], ""
+        # Fuzzy. Unique at this distance, but a guess in a way the two tiers
+        # above are not.
+        return near, "the closest anchor in that file", "medium"
+    return [], "", "high"
 
 
 def _scope_files(docs: Sequence[Document]) -> List[Path]:
@@ -195,7 +210,8 @@ def suggest(docs: Sequence[Document],
                 other = by_path.get((doc.path.parent / target).resolve())
                 if other is None:
                     continue
-            candidates, reason = _anchor_candidates(anchor, other.anchors)
+            candidates, reason, confidence = _anchor_candidates(
+                anchor, other.anchors)
             replacements = [f"{target}#{c}" for c in candidates]
         else:
             wanted = Path(target).name
@@ -203,6 +219,9 @@ def suggest(docs: Sequence[Document],
                        and p != doc.path.resolve()]
             candidates = sorted(_relative(p, doc.path) for p in matches)
             reason = "a file with that name, elsewhere in the run"
+            # Exact: the basename matched, and a second match would have made
+            # this ambiguous and stopped it.
+            confidence = "high"
             suffix = f"#{anchor}" if anchor else ""
             replacements = [c + suffix for c in candidates]
 
@@ -215,7 +234,8 @@ def suggest(docs: Sequence[Document],
                 replacement = replacements[0]
         out.append(Suggestion(finding=finding, candidates=candidates,
                               replacement=replacement, reason=reason,
-                              unwritable=unwritable))
+                              unwritable=unwritable,
+                              confidence=confidence))
     return out
 
 
