@@ -46,21 +46,21 @@ class WordTestCase(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.dir = Path(self.tmp.name)
 
-    def _fix(self, text: str, *flags: str) -> str:
-        src = self.dir / "w.md"
-        out = self.dir / "o.md"
-        src.write_text(text, encoding="utf-8")
-        if out.exists():
-            out.unlink()
-        result = subprocess.run([str(MDFIX), "-q", *flags, str(src), str(out)],
-                                capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, msg=result.stderr)
-        return out.read_text(encoding="utf-8")
-
     def _html(self, text: str) -> str:
         return subprocess.run([PANDOC, "-f", "markdown", "-t", "html"],
                               input=text, capture_output=True, text=True,
                               check=True).stdout
+
+    def _plain(self, heading: str) -> str:
+        path = self.dir / "w.md"
+        path.write_text(f"# {heading}\n", encoding="utf-8")
+        result = subprocess.run([str(MDFIX), "--emit-ir", str(path)],
+                                capture_output=True, text=True, check=True)
+        for line in result.stdout.splitlines():
+            rec = json.loads(line)
+            if rec.get("kind") == "heading":
+                return rec["plain"]
+        self.fail(f"no heading record for {heading!r}")
 
 
 class IntrawordUnderscoreTests(WordTestCase):
@@ -75,13 +75,21 @@ class IntrawordUnderscoreTests(WordTestCase):
             with self.subTest(text=text.strip()):
                 self.assertNotIn("<em>", self._html(text))
 
-    def test_mdfix_leaves_it_alone(self) -> None:
-        # The failure this guards is real: byte-wise isalnum read every
-        # multibyte lead byte as punctuation, so `漢字_の_強調` became
-        # emphasis and lost its underscores.
+    def test_an_intraword_underscore_stays_in_plain(self) -> None:
+        # heading.plain is where +intraword_underscores actually runs.
+        # --canonical does not rewrite emphasis, so identity under that
+        # flag would stay green even if is_word_at were deleted.
         for text in self.LITERAL:
-            with self.subTest(text=text.strip()):
-                self.assertEqual(self._fix(text, "--canonical"), text)
+            heading = text.strip()
+            with self.subTest(text=heading):
+                self.assertEqual(self._plain(heading), heading)
+
+    def test_a_symbol_neighbour_strips_like_pandoc(self) -> None:
+        # ∈ and 。 are not word characters, so the underscores are emphasis
+        # and leave heading.plain. The old byte test treated both as word-ish.
+        for text, expected in (("∈_x_", "∈x"), ("。_foo_", "。foo")):
+            with self.subTest(text=text):
+                self.assertEqual(self._plain(text), expected)
 
     @unittest.skipUnless(PANDOC, "pandoc not installed")
     def test_a_between_word_underscore_is_still_emphasis(self) -> None:

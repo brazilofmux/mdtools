@@ -147,13 +147,11 @@ and belongs in mdfix; the character filtering and lowercasing that turn
 `plain` into an anchor are Unicode text processing, which the consumer does
 because C is the wrong language for it.
 
-One approximation, and it is one-sided. The intraword-underscore rule asks
-whether the neighbouring character is alphanumeric, and mdfix treats every
-byte above U+007F as alphanumeric rather than carrying Unicode tables. That
-is correct for Greek, Cyrillic, CJK and Hangul prose — `漢字_の_強調` keeps
-its underscores, as Pandoc does — but a *symbol* neighbour such as `∈_x_`
-stays literal where Pandoc emphasises. Erring that way keeps text as written
-instead of deleting a character.
+The neighbouring-character test is `mdfix_is_word` — Unicode Alphabetic,
+Nd, Mn and Mc, `Pc` excluded, from the vendored libutf table (see
+[vendoring.md](vendoring.md)). A letter neighbour such as `漢字_の_強調`
+keeps its underscores, as Pandoc does; a symbol or punctuation neighbour
+such as `∈_x_` or `。_foo_` is emphasised, also as Pandoc does.
 
 ### Pipe tables and line blocks
 

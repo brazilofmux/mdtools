@@ -479,6 +479,10 @@ class BlockKindTests(IRTestCase):
             # Residual closer: consume min(opener, closer), leave the rest.
             "_a___": "a__",
             "___a_": "__a",
+            # Symbol / punctuation neighbour: not a word character, so
+            # +intraword_underscores does not apply (Pandoc emphasises).
+            "∈_x_": "∈x",
+            "。_foo_": "。foo",
         }
         for text, expected in cases.items():
             with self.subTest(heading=text):
@@ -497,9 +501,9 @@ class BlockKindTests(IRTestCase):
                 self.assertEqual(self._ir(f"# {text}\n")[1]["plain"], text)
 
     def test_heading_plain_is_unicode_clean(self) -> None:
-        # Greek, CJK and Hangul pass through untouched, and an underscore
-        # against a multibyte letter stays literal — `isalnum` is byte-based,
-        # so this read as emphasis and deleted the underscores.
+        # Greek, CJK and Hangul pass through untouched. An underscore
+        # against a letter stays literal — that is mdfix_is_word, not a
+        # byte test.
         for text in ("\u6f22\u5b57_\u306e_\u5f37\u8abf",
                      "\u0398\u03b5\u03bf\u03bb\u03bf\u03b3\u03af\u03b1",
                      "\ud55c\uad6d\uc5b4 \uc81c\ubaa9",

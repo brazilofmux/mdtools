@@ -1443,9 +1443,8 @@ static int emphasis_can_open(char marker, const char *s, int from, int at,
 static int emphasis_can_close(char marker, const char *s, int from, int at,
                               int after_at, int end)
 {
-    (void)at;
-    unsigned char before = (utf8_prev_start(s, from, at) >= 0)
-                         ? (unsigned char)s[utf8_prev_start(s, from, at)] : '\0';
+    int prev = utf8_prev_start(s, from, at);
+    unsigned char before = (prev >= 0) ? (unsigned char)s[prev] : '\0';
     if (before == '\0' || before == ' ' || before == '\t')
         return 0;
     if (marker == '_' && is_word_at(s, after_at, end))
