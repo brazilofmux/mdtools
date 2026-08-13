@@ -1,6 +1,12 @@
 /*
  * utf_word.c — Unicode word-character classification.
  *
+ * Copyright (c) 2025 Stephen Dennis and the TinyMUX contributors.
+ * Licensed under the MIT License; see vendor/LICENSE.libutf for the full
+ * text. That notice travels with this file: a substantial portion of an MIT
+ * work carries the notice wherever it goes, and a vendored extract is exactly
+ * the case where it would otherwise be lost.
+ *
  * VENDORED, DO NOT EDIT. Extracted from libutf:
  *
  *     https://github.com/brazilofmux/utf
@@ -15,9 +21,11 @@
  * a C compiler. Upstream keeps this pair compilable standalone for exactly
  * that, so nothing else comes with it.
  *
- * Two mechanical changes from upstream, re-applied on each refresh rather
+ * Mechanical changes from upstream, re-applied on each refresh rather
  * than remembered:
  *
+ *   0. This copyright and licence notice, which upstream carries in
+ *      LICENSE rather than per file.
  *   1. Tables are `static` and live in this file, so they cannot collide with
  *      a build that also links libutf.
  *   2. The entry points are renamed `utf_*` -> `mdfix_*`, as

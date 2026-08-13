@@ -14,6 +14,6 @@
 # same commit as the extract.
 #
 # sha256  file  upstream-commit
-2025afc874e8230c83d3e154d79104ba3ce7592ad2e31d660fcc9785f4dfadaf  utf_width.c  8ad858510181
-9c11fba2c05c59cc3bbf661d284a05e69e0d8a2455b30b9917563e1ccaf71014  utf_nfc.c  d3f660a
-4a943ce339149b8cda57f807b44cced69ba9296c0923306b7fd109553227187a  utf_word.c  3d4cdaf
+585bedc280d5101c24e9a1c399b6d8230d0d675140ed23bc456f9b4483e65eb4  utf_width.c  8ad858510181
+88ada2b4d8117a175da3b3be1a9b4daaac6af6dbb9326ae9497e4f2e65179828  utf_nfc.c  d3f660a
+a6b1e88acfd0f733787be84970fa345ad26a7bbe1b868434ce93aba516fce4b0  utf_word.c  3d4cdaf

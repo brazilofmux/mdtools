@@ -73,6 +73,27 @@ class ManifestTests(unittest.TestCase):
                 self.assertTrue(commit, f"{name} has no upstream commit")
                 self.assertRegex(commit, r"^[0-9a-f]{7,40}$")
 
+    def test_every_extract_carries_the_upstream_notice(self) -> None:
+        """
+        MIT requires the copyright and permission notice in "all copies or
+        substantial portions". A 4,700-line table extract is a substantial
+        portion, and a vendored file is exactly the case where the notice
+        would otherwise be lost — upstream keeps it in one LICENSE at the root
+        of a repository this file does not travel with.
+        """
+        for _, name, _ in _entries():
+            with self.subTest(file=name):
+                head = (VENDOR / name).read_text(encoding="utf-8")[:1200]
+                self.assertIn("Copyright", head)
+                self.assertIn("MIT", head)
+                self.assertIn("LICENSE.libutf", head)
+
+    def test_the_full_licence_text_is_present(self) -> None:
+        licence = (VENDOR / "LICENSE.libutf").read_text(encoding="utf-8")
+        self.assertIn("MIT License", licence)
+        self.assertIn("Copyright", licence)
+        self.assertIn("without restriction", licence)
+
     def test_the_commit_matches_the_file_header(self) -> None:
         # The banner and the manifest are two records of the same fact, and
         # two records that can disagree eventually do.

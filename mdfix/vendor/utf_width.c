@@ -1,6 +1,12 @@
 /*
  * utf_width.c — display column width of a UTF-8 code point.
  *
+ * Copyright (c) 2025 Stephen Dennis and the TinyMUX contributors.
+ * Licensed under the MIT License; see vendor/LICENSE.libutf for the full
+ * text. That notice travels with this file: a substantial portion of an MIT
+ * work carries the notice wherever it goes, and a vendored extract is exactly
+ * the case where it would otherwise be lost.
+ *
  * VENDORED, DO NOT EDIT. Extracted from libutf:
  *
  *     https://github.com/brazilofmux/utf
