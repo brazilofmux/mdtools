@@ -4,6 +4,7 @@ Private toolkit for markdown structure and controlled prose variation.
 
 | Tool | Language | Job |
 |---|---|---|
+| **mdtools** | Python 3 | One entry point: fix, query, terms, links, vary, config |
 | **mdfix** | Ragel → C | Deterministic markdown auto-fixer (lists, headings, Chicago passes, …) |
 | **mdquery** | Python 3 | Structural queries and extraction, via mdfix's IR |
 | **mdterms** | Python 3 | Glossary and terminology enforcement; emits edits for mdfix |
@@ -55,6 +56,7 @@ Import took (1). Downstream trees should install from here instead of vendoring.
 make install PREFIX=$HOME/.local
 # ensure ~/.local/bin is on PATH
 mdfix -h
+mdtools --help
 mdquery --help
 mdterms --help
 mdlinks --help
@@ -124,6 +126,7 @@ mdfix/           # Ragel source, generated C, Makefile
 mdquery/          # Python package (python -m mdquery)
 mdterms/          # Python package (python -m mdterms)
 mdlinks/          # Python package (python -m mdlinks)
+mdtools_cli/      # Python package behind the  dispatcher
 prosevary/        # Python package (python -m prosevary)
 docs/             # architecture decisions (start with architecture.md)
 scripts/          # install helpers

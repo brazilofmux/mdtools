@@ -4,7 +4,7 @@ BINDIR  ?= $(PREFIX)/bin
 LIBDIR  ?= $(PREFIX)/lib/mdtools
 PYTHON  ?= python3
 
-.PHONY: all mdfix prosevary-check mdquery-check mdterms-check mdlinks-check install uninstall clean test check-sync asan check
+.PHONY: all mdfix prosevary-check mdquery-check mdterms-check mdlinks-check mdtools-check install uninstall clean test check-sync asan check
 
 all: mdfix
 
@@ -14,6 +14,11 @@ mdfix:
 mdterms-check: mdfix
 	./scripts/mdterms --help >/dev/null
 	@echo "mdterms CLI ok"
+
+mdtools-check: mdfix
+	./scripts/mdtools --help >/dev/null
+	./scripts/mdtools config >/dev/null
+	@echo "mdtools CLI ok"
 
 mdlinks-check: mdfix
 	./scripts/mdlinks --help >/dev/null
@@ -29,44 +34,41 @@ mdquery-check: mdfix
 	./scripts/mdquery stats README.md >/dev/null
 	@echo "mdquery CLI ok"
 
+# Python packages and their launchers. Listed once: the install rule used to
+# repeat five near-identical stanzas, and editing it broke twice by landing a
+# path in the wrong one.
+PACKAGES = prosevary mdquery mdterms mdlinks mdtools_cli
+LAUNCHERS = prosevary mdquery mdterms mdlinks mdtools
+
 install: mdfix
 	install -d "$(BINDIR)" "$(LIBDIR)"
 	install -m 755 mdfix/mdfix "$(BINDIR)/mdfix"
-	rm -rf "$(LIBDIR)/prosevary" "$(LIBDIR)/mdquery" "$(LIBDIR)/mdterms" \
-	       "$(LIBDIR)/mdlinks"
-	cp -R prosevary "$(LIBDIR)/prosevary"
-	cp -R mdquery "$(LIBDIR)/mdquery"
-	cp -R mdterms "$(LIBDIR)/mdterms"
-	cp -R mdlinks "$(LIBDIR)/mdlinks"
-	rm -rf "$(LIBDIR)/prosevary/__pycache__" "$(LIBDIR)/mdquery/__pycache__" "$(LIBDIR)/mdterms/__pycache__" \
-	       "$(LIBDIR)/mdlinks/__pycache__"
+	@for pkg in $(PACKAGES); do \
+		rm -rf "$(LIBDIR)/$$pkg"; \
+		cp -R "$$pkg" "$(LIBDIR)/$$pkg"; \
+		rm -rf "$(LIBDIR)/$$pkg/__pycache__"; \
+	done
 	find "$(LIBDIR)/prosevary" -name '*.sqlite' -delete 2>/dev/null || true
 	find "$(LIBDIR)/prosevary" -name '*.sqlite-*' -delete 2>/dev/null || true
-	# Launcher with MDTOOLS_LIB fixed to this install
-	sed -e 's|^MDTOOLS_LIB=.*|MDTOOLS_LIB="$(LIBDIR)"|' \
-		scripts/prosevary > "$(BINDIR)/prosevary"
-	chmod 755 "$(BINDIR)/prosevary"
-	sed -e 's|^MDTOOLS_LIB=.*|MDTOOLS_LIB="$(LIBDIR)"|' \
-		scripts/mdquery > "$(BINDIR)/mdquery"
-	chmod 755 "$(BINDIR)/mdquery"
-	sed -e 's|^MDTOOLS_LIB=.*|MDTOOLS_LIB="$(LIBDIR)"|' \
-		scripts/mdterms > "$(BINDIR)/mdterms"
-	chmod 755 "$(BINDIR)/mdterms"
-	sed -e 's|^MDTOOLS_LIB=.*|MDTOOLS_LIB="$(LIBDIR)"|' \
-		scripts/mdlinks > "$(BINDIR)/mdlinks"
-	chmod 755 "$(BINDIR)/mdlinks"
-	@echo "Installed mdfix + prosevary + mdquery + mdterms + mdlinks → $(BINDIR)"
+	@# Launcher with MDTOOLS_LIB fixed to this install
+	@for tool in $(LAUNCHERS); do \
+		sed -e 's|^MDTOOLS_LIB=.*|MDTOOLS_LIB="$(LIBDIR)"|' \
+			"scripts/$$tool" > "$(BINDIR)/$$tool"; \
+		chmod 755 "$(BINDIR)/$$tool"; \
+	done
+	@echo "Installed mdfix + $(LAUNCHERS) → $(BINDIR)"
 	@echo "Ensure $(BINDIR) is on PATH."
 
 uninstall:
-	rm -f "$(BINDIR)/mdfix" "$(BINDIR)/prosevary" "$(BINDIR)/mdquery" \
-	      "$(BINDIR)/mdterms" "$(BINDIR)/mdlinks"
+	rm -f "$(BINDIR)/mdfix"
+	@for tool in $(LAUNCHERS); do rm -f "$(BINDIR)/$$tool"; done
 	rm -rf "$(LIBDIR)"
 
 clean:
 	$(MAKE) -C mdfix clean
 
-test: mdfix prosevary-check mdquery-check mdterms-check mdlinks-check
+test: mdfix prosevary-check mdquery-check mdterms-check mdlinks-check \
+      mdtools-check
 	./mdfix/mdfix -h >/dev/null
 	$(PYTHON) -m unittest discover -s tests -v
 	@echo "ok"
