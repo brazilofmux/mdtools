@@ -17,37 +17,10 @@ from mdquery.ir import IRError
 from mdtools_cli.config import ConfigError
 from mdtools_cli.contract import (
     FINDINGS, OK, USAGE, add_common, add_verbs, fail, resolve_config,
-    resolve_mdfix,
+    resolve_mdfix, sarif,
 )
 
 from .checks import Finding, run
-
-
-def _sarif(findings: Sequence[Finding]) -> dict:
-    """SARIF 2.1.0, the shape CI systems already ingest."""
-    rules = sorted({f.rule for f in findings})
-    index = {rule: n for n, rule in enumerate(rules)}
-    return {
-        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
-        "version": "2.1.0",
-        "runs": [{
-            "tool": {"driver": {
-                "name": "mdcheck",
-                "informationUri": "https://github.com/brazilofmux/mdtools",
-                "rules": [{"id": rule} for rule in rules],
-            }},
-            "results": [{
-                "ruleId": f.rule,
-                "ruleIndex": index[f.rule],
-                "level": "error" if f.severity == "error" else "warning",
-                "message": {"text": f.message},
-                "locations": [{"physicalLocation": {
-                    "artifactLocation": {"uri": f.path},
-                    "region": {"startLine": max(f.line, 1)},
-                }}],
-            } for f in findings],
-        }],
-    }
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -101,7 +74,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return fail("mdcheck", str(exc))
 
     if args.sarif:
-        print(json.dumps(_sarif(findings), indent=2))
+        print(json.dumps(sarif("mdcheck", findings), indent=2))
     elif args.diagnostics:
         for finding in findings:
             print(json.dumps(finding.to_diagnostic(), ensure_ascii=False))

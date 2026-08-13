@@ -133,6 +133,43 @@ def apply_edits(path: Path, edits: Sequence[dict], *,
         return fail("mdfix", str(exc))
 
 
+def sarif(tool: str, findings: Sequence) -> dict:
+    """
+    SARIF 2.1.0 for any tool's findings — the shape CI systems already ingest.
+
+    Duck-typed on `path`, `rule`, `severity`, `line` and `message`, which is
+    every finding class here: they were written to the diagnostics contract
+    (ID.1–ID.2) before this existed, so there was nothing to unify.
+
+    Lives with the CLI contract rather than in one tool because the second
+    tool to want SARIF should not have to copy it, and two copies would drift
+    on exactly the fields a CI system reads.
+    """
+    rules = sorted({f.rule for f in findings})
+    index = {rule: n for n, rule in enumerate(rules)}
+    return {
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {"driver": {
+                "name": tool,
+                "informationUri": "https://github.com/brazilofmux/mdtools",
+                "rules": [{"id": rule} for rule in rules],
+            }},
+            "results": [{
+                "ruleId": f.rule,
+                "ruleIndex": index[f.rule],
+                "level": "error" if f.severity == "error" else "warning",
+                "message": {"text": f.message},
+                "locations": [{"physicalLocation": {
+                    "artifactLocation": {"uri": f.path},
+                    "region": {"startLine": max(f.line, 1)},
+                }}],
+            } for f in findings],
+        }],
+    }
+
+
 def fail(program: str, message: str) -> int:
     """A usage/environment error: one line on stderr, exit 2."""
     print(f"{program}: {message}", file=sys.stderr)

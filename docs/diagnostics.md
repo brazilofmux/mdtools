@@ -49,6 +49,7 @@ may not. They are namespaced by area:
 | `footnote.` | reference and definition formatting |
 | `fence.` | code fence delimiters |
 | `unicode.` | normalization: `unicode.non-nfc` |
+| `terms.` | glossary: `terms.forbidden`, `terms.undefined-acronym` |
 | `blockquote.`, `whitespace.`, `emphasis.`, `punct.`, `link.` | one rule each |
 
 `heading.atx-space`, `list.blank-before` and `list.blank-after` are the three

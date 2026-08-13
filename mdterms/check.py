@@ -173,11 +173,50 @@ def _in_span(pos: int, spans: Sequence[tuple]) -> bool:
     return any(a <= pos < b for a, b in spans)
 
 
+def _introduces(text: str, start: int, end: int, expansion: str) -> bool:
+    """
+    Is the occurrence at [start, end) an introduction of the term?
+
+    Two shapes, and only two, because a rule that accepts anything nearby
+    stops being a rule:
+
+        intermediate representation (IR)      expansion, then the term
+        IR (intermediate representation)      the term, then the expansion
+
+    The expansion is compared case-insensitively — a sentence may capitalize
+    it — while the term itself is matched however the glossary says.
+    """
+    wanted = " ".join(expansion.split()).casefold()
+
+    # `expansion (TERM)`: a bare "(" before, the expansion before that.
+    before = text[:start].rstrip()
+    if before.endswith("("):
+        head = " ".join(before[:-1].split()).casefold()
+        if head.endswith(wanted):
+            return True
+
+    # `TERM (expansion)`
+    after = text[end:].lstrip()
+    if after.startswith("("):
+        close = after.find(")")
+        if close > 0:
+            inner = " ".join(after[1:close].split()).casefold()
+            if inner == wanted:
+                return True
+    return False
+
+
 def scan(path: Path, terms: Sequence[Term],
          mdfix: str | None = None) -> List[Finding]:
     """Every terminology violation in the prose of `path`."""
     data = path.read_bytes()
     findings: List[Finding] = []
+    terms = [t for t in terms if t.applies_to(path)]
+
+    # First prose use of each term needing an introduction, in document
+    # order, with whether that use introduced it. Collected during the walk
+    # and judged after, because "first" is only knowable once the walk ends.
+    first_use: dict = {}
 
     for record in raw_records([path], mdfix):
         if record.get("kind") not in PROSE_KINDS:
@@ -186,6 +225,24 @@ def scan(path: Path, terms: Sequence[Term],
         protected = _protected_spans(chunk)
 
         for term in terms:
+            if term.expansion and term.term not in first_use:
+                for match in _word_pattern(
+                        term.term, term.case_sensitive).finditer(chunk):
+                    # A term inside inline code or a URL is not prose use, so
+                    # it neither counts as a first use nor introduces one.
+                    if _in_span(match.start(), protected):
+                        continue
+                    prefix = chunk[:match.start()].encode("utf-8")
+                    first_use[term.term] = (
+                        term,
+                        record["start"] + len(prefix),
+                        len(match.group(0).encode("utf-8")),
+                        record["line"] + chunk[:match.start()].count("\n"),
+                        _introduces(chunk, match.start(), match.end(),
+                                    term.expansion),
+                    )
+                    break
+
             for bad in term.forbidden:
                 for match in _word_pattern(bad, term.case_sensitive).finditer(chunk):
                     # Byte offsets, not character offsets: the IR speaks bytes
@@ -209,8 +266,80 @@ def scan(path: Path, terms: Sequence[Term],
                                     " (inside a protected span; "
                                     "not fixed automatically)")),
                     ))
+    for term, start, length, line, introduced in first_use.values():
+        if introduced:
+            continue
+        findings.append(Finding(
+            path=str(path),
+            rule="terms.undefined-acronym",
+            severity="warning",
+            line=line,
+            start=start,
+            end=start + length,
+            found=term.term,
+            expected=term.term,
+            # Never auto-fixed. Rewriting the sentence to introduce the term
+            # is a wording decision, and mdterms only makes the changes that
+            # have exactly one right answer.
+            fixable=False,
+            message=(f"{term.term!r} is used before it is introduced; "
+                     f"write {term.expansion + ' (' + term.term + ')'!r} "
+                     f"at first use"),
+        ))
+
     findings.sort(key=lambda f: (f.start, f.end))
     return findings
+
+
+def usage(paths: Sequence[Path], terms: Sequence[Term],
+          mdfix: str | None = None) -> List[dict]:
+    """
+    Which documents use which terms, and which introduce them (#16).
+
+    The consistency question a per-file report cannot answer: a term
+    introduced in one chapter and assumed in the next reads fine in isolation
+    and badly in order. This says where each term appears and where its
+    expansion was actually written out, so the gap is visible at a glance.
+
+    Counts prose uses only — a term in a code span is not the reader meeting
+    the word.
+    """
+    rows: List[dict] = []
+    for term in terms:
+        used: List[str] = []
+        introduced: List[str] = []
+        for path in paths:
+            if not term.applies_to(path):
+                continue
+            data = path.read_bytes()
+            hits = 0
+            here = False
+            for record in raw_records([path], mdfix):
+                if record.get("kind") not in PROSE_KINDS:
+                    continue
+                chunk = data[record["start"]:record["end"]].decode(
+                    "utf-8", "replace")
+                protected = _protected_spans(chunk)
+                pattern = _word_pattern(term.term, term.case_sensitive)
+                for match in pattern.finditer(chunk):
+                    if _in_span(match.start(), protected):
+                        continue
+                    hits += 1
+                    if term.expansion and _introduces(
+                            chunk, match.start(), match.end(), term.expansion):
+                        here = True
+            if hits:
+                used.append(str(path))
+            if here:
+                introduced.append(str(path))
+        rows.append({
+            "kind": "term-usage",
+            "term": term.term,
+            "expansion": term.expansion,
+            "used_in": used,
+            "introduced_in": introduced,
+        })
+    return rows
 
 
 def edits_for(findings: Iterable[Finding]) -> List[dict]:

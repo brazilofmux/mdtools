@@ -100,8 +100,12 @@ Everything works without a config file on every supported version.
 |---|---|
 | `--diagnostics` | The shared diagnostics stream — see [diagnostics.md](diagnostics.md) |
 | `--json` | A tool's own results as JSONL (`mdquery` only) |
-| `--sarif` | SARIF 2.1.0 (`mdcheck` only) |
+| `--sarif` | SARIF 2.1.0 (`mdcheck`, `mdterms`) |
 | `--edits` | An edit list — see [edit-schema.md](edit-schema.md) |
+
+SARIF is generated in one place — `mdtools_cli.contract.sarif` — for the same
+reason the exit codes are: the second tool to want it should not have to copy
+it, and two copies would drift on exactly the fields a CI system reads.
 
 `--diagnostics` and `--json` are different things and are spelled differently
 on purpose. `--diagnostics` is *findings*, one schema shared by every tool.
