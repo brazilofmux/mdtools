@@ -52,6 +52,8 @@ class Config:
     # Front-matter schema (issue #13). Empty means no schema, which means the
     # check does not run at all — a project without one is not "failing" it.
     frontmatter: Dict[str, Any] = field(default_factory=dict)
+    # Project default for citation resolution (issue #13). Front matter wins.
+    bibliography: List[str] = field(default_factory=list)
     raw: Dict[str, Any] = field(default_factory=dict)
 
     def resolved(self) -> Dict[str, Any]:
@@ -62,6 +64,7 @@ class Config:
             "profile": self.profile,
             "wrap": self.wrap,
             "editorial": self.editorial,
+            "bibliography": list(self.bibliography),
             "frontmatter": self.frontmatter,
             "glossary": str(self.glossary) if self.glossary else None,
             "state_dir": str(self.state_dir) if self.state_dir else None,
@@ -92,7 +95,7 @@ def find_config(start: Optional[Path] = None) -> Optional[Path]:
 
 _ALLOWED = {
     "profile", "wrap", "editorial", "glossary", "state_dir", "mdfix", "suppress",
-    "frontmatter",
+    "frontmatter", "bibliography",
 }
 
 # What a field may declare, and what a value may be.
@@ -254,6 +257,16 @@ def _read(path: Path, root: Path) -> Config:
             setattr(config, key, (root / str(section[key])).resolve())
     if "mdfix" in section:
         config.mdfix = _resolve_mdfix(root, str(section["mdfix"]))
+    if "bibliography" in section:
+        value = section["bibliography"]
+        names = [value] if isinstance(value, str) else value
+        if not isinstance(names, list) or not all(isinstance(n, str)
+                                                  for n in names):
+            raise ConfigError(
+                f"{path}: bibliography must be a path or a list of paths")
+        # Root-relative, like glossary and state_dir: a config is about the
+        # project, not about whichever directory a tool was run from.
+        config.bibliography = [str((root / n).resolve()) for n in names]
     if "frontmatter" in section:
         config.frontmatter = _read_frontmatter(path, section["frontmatter"])
     if "suppress" in section:
