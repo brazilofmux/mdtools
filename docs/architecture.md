@@ -69,7 +69,11 @@ Each has an identifier so issues and tests can cite it.
   and offsets skip past it so I1.3 still holds. *(Issue #53, done.)*
 - **I1.2 Normalization is reported, not performed.** L1 detects text that is
   not NFC and says so. It does not rewrite it. Normalizing belongs to L3 —
-  see Q2.
+  see Q2. *(Issue #54, done. Rule `unicode.non-nfc`, one diagnostic per line
+  spanning the offending code point; the UAX #15 quick check, so it is cheap
+  enough to leave on and is allowed to say "maybe". `--normalize-nfc` is the
+  opt-in L3 rewrite. The Unicode data is vendored from libutf in
+  `mdfix/vendor/utf_nfc.c`.)*
 - **I1.3 Spans address the file on disk.** Every IR offset indexes the input
   bytes exactly as they were read, including CRLF and a missing final newline.
 - **I1.4 Parsing is whole-file.** Block classification is context-dependent,
@@ -186,7 +190,7 @@ lands.
 
 | Layer | State |
 |---|---|
-| L1 | Block parsing broad and Pandoc-verified. Inline parsing partial (identifiers only). **No UTF-8 validation, no NFC detection.** Whole-file only; `MAX_LINES` 200000, `MAX_LINE` 8192. |
+| L1 | Block parsing broad and Pandoc-verified. Inline parsing partial (identifiers only). UTF-8 validated (I1.1) and non-NFC reported (I1.2); both invariants now hold. Whole-file only; `MAX_LINES` 200000, `MAX_LINE` 8192. |
 | L2 | Required set classified in [transforms.md](transforms.md) and on by default (`--no-required` for inspection). I2.3 holds for those three repairs. |
 | L3 | ~20 transforms exist. Editorial bundle is opt-in (`--editorial`; implied by `--canonical` / `--technical`), so I3.3 holds. I3.1 matrix in `tests/test_transform_matrix.py`; still false in the pinned §7 cases (hard breaks; Chicago ellipsis). |
 | L4 | Emits IR (`--emit-ir`, schema `mdtools-ir-2`, total). Accepts edit lists (`--apply-edits`, schema `mdtools-edits-1`) with I4.2 validation. **Still cannot accept IR** for rewrite; no general IR validator. |
@@ -223,6 +227,11 @@ then address a buffer the consumer never saw. It changes Pandoc identifiers —
 precomposed `Héading` anchors as `héading`, decomposed anchors as `heading`, so
 normalizing can move an anchor and break every link to it. And it rewrites the
 author's file as a side effect of reading it.
+
+*Settled, issue #54.* Detection is always on and free; `--normalize-nfc` is the
+opt-in L3 rewrite, and `--emit-ir` never sees it, so I1.3 still holds. The
+anchor claim above is not taken on trust — `tests/test_nfc.py` puts both
+spellings through Pandoc and pins the two identifiers it returns.
 
 ### Q3. When a consumer's edit would break L2, does the applier fix it or reject it?
 

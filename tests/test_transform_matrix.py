@@ -67,6 +67,7 @@ TRANSFORMS = (
     "--spaced-emdash",
     "--wrap=78",
     "--technical",
+    "--normalize-nfc",
 )
 
 CORPUS = {
@@ -89,6 +90,17 @@ CORPUS = {
     "longpara": "word " * 40 + "\n",
     # Issue #64: an unclosed `---` used to freeze everything after it.
     "unclosed rule": "---\n\n# H\n\nBody text here.\n",
+    # Decomposed text, so --normalize-nfc has something to do in this sweep.
+    # Without a non-NFC document it would be a no-op on every row and the
+    # matrix would prove nothing about it. The three scripts are the ones
+    # issue #54 names: Latin with a combining acute, Greek with a combining
+    # oxia, and Hangul jamo that compose algorithmically.
+    # Escapes, not literals: spelled out, this file would itself stop
+    # being NFC, and any editor or tool that normalized it would
+    # silently delete the one row that exercises the transform.
+    "decomposed": ("# He\u0301ading\n\n"
+                   "Greek \u03b1\u0301 and Hangul "
+                   "\u1112\u1161\u11ab here.\n"),
 }
 
 # (document, transform) -> which invariant it breaks.

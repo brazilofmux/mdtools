@@ -29,6 +29,20 @@ because doing so would silently move heading anchors — a precomposed `Héading
 anchors as `héading`, the decomposed spelling as `heading`, and links break
 either way you choose for someone.
 
+It will *tell* you, though. Text that is not NFC is reported as
+`unicode.non-nfc`, one warning per line, pointing at the first code point that
+is out of form. This matters most when text arrives from somewhere else: macOS
+filenames and some PDF extractors hand you decomposed text that looks identical
+on screen and searches differently. If you do want it composed, ask for it:
+
+```sh
+mdfix --normalize-nfc -i chapter.md
+```
+
+That is a real edit, so treat it as one. It changes byte offsets, and it
+changes the anchor of any heading that contained a combining mark — so fix
+your links in the same commit.
+
 ### Punctuation: write the real characters
 
 Use the real characters: em dash —, en dash –, ellipsis …, and the
