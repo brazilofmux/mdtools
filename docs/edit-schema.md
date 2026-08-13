@@ -108,6 +108,18 @@ edit written correctly (`"Intro:\n\n- one\n- two"`) is accepted.
 The check is the required set from [transforms.md](transforms.md) run over the
 spliced result: if it would change anything, the result is not L2-clean.
 
+## Who produces edits
+
+| Producer | What it repairs |
+|---|---|
+| [mdterms](mdterms.md) `--edits` | Forbidden spellings in prose |
+| [mdlinks](mdlinks.md) `--edits` | Broken anchors and moved-file paths |
+| prosevary | Sentence-level variation |
+
+Each names one file, because the `bytes` header describes one document. The
+pattern is the same in all three, and it is the point of the schema: the tool
+that decides what to change is never the tool that writes the file.
+
 ## Writing
 
 | Form | Result |

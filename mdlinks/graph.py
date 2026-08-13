@@ -14,6 +14,24 @@ from mdquery.slug import assign_slugs
 
 
 @dataclass
+class Target:
+    """
+    Where a destination sits in the file, so a repair can replace it alone.
+
+    Straight from the IR's `destinationStart` / `destinationEnd`. Locating the
+    destination inside a link's span means knowing where its text stops,
+    skipping an optional title and honouring escapes — Markdown grammar,
+    which lives in mdfix (dialect-policy §2). This is that work already done.
+
+    `None` where the IR emitted no span: an empty destination, or a reference
+    form whose destination lives in its definition instead.
+    """
+    start: int
+    end: int
+    destination: str
+
+
+@dataclass
 class Link:
     path: Path
     line: int
@@ -24,6 +42,14 @@ class Link:
     destination: str     # "" for reference forms
     label: str
     text: str = ""       # link text; used for collapsed [text][]
+    target: Optional[Target] = None
+
+
+@dataclass
+class Definition:
+    line: int
+    destination: str
+    target: Optional[Target] = None
 
 
 @dataclass
@@ -31,8 +57,7 @@ class Document:
     path: Path
     anchors: List[str] = field(default_factory=list)
     links: List[Link] = field(default_factory=list)
-    # label key -> (line, destination)
-    definitions: Dict[str, Tuple[int, str]] = field(default_factory=dict)
+    definitions: Dict[str, Definition] = field(default_factory=dict)
     footnotes: Dict[str, int] = field(default_factory=dict)
     footnote_refs: List = field(default_factory=list)
 
@@ -46,6 +71,8 @@ class Finding:
     start: int
     end: int
     message: str
+    # Set only when the finding names a destination a repair could replace.
+    target: Optional[Target] = None
 
     def to_diagnostic(self) -> dict:
         return {"kind": "diagnostic", "path": self.path, "rule": self.rule,
@@ -80,6 +107,16 @@ def _normalize_destination(destination: str) -> str:
     return "".join(out)
 
 
+def _target(record: dict) -> Optional[Target]:
+    """The destination's span, when the IR emitted one."""
+    start = record.get("destinationStart")
+    end = record.get("destinationEnd")
+    if start is None or end is None:
+        return None
+    return Target(start=start, end=end,
+                  destination=record.get("destination", "") or "")
+
+
 def read(path: Path, mdfix: Optional[str] = None) -> Document:
     doc = Document(path=path)
     headings: List[str] = []
@@ -95,13 +132,16 @@ def read(path: Path, mdfix: Optional[str] = None) -> Document:
                 destination=record.get("destination", "") or "",
                 label=record.get("label", "") or "",
                 text=record.get("text", "") or "",
+                target=_target(record),
             ))
         elif kind == "reference_def":
             key = _normalize_label(record.get("label", "") or "")
             if key and key not in doc.definitions:
                 dest = _normalize_destination(
                     record.get("destination", "") or "")
-                doc.definitions[key] = (record["line"], dest)
+                doc.definitions[key] = Definition(
+                    line=record["line"], destination=dest,
+                    target=_target(record))
         elif kind == "footnote_def":
             doc.footnotes.setdefault(record.get("label", ""), record["line"])
         elif kind == "footnote_ref":
@@ -129,25 +169,26 @@ def check(docs: Sequence[Document]) -> List[Finding]:
     by_path = {d.path.resolve(): d for d in docs}
     findings: List[Finding] = []
 
-    def add(doc, link, rule, message, severity="error"):
+    def add(doc, link, rule, message, severity="error", target=None):
         findings.append(Finding(
             path=str(doc.path), rule=rule, severity=severity,
-            line=link.line, start=link.start, end=link.end, message=message))
+            line=link.line, start=link.start, end=link.end, message=message,
+            target=target))
 
-    def check_destination(doc, link, destination: str) -> None:
+    def check_destination(doc, link, destination: str, target=None) -> None:
         destination = _normalize_destination(destination)
         if not destination or _is_external(destination):
             return
-        target, anchor = _split(destination)
-        if not target:
+        path_part, anchor = _split(destination)
+        if not path_part:
             if anchor and anchor not in doc.anchors:
                 add(doc, link, "links.broken-anchor",
-                    f"no heading with anchor #{anchor}")
+                    f"no heading with anchor #{anchor}", target=target)
             return
-        resolved = (doc.path.parent / target).resolve()
+        resolved = (doc.path.parent / path_part).resolve()
         if not resolved.exists():
             add(doc, link, "links.missing-file",
-                f"{target} does not exist")
+                f"{path_part} does not exist", target=target)
             return
         if anchor:
             other = by_path.get(resolved)
@@ -155,7 +196,7 @@ def check(docs: Sequence[Document]) -> List[Finding]:
                 return   # not in scope; cannot judge its anchors
             if other is not None and anchor not in other.anchors:
                 add(doc, link, "links.broken-anchor",
-                    f"{target} has no anchor #{anchor}")
+                    f"{path_part} has no anchor #{anchor}", target=target)
 
     for doc in docs:
         used = set()
@@ -172,18 +213,23 @@ def check(docs: Sequence[Document]) -> List[Finding]:
                     add(doc, link, "links.undefined-reference",
                         f"no definition for [{shown}]")
                     continue
-                _line, dest = doc.definitions[key]
-                check_destination(doc, link, dest)
+                definition = doc.definitions[key]
+                # The destination lives in the definition, so that is what a
+                # repair must edit — not the link that reached it. One bad
+                # definition used twice is one edit, not two.
+                check_destination(doc, link, definition.destination,
+                                  target=definition.target)
                 continue
             if link.form == "autolink" or _is_external(link.destination):
                 continue
-            check_destination(doc, link, link.destination)
+            check_destination(doc, link, link.destination,
+                              target=link.target)
 
-        for label, (line, _dest) in doc.definitions.items():
+        for label, definition in doc.definitions.items():
             if label not in used:
                 findings.append(Finding(
                     path=str(doc.path), rule="links.unused-definition",
-                    severity="warning", line=line, start=0, end=0,
+                    severity="warning", line=definition.line, start=0, end=0,
                     message=f"[{label}] is defined but never used"))
 
         seen_notes = {label for label, *_ in doc.footnote_refs}

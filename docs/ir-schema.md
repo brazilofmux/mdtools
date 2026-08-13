@@ -221,6 +221,27 @@ $ mdfix --emit-ir chapter.md | grep '"kind":"link"'
 
 `destination` is the bare URL: optional surrounding `<>` and a trailing title
 are stripped. `form` is `inline`, `autolink`, `reference` or `shortcut`.
+
+Wherever `destination` is non-empty, **`destinationStart` and `destinationEnd`
+give its half-open byte span** in the file — on `link`, `image` and
+`reference_def` alike. That is what lets a consumer *replace* a destination
+without knowing how one is written:
+
+```console
+$ mdfix --emit-ir chapter.md | grep reference_def
+{"kind":"reference_def",...,"label":"id","destination":"./d.md","destinationStart":91,"destinationEnd":97}
+```
+
+Without the span a repair tool would have to find the destination inside the
+record itself — work out where the link text stops, skip an optional title,
+honour escapes — which is Markdown grammar, and grammar lives in mdfix
+(dialect-policy §2). The title case is the one that bites: in
+`[id]: ./d.md "./d.md"` the last occurrence of the destination text is the
+*title*, so searching the span finds the wrong bytes.
+
+The span excludes any surrounding `<>`, so splicing into it leaves the
+brackets in place. It is **absent** when the destination is empty, rather than
+zero-width, so a consumer never mistakes it for an insertion point.
 Reference and shortcut links carry their **label rather than a resolved
 destination** — the consumer already has the `reference_def` records (which
 also carry `label` and `destination`). Collapsed `[text][]` emits

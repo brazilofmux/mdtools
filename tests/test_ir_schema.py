@@ -783,6 +783,48 @@ class InlineRecordTests(IRTestCase):
         angled = self._inline("See [text](<./a.md>) here.\n")[0]
         self.assertEqual(angled["destination"], "./a.md")
 
+    def test_destination_span_slices_the_destination(self) -> None:
+        # `destinationStart` / `destinationEnd` exist so a consumer can
+        # *replace* a destination without locating it, which would mean
+        # holding Markdown grammar (dialect-policy §2). The span must
+        # therefore agree with the string, byte for byte, in every form.
+        cases = (
+            "See [text](./a.md) here.\n",
+            'See [text](./a.md "Title") here.\n',
+            "See [text](<./a.md>) here.\n",
+            "See [text](<spaced path.md>) here.\n",
+            "See [text](paren(inner).md) here.\n",
+            "An ![alt](i.png) image.\n",
+            "See <http://x> here.\n",
+            "| a | b |\n|---|---|\n| [t](t.md) | 2 |\n",
+            "- item [li](li.md)\n",
+        )
+        for source in cases:
+            with self.subTest(source=source.strip()):
+                data = source.encode("utf-8")
+                record = self._inline(source)[0]
+                self.assertIn("destinationStart", record)
+                self.assertEqual(
+                    data[record["destinationStart"]:record["destinationEnd"]]
+                    .decode("utf-8"),
+                    record["destination"])
+
+    def test_a_title_that_repeats_the_destination_is_not_the_span(self) -> None:
+        # The case that catches a consumer searching the record's span for the
+        # destination text: the last occurrence is the title, not the target.
+        source = '[id]: ./d.md "./d.md"\n'
+        data = source.encode("utf-8")
+        record = [r for r in self._ir_raw(source)
+                  if r["kind"] == "reference_def"][0]
+        self.assertEqual(record["destination"], "./d.md")
+        self.assertEqual(record["destinationStart"], data.index(b"./d.md"))
+
+    def test_an_empty_destination_has_no_span(self) -> None:
+        # A zero-width span is an insertion point, and this is not one.
+        record = self._inline("See [text]() here.\n")[0]
+        self.assertEqual(record["destination"], "")
+        self.assertNotIn("destinationStart", record)
+
     def test_image(self) -> None:
         record = self._inline("An ![alt](i.png) image.\n")[0]
         self.assertEqual(record["kind"], "image")
