@@ -3799,78 +3799,26 @@ static long long nfc_first_bad(const char *s, int len, int *plen)
 /*
  * L3: rewrite lines[] to NFC when --normalize-nfc is set (off by default).
  * Runs after the IR early-return so emitted spans still address the file on
- * disk. Destination is sized past UAX #15's 3× NFC expansion; length-checked
- * because libutf may truncate without reporting (brazilofmux/utf#2).
+ * disk.
+ *
+ * The destination is sized with `mdfix_nfc_normalize_bound`, which is UAX
+ * #15's 3x expansion bound and makes truncation impossible — NFC can grow
+ * text, so the input length is not a safe capacity (U+0958 is 3 bytes in and
+ * 6 out). The status is checked anyway. It cannot fire with a bound-sized
+ * destination, and checking a return value that "cannot" be non-zero is how
+ * the next contract change gets noticed instead of silently losing text.
+ *
+ * This function used to carry a workaround. libutf ended a dirty segment only
+ * at a starter with NFC_QC=Yes, so a run of composition exclusions became one
+ * enormous segment and was truncated at the cap without a word — 2700 copies
+ * of U+0958 normalized to 64. mdfix could not patch a verbatim vendored copy,
+ * so it measured segments itself and refused any document that might trip it.
+ * Both defects are fixed upstream (brazilofmux/utf#1, #2), the refreshed copy
+ * carries the fixes, and the workaround is gone: those documents normalize
+ * correctly now, and `tests/test_nfc.py` asserts it rather than asserting the
+ * refusal.
  */
 #define NFC_DST_MAX (MAX_LINE * 3 + 8)
-
-/*
- * Refuse input that would hit libutf's silent segment truncate
- * (brazilofmux/utf#1). Bound dirty segments at 31 input code points so the
- * decomposed form stays ≤124 of the normalizer's 128-slot segment.
- * Returns the byte offset of the first over-long segment, or -1.
- */
-#define NFC_SEGMENT_MAX 31
-
-static long long nfc_segment_overrun(const char *s, int len)
-{
-    const unsigned char *p = (const unsigned char *)s;
-    int i = 0, seg_start = 0, last_ccc = 0;
-
-    while (i < len) {
-        if (p[i] < 0x80) {              /* ASCII ends a segment */
-            seg_start = i;
-            last_ccc = 0;
-            i++;
-            continue;
-        }
-        const char *why = NULL;
-        int n = utf8_sequence_len(p + i, len - i, &why);
-        if (n == 0)
-            return -1;                  /* I1.1 already refused this file */
-
-        int ccc, qc;
-        mdfix_nfc_ccc_qc(p + i, p + i + n, &ccc, &qc);
-        if (qc == 0 && (ccc == 0 || last_ccc <= ccc)) {
-            if (ccc == 0)
-                seg_start = i;
-            last_ccc = ccc;
-            i += n;
-            continue;
-        }
-
-        /* A dirty segment starts at seg_start and runs to the next clean
-         * starter. Count its code points as upstream will see them. */
-        i += n;
-        while (i < len) {
-            if (p[i] < 0x80)
-                break;
-            int n2 = utf8_sequence_len(p + i, len - i, &why);
-            if (n2 == 0)
-                return -1;
-            int ccc2, qc2;
-            mdfix_nfc_ccc_qc(p + i, p + i + n2, &ccc2, &qc2);
-            if (ccc2 == 0 && qc2 == 0)
-                break;
-            i += n2;
-        }
-
-        int points = 0;
-        for (int k = seg_start; k < i; ) {
-            int nk = utf8_sequence_len(p + k, len - k, &why);
-            if (nk == 0)
-                return -1;
-            k += nk;
-            points++;
-        }
-        if (points > NFC_SEGMENT_MAX)
-            return seg_start;
-
-        seg_start = i;
-        last_ccc = 0;
-    }
-    return -1;
-}
 
 static int normalize_lines_nfc(void)
 {
@@ -3882,25 +3830,26 @@ static int normalize_lines_nfc(void)
         if (nfc_first_bad(lines[i], len, &bad_len) < 0)
             continue;               /* already NFC — nothing to write */
 
-        long long overrun = nfc_segment_overrun(lines[i], len);
-        if (overrun >= 0) {
+        if (mdfix_nfc_normalize_bound((size_t)len) > sizeof dst) {
+            /* Unreachable while MAX_LINE bounds a line and NFC_DST_MAX is
+             * 3x it, which is the same bound. Stated so that changing either
+             * one is caught here rather than in someone's manuscript. */
             fprintf(stderr,
-                "error: line %d, byte %lld: a combining sequence longer than "
-                "%d code points.\n"
-                "The bundled normalizer truncates these silently, so mdfix "
-                "refuses to normalize\nrather than lose text. The file is "
-                "unchanged; report this input.\n",
-                i + 1, line_off[i] + overrun, NFC_SEGMENT_MAX);
+                "error: line %d needs a larger normalization buffer than "
+                "mdfix has.\nThis should be unreachable; please report it.\n",
+                i + 1);
             return 1;
         }
 
         size_t nout = 0;
-        mdfix_nfc_normalize((const unsigned char *)lines[i], (size_t)len,
-                            dst, sizeof dst, &nout);
-        if (nout >= sizeof dst) {
+        mdfix_nfc_status st = mdfix_nfc_normalize(
+            (const unsigned char *)lines[i], (size_t)len, dst, sizeof dst,
+            &nout);
+        if (st != MDFIX_NFC_OK) {
             fprintf(stderr,
-                "error: line %d overflows the normalization buffer.\n"
-                "This should be unreachable; please report it.\n", i + 1);
+                "error: line %d could not be normalized (status %d); the "
+                "result would be\na prefix of the correct answer. The file is "
+                "unchanged; please report this input.\n", i + 1, (int)st);
             return 1;
         }
         if (nout > (size_t)(MAX_LINE - 1)) {
@@ -4131,7 +4080,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 4135 "mdfix.c"
+#line 4084 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -4139,20 +4088,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 4143 "mdfix.c"
+#line 4092 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 4529 "mdfix.rl"
+#line 4478 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 4279 "mdfix.rl"
+#line 4228 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -4192,7 +4141,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 4155 "mdfix.rl"
+#line 4104 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial || ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -4229,19 +4178,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 4148 "mdfix.rl"
+#line 4097 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 4148 "mdfix.rl"
+#line 4097 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 4464 "mdfix.rl"
+#line 4413 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -4265,7 +4214,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 4509 "mdfix.rl"
+#line 4458 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -4286,7 +4235,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 4487 "mdfix.rl"
+#line 4436 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -4309,13 +4258,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 4529 "mdfix.rl"
+#line 4478 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 4409 "mdfix.rl"
+#line 4358 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -4338,7 +4287,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 4321 "mdfix.rl"
+#line 4270 "mdfix.rl"
 	{te = p+1;{
                 /*
                  * Either Chicago flag answers "is this run an ellipsis?"
@@ -4389,13 +4338,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 4529 "mdfix.rl"
+#line 4478 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 4371 "mdfix.rl"
+#line 4320 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -4434,7 +4383,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 4431 "mdfix.rl"
+#line 4380 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -4468,7 +4417,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 4217 "mdfix.rl"
+#line 4166 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4481,7 +4430,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 4191 "mdfix.rl"
+#line 4140 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4495,7 +4444,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 4229 "mdfix.rl"
+#line 4178 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4508,7 +4457,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 4204 "mdfix.rl"
+#line 4153 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4522,7 +4471,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 4241 "mdfix.rl"
+#line 4190 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -4561,7 +4510,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 4148 "mdfix.rl"
+#line 4097 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -4574,7 +4523,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 4578 "mdfix.c"
+#line 4527 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -4600,7 +4549,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 4604 "mdfix.c"
+#line 4553 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -4644,7 +4593,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 4648 "mdfix.c"
+#line 4597 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -4693,7 +4642,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 4697 "mdfix.c"
+#line 4646 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -4712,7 +4661,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 4716 "mdfix.c"
+#line 4665 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -4738,7 +4687,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 4742 "mdfix.c"
+#line 4691 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -4787,7 +4736,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 4791 "mdfix.c"
+#line 4740 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -4867,7 +4816,7 @@ case 13:
 
 	}
 
-#line 4536 "mdfix.rl"
+#line 4485 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';

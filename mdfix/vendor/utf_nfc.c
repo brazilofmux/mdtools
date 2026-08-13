@@ -4,7 +4,7 @@
  * VENDORED, DO NOT EDIT. Extracted from libutf:
  *
  *     https://github.com/brazilofmux/utf
- *     commit 8ad858510181
+ *     commit d3f660a
  *     src/nfc.c, the four NFC DFA tables from tables/nfc_tables.c, and
  *     utf8_FirstByte from tables/unicode_tables.c  (Unicode 16.0)
  *
@@ -19,8 +19,9 @@
  *
  *   1. Tables are `static` and live in this file, so they cannot collide with
  *      a build that also links libutf.
- *   2. The two public entry points are renamed `utf_nfc_*` -> `mdfix_nfc_*`,
- *      as `co_console_width` -> `mdfix_display_width` was in utf_width.c.
+ *   2. The public entry points are renamed `utf_nfc_*` -> `mdfix_nfc_*`, and
+ *      the status enum with them, as `co_console_width` ->
+ *      `mdfix_display_width` was in utf_width.c.
  *   3. `GetCCCandNFCQC` is exposed as `mdfix_nfc_ccc_qc`. It is upstream's
  *      function unchanged; only its visibility differs. mdfix needs the
  *      per-code-point property because I1.2 requires a *location*, and
@@ -29,25 +30,20 @@
  *      policy belongs — libutf keeps the Unicode data, mdtools keeps the
  *      reporting.
  *
- * Two known upstream defects, left as-is because this is a faithful copy.
- * Both are worked around by the caller; see `normalize_lines_nfc` and
- * `nfc_segment_overrun` in mdfix.rl.
+ * Both defects the first vendoring found are fixed upstream and gone from
+ * this copy:
  *
- *   a) brazilofmux/utf#2 — the normalizer silently drops output that does not
- *      fit `nDstMax` and gives the caller no way to tell truncation from a
- *      short result. mdfix sizes the destination past the UAX #15 worst case
- *      and checks the length itself.
+ *   brazilofmux/utf#1 — a dirty segment ended only at a starter with
+ *      NFC_QC=Yes, so a composition exclusion (U+0958) never ended one and a
+ *      run of them was truncated at the segment cap. Segments now end at any
+ *      canonical boundary, and 2700 copies normalize to all 16200 bytes.
  *
- *   b) brazilofmux/utf#1, worse and not a buffer-size problem at all: a
- *      "dirty segment" ends at
- *      the next code point that is both a starter and NFC_QC=Yes, but a
- *      composition exclusion — U+0958 DEVANAGARI LETTER KHA WITH NUKTA, for
- *      one — is a starter with NFC_QC=No, so it never ends a segment. A run
- *      of them becomes one enormous segment, and `NormalizeSegment` truncates
- *      it at `NFC_SEG_MAX` (128 decomposed code points) without a word: 2700
- *      of them normalize to 64, losing 2636 characters. Confirmed against
- *      libutf itself, not only against this copy. mdfix measures segments
- *      before calling and refuses to normalize rather than lose text.
+ *   brazilofmux/utf#2 — truncation was unreportable. The normalizer returns a
+ *      status now, and `mdfix_nfc_normalize_bound` gives a destination size
+ *      that makes truncation impossible.
+ *
+ * mdfix uses the bound and checks the status anyway; see `normalize_lines_nfc`
+ * in mdfix.rl.
  */
 
 #include "utf_nfc.h"
@@ -104,7 +100,7 @@ static const unsigned char utf8_FirstByte[256] =
     4,  4,  4,  4,  4,  6,  6,  6,  6,  6,  6,  6,  6,  6,  6,  6   // F
 };
 
-/* ── from tables/nfc_tables.c ──────────────────────────────── */
+/* ── from tables/nfc_tables.c ───────────────────────────── */
 
 #define T(x) ((const unsigned char *)(x))
 
@@ -4155,7 +4151,7 @@ static const uint32_t tr_nfc_compose_nfc_compose_result[965] =
 
 
 
-/* ── from src/nfc.c ─────────────────────────────────────── */
+/* ── from src/nfc.c ────────────────────────────────── */
 
 /* Hangul constants (Unicode 3.0+ algorithmic composition/decomposition). */
 #define HANGUL_SBASE  0xAC00
@@ -4172,11 +4168,24 @@ static const uint32_t tr_nfc_compose_nfc_compose_result[965] =
 
 #define UTF8_CONTINUE 5
 
-/* Maximum code points per normalization segment.
- * A segment is one combining character sequence (starter + combiners).
- * 128 is generous — real sequences rarely exceed ~10 code points.
+/* NFC_QC property values (see gen/gen_nfcqc.pl). */
+#define NFCQC_YES   0
+#define NFCQC_NO    1
+#define NFCQC_MAYBE 2
+
+/* Maximum *decomposed* code points per normalization segment.
+ *
+ * A segment is one combining character sequence: a starter plus every
+ * following code point up to the next canonical boundary.  UAX #15's
+ * Stream-Safe Text Format caps a sequence at 30 non-starters, so this is
+ * ~34x real-world worst case.  It is a hard limit rather than a hint:
+ * input that exceeds it is reported as MDFIX_NFC_SEGMENT_TOO_LONG and is
+ * never silently discarded.  Override with -DUTF_NFC_SEG_MAX=N.
  */
-#define NFC_SEG_MAX 128
+#ifndef MDFIX_NFC_SEG_MAX
+#define MDFIX_NFC_SEG_MAX 1024
+#endif
+#define NFC_SEG_MAX MDFIX_NFC_SEG_MAX
 
 typedef struct {
     uint32_t cp;
@@ -4407,7 +4416,10 @@ static uint32_t Compose(uint32_t cp1, uint32_t cp2)
 
 /* --- Decomposition --- */
 
-static void DecomposeOne(uint32_t cp, NFCCodePoint *buf, int *n, int maxN)
+/* Decompose one code point into buf.  Returns 0 if buf is too small — the
+ * caller must treat that as an error, never as a truncated result.
+ */
+static int DecomposeOne(uint32_t cp, NFCCodePoint *buf, int *n, int maxN)
 {
     /* Hangul syllable decomposition. */
     if (HANGUL_SBASE <= cp && cp < HANGUL_SBASE + HANGUL_SCOUNT) {
@@ -4415,28 +4427,29 @@ static void DecomposeOne(uint32_t cp, NFCCodePoint *buf, int *n, int maxN)
         uint32_t l = HANGUL_LBASE + sIndex / HANGUL_NCOUNT;
         uint32_t v = HANGUL_VBASE + (sIndex % HANGUL_NCOUNT) / HANGUL_TCOUNT;
         uint32_t t = HANGUL_TBASE + sIndex % HANGUL_TCOUNT;
+        int need = (t != HANGUL_TBASE) ? 3 : 2;
 
-        if (*n < maxN) { buf[*n].cp = l; buf[*n].ccc = 0; (*n)++; }
-        if (*n < maxN) { buf[*n].cp = v; buf[*n].ccc = 0; (*n)++; }
-        if (t != HANGUL_TBASE && *n < maxN) { buf[*n].cp = t; buf[*n].ccc = 0; (*n)++; }
-        return;
+        if (*n + need > maxN) return 0;
+        buf[*n].cp = l; buf[*n].ccc = 0; (*n)++;
+        buf[*n].cp = v; buf[*n].ccc = 0; (*n)++;
+        if (t != HANGUL_TBASE) { buf[*n].cp = t; buf[*n].ccc = 0; (*n)++; }
+        return 1;
     }
 
     /* Table lookup. */
     unsigned char encoded[4];
     int nBytes = utf8_Encode(cp, encoded);
-    if (nBytes <= 0) return;
+    if (nBytes <= 0) return 1;
 
     int bXor;
     const co_string_desc *sd = GetNFD(encoded, &bXor);
     if (NULL == sd) {
         /* No decomposition — emit as-is. */
-        if (*n < maxN) {
-            buf[*n].cp = cp;
-            buf[*n].ccc = GetCCC(encoded, encoded + nBytes);
-            (*n)++;
-        }
-        return;
+        if (*n >= maxN) return 0;
+        buf[*n].cp = cp;
+        buf[*n].ccc = GetCCC(encoded, encoded + nBytes);
+        (*n)++;
+        return 1;
     }
 
     /* Build decomposed UTF-8. */
@@ -4454,9 +4467,10 @@ static void DecomposeOne(uint32_t cp, NFCCodePoint *buf, int *n, int maxN)
     /* Parse decomposed UTF-8 into code points. */
     const unsigned char *dp = decomposed;
     const unsigned char *dpEnd = decomposed + nDecomp;
-    while (dp < dpEnd && *n < maxN) {
+    while (dp < dpEnd) {
         uint32_t dcp = utf8_Decode(&dp, dpEnd);
         if (UNI_EOF == dcp) break;
+        if (*n >= maxN) return 0;
 
         unsigned char enc3[4];
         int nb3 = utf8_Encode(dcp, enc3);
@@ -4464,6 +4478,68 @@ static void DecomposeOne(uint32_t cp, NFCCodePoint *buf, int *n, int maxN)
         buf[*n].ccc = (nb3 > 0) ? GetCCC(enc3, enc3 + nb3) : 0;
         (*n)++;
     }
+    return 1;
+}
+
+/*
+ * HasBoundaryBefore — is it safe to start a new normalization segment here?
+ *
+ * Normalizing [A, C) and [C, B) separately equals normalizing [A, B) only if
+ * nothing at or after C can interact with anything before it.  Three
+ * conditions, each of which is load-bearing:
+ *
+ *   1. ccc == 0.  A non-starter reorders with the marks preceding it.
+ *
+ *   2. NFC_QC != Maybe.  UAX #15 assigns Maybe to exactly the code points
+ *      that may compose with a preceding character, so every possible
+ *      second element of a primary composite is Maybe — verified against
+ *      Unicode 16.0: the 120 composition seconds (Hangul V/T jamo plus 71
+ *      pairs across 17 other scripts) are a subset of the 132 Maybe code
+ *      points.  QC=No is a different thing entirely: an exclusion or
+ *      singleton such as U+0958 or U+212B is rewritten in place and cannot
+ *      compose leftward, so a boundary before it IS safe.  Requiring
+ *      QC=Yes here (rather than merely "not Maybe") was the bug behind
+ *      issue #1: runs of exclusions never ended a segment, so 2700 of them
+ *      became one segment and everything past the buffer cap was dropped.
+ *
+ *   3. Its own decomposition begins with a starter.  U+0F73, U+0F75 and
+ *      U+0F81 are QC=No starters that decompose to U+0F71 (ccc=129) first;
+ *      splitting before one would leave that mark unable to reorder with
+ *      the preceding sequence.  Those three are the entire exception set in
+ *      Unicode 16.0, and QC=Yes starters never decompose to a non-starter,
+ *      so this lookup only runs for QC=No.
+ */
+static int HasBoundaryBefore(const unsigned char *p, int nBytes, int ccc, int qc)
+{
+    if (0 != ccc || NFCQC_MAYBE == qc) return 0;
+    if (NFCQC_NO != qc) return 1;
+
+    int bXor;
+    const co_string_desc *sd = GetNFD(p, &bXor);
+    if (NULL == sd) return 1;
+
+    /* Only the decomposition's first code point matters, so materialize at
+     * most 4 bytes.  XOR entries are deltas against the source code point's
+     * own bytes, which is why the copy is bounded by nBytes as well. */
+    unsigned char decomposed[4];
+    size_t nDecomp = sd->n_bytes;
+    if (nDecomp > sizeof(decomposed)) nDecomp = sizeof(decomposed);
+    if (bXor) {
+        if (nDecomp > (size_t)nBytes) nDecomp = (size_t)nBytes;
+        for (size_t i = 0; i < nDecomp; i++)
+            decomposed[i] = p[i] ^ sd->p[i];
+    } else {
+        memcpy(decomposed, sd->p, nDecomp);
+    }
+
+    const unsigned char *dp = decomposed;
+    const unsigned char *dpEnd = decomposed + nDecomp;
+    uint32_t first = utf8_Decode(&dp, dpEnd);
+    if (UNI_EOF == first) return 1;
+
+    unsigned char enc[4];
+    int nb = utf8_Encode(first, enc);
+    return (nb > 0) ? (0 == GetCCC(enc, enc + nb)) : 1;
 }
 
 /* Canonical ordering: stable insertion sort by CCC. */
@@ -4551,35 +4627,52 @@ static int utf8_cplen(const unsigned char *p, const unsigned char *pEnd)
 /* --- Segment normalizer --- */
 
 /* Normalize a single combining character sequence into dst.
- * Returns bytes written.
+ *
+ * Returns MDFIX_NFC_OK and sets *pnOut, or an error status.  On error nothing
+ * is written and *pnOut is 0: a partially normalized segment is not a valid
+ * prefix of the answer, so it must never be emitted.
  */
-static size_t NormalizeSegment(const unsigned char *src, size_t nSrc,
-                               unsigned char *dst, size_t nDstMax)
+static int NormalizeSegment(const unsigned char *src, size_t nSrc,
+                            unsigned char *dst, size_t nDstMax, size_t *pnOut)
 {
     NFCCodePoint cps[NFC_SEG_MAX];
     int nCps = 0;
 
+    *pnOut = 0;
+
     const unsigned char *p = src;
     const unsigned char *pEnd = src + nSrc;
-    while (p < pEnd && nCps < NFC_SEG_MAX) {
+    while (p < pEnd) {
         uint32_t cp = utf8_Decode(&p, pEnd);
         if (UNI_EOF == cp) continue;
-        DecomposeOne(cp, cps, &nCps, NFC_SEG_MAX);
+        if (!DecomposeOne(cp, cps, &nCps, NFC_SEG_MAX))
+            return MDFIX_NFC_SEGMENT_TOO_LONG;
     }
 
     CanonicalOrder(cps, nCps);
     CanonicalCompose(cps, &nCps);
 
+    /* Measure before writing so a short dst truncates at a segment boundary
+     * rather than mid-sequence. */
+    size_t need = 0;
+    for (int i = 0; i < nCps; i++) {
+        unsigned char enc[4];
+        int nb = utf8_Encode(cps[i].cp, enc);
+        if (nb > 0) need += (size_t)nb;
+    }
+    if (need > nDstMax) return MDFIX_NFC_TRUNCATED;
+
     size_t nOut = 0;
     for (int i = 0; i < nCps; i++) {
         unsigned char enc[4];
         int nb = utf8_Encode(cps[i].cp, enc);
-        if (nb > 0 && nOut + (size_t)nb <= nDstMax) {
+        if (nb > 0) {
             memcpy(dst + nOut, enc, nb);
-            nOut += nb;
+            nOut += (size_t)nb;
         }
     }
-    return nOut;
+    *pnOut = nOut;
+    return MDFIX_NFC_OK;
 }
 
 /* --- Public API --- */
@@ -4612,8 +4705,26 @@ int mdfix_nfc_is_nfc(const unsigned char *src, size_t nSrc)
     return 1;
 }
 
-void mdfix_nfc_normalize(const unsigned char *src, size_t nSrc,
-                       unsigned char *dst, size_t nDstMax, size_t *pnDst)
+/* Append to dst, or report truncation.  Never writes a partial copy: a
+ * short buffer stops output at the last whole unit rather than splitting a
+ * UTF-8 sequence. */
+static int Emit(unsigned char *dst, size_t nDstMax, size_t *pnOut,
+                const unsigned char *p, size_t n)
+{
+    if (n > nDstMax - *pnOut) return MDFIX_NFC_TRUNCATED;
+    memcpy(dst + *pnOut, p, n);
+    *pnOut += n;
+    return MDFIX_NFC_OK;
+}
+
+size_t mdfix_nfc_normalize_bound(size_t nSrc)
+{
+    return 3 * nSrc;
+}
+
+mdfix_nfc_status mdfix_nfc_normalize(const unsigned char *src, size_t nSrc,
+                                 unsigned char *dst, size_t nDstMax,
+                                 size_t *pnDst)
 {
     *pnDst = 0;
     const unsigned char *p = src;
@@ -4656,32 +4767,35 @@ void mdfix_nfc_normalize(const unsigned char *src, size_t nSrc,
 
         /* Copy clean prefix [copyFrom, lastStarter) to output. */
         size_t cleanLen = (size_t)(lastStarter - copyFrom);
-        if (cleanLen > 0 && nOut + cleanLen <= nDstMax) {
-            memcpy(dst + nOut, copyFrom, cleanLen);
-            nOut += cleanLen;
+        if (cleanLen > 0) {
+            int rc = Emit(dst, nDstMax, &nOut, copyFrom, cleanLen);
+            if (MDFIX_NFC_OK != rc) { *pnDst = nOut; return rc; }
         }
 
         /* Skip past the problem code point. */
         p += n;
 
-        /* Scan forward to find the end of the dirty segment:
-         * the next starter (CCC=0) with NFC_QC=Yes.
-         */
+        /* Scan forward for the end of the dirty segment: the next code
+         * point with a canonical boundary before it (see
+         * HasBoundaryBefore).  Requiring NFC_QC=Yes here instead let runs
+         * of composition exclusions and singletons grow without bound. */
         while (p < pEnd) {
-            if (*p < 0x80) break;  /* ASCII = clean starter */
+            if (*p < 0x80) break;  /* ASCII: starter, QC=Yes, never a comp second */
             int n2 = utf8_cplen(p, pEnd);
             if (0 == n2) { p++; continue; }
             int ccc2, qc2;
             mdfix_nfc_ccc_qc(p, p + n2, &ccc2, &qc2);
-            if (0 == ccc2 && 0 == qc2) break;  /* Clean starter: end of dirty segment */
+            if (HasBoundaryBefore(p, n2, ccc2, qc2)) break;
             p += n2;
         }
 
         /* Normalize [lastStarter, p). */
         size_t segLen = (size_t)(p - lastStarter);
-        nOut += NormalizeSegment(lastStarter, segLen,
-                                dst + nOut,
-                                (nOut < nDstMax) ? nDstMax - nOut : 0);
+        size_t segOut = 0;
+        int rc = NormalizeSegment(lastStarter, segLen,
+                                  dst + nOut, nDstMax - nOut, &segOut);
+        if (MDFIX_NFC_OK != rc) { *pnDst = nOut; return rc; }
+        nOut += segOut;
 
         copyFrom = p;
         lastStarter = p;
@@ -4690,10 +4804,11 @@ void mdfix_nfc_normalize(const unsigned char *src, size_t nSrc,
 
     /* Copy remaining clean tail. */
     size_t tailLen = (size_t)(pEnd - copyFrom);
-    if (tailLen > 0 && nOut + tailLen <= nDstMax) {
-        memcpy(dst + nOut, copyFrom, tailLen);
-        nOut += tailLen;
+    if (tailLen > 0) {
+        int rc = Emit(dst, nDstMax, &nOut, copyFrom, tailLen);
+        if (MDFIX_NFC_OK != rc) { *pnDst = nOut; return rc; }
     }
 
     *pnDst = nOut;
+    return MDFIX_NFC_OK;
 }
