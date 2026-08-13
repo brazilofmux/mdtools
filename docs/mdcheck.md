@@ -149,17 +149,19 @@ Off unless a bibliography is named. A document with citations and no
 bibliography is not making a mistake — it may be assembled later, or cited
 into a system mdtools knows nothing about.
 
-Sources, in Pandoc's own order of specificity:
+Sources:
 
 | | |
 |---|---|
-| front matter `references:` | inline CSL, a list of `{id: ...}` |
+| front matter `references:` | inline CSL, extra keys, merged with files |
 | front matter `bibliography:` | a path, or a list of them, relative to the document |
 | `mdtools.toml` `bibliography` | the project default, relative to its root |
 
-Front matter wins, because that is the document saying what it cites against.
-Formats are BibTeX/BibLaTeX (`.bib`), CSL JSON and CSL YAML; only the keys are
-read, so none of this is a citation formatter.
+A document that names `bibliography:` is saying what it cites against, and
+the project default is not used — including an explicit empty list, which is
+named-but-empty rather than not named. `references:` adds keys; it does not
+replace a bibliography file. Formats are BibTeX/BibLaTeX (`.bib`), CSL JSON
+and CSL YAML; only the keys are read, so none of this is a citation formatter.
 
 ```console
 $ mdcheck paper.md

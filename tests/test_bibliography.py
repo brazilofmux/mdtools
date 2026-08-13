@@ -118,6 +118,21 @@ class FrontMatterSourceTests(BibliographyTestCase):
         self.assertEqual(len(rows), 1)
         self.assertIn("@missing", rows[0]["message"])
 
+    def test_inline_references_merge_with_a_named_file(self) -> None:
+        self._write("a.md", "---\nbibliography: refs.bib\nreferences:\n"
+                            "  - id: extra\n    title: X\n---\n\n"
+                            "[@smith2020] [@extra] [@ghost].\n")
+        rows = self._rows("a.md")
+        self.assertEqual(len(rows), 1)
+        self.assertIn("@ghost", rows[0]["message"])
+
+    def test_an_empty_list_is_named_empty(self) -> None:
+        # Named-but-empty, not "not named": the check runs.
+        self._write("a.md", "---\nbibliography: []\n---\n\n[@ghost].\n")
+        rows = self._rows("a.md")
+        self.assertEqual([r["rule"] for r in rows],
+                         ["check.unresolved-citation"])
+
     def test_a_path_is_relative_to_the_document(self) -> None:
         self._write("sub/a.md", "---\nbibliography: ../refs.bib\n---\n\n"
                                 "[@smith2020].\n")
@@ -156,6 +171,31 @@ class ProjectSourceTests(BibliographyTestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("bibliography", result.stderr)
 
+    def test_an_empty_list_does_not_use_the_project_default(self) -> None:
+        self._write("mdtools.toml", '[mdtools]\nbibliography = "refs.bib"\n')
+        self._write("a.md", "---\nbibliography: []\n---\n\n[@smith2020].\n")
+        rows = self._rows("a.md")
+        self.assertEqual([r["rule"] for r in rows],
+                         ["check.unresolved-citation"])
+
+    def test_a_non_path_value_does_not_use_the_project_default(self) -> None:
+        self._write("mdtools.toml", '[mdtools]\nbibliography = "refs.bib"\n')
+        self._write("a.md", "---\nbibliography: 3\n---\n\n"
+                            "[@smith2020] [@ghost].\n")
+        rows = self._rows("a.md")
+        self.assertEqual([r["rule"] for r in rows],
+                         ["check.bibliography-unreadable"])
+
+    def test_inline_references_merge_with_the_project_default(self) -> None:
+        # citeproc treats metadata references as extra items, not a
+        # replacement for the project file.
+        self._write("mdtools.toml", '[mdtools]\nbibliography = "refs.bib"\n')
+        self._write("a.md", "---\nreferences:\n  - id: extra\n    title: X\n"
+                            "---\n\n[@smith2020] [@extra] [@ghost].\n")
+        rows = self._rows("a.md")
+        self.assertEqual(len(rows), 1)
+        self.assertIn("@ghost", rows[0]["message"])
+
 
 class FormatTests(BibliographyTestCase):
     def test_csl_json(self) -> None:
@@ -168,6 +208,13 @@ class FormatTests(BibliographyTestCase):
         self._write("refs.yaml", "references:\n  - id: y1\n    title: X\n")
         self._write("a.md", "---\nbibliography: refs.yaml\n---\n\n"
                             "[@y1] and [@nope].\n")
+        self.assertEqual(len(self._rows("a.md")), 1)
+
+    def test_csl_json_with_a_references_wrapper(self) -> None:
+        self._write("refs.json", json.dumps(
+            {"references": [{"id": "j1", "title": "X"}]}))
+        self._write("a.md", "---\nbibliography: refs.json\n---\n\n"
+                            "[@j1] and [@nope].\n")
         self.assertEqual(len(self._rows("a.md")), 1)
 
     def test_bibtex_non_entries_are_not_keys(self) -> None:
@@ -201,6 +248,35 @@ class UnreadableTests(BibliographyTestCase):
     def test_malformed_json_is_reported_not_treated_as_empty(self) -> None:
         self._write("refs.json", "{not json")
         self._write("a.md", "---\nbibliography: refs.json\n---\n\n[@a] [@b].\n")
+        rows = self._rows("a.md")
+        self.assertEqual([r["rule"] for r in rows],
+                         ["check.bibliography-unreadable"])
+
+    def test_a_non_path_value_is_one_finding_not_a_fallthrough(self) -> None:
+        self._write("a.md", "---\nbibliography: 3\n---\n\n[@a] [@b].\n")
+        rows = self._rows("a.md")
+        self.assertEqual([r["rule"] for r in rows],
+                         ["check.bibliography-unreadable"])
+        self.assertIn("path", rows[0]["message"])
+
+    def test_a_mapping_bibliography_is_unreadable(self) -> None:
+        self._write("a.md", "---\nbibliography:\n  file: refs.bib\n---\n\n"
+                            "[@smith2020] [@ghost].\n")
+        rows = self._rows("a.md")
+        self.assertEqual([r["rule"] for r in rows],
+                         ["check.bibliography-unreadable"])
+
+    def test_a_csl_object_instead_of_a_list_is_unreadable(self) -> None:
+        self._write("refs.json", json.dumps({"id": "j1", "title": "X"}))
+        self._write("a.md", "---\nbibliography: refs.json\n---\n\n[@j1] [@j2].\n")
+        rows = self._rows("a.md")
+        self.assertEqual([r["rule"] for r in rows],
+                         ["check.bibliography-unreadable"])
+        self.assertIn("CSL", rows[0]["message"])
+
+    def test_a_yaml_mapping_without_references_is_unreadable(self) -> None:
+        self._write("refs.yaml", "id: y1\ntitle: X\n")
+        self._write("a.md", "---\nbibliography: refs.yaml\n---\n\n[@y1] [@y2].\n")
         rows = self._rows("a.md")
         self.assertEqual([r["rule"] for r in rows],
                          ["check.bibliography-unreadable"])

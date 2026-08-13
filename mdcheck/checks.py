@@ -78,13 +78,7 @@ def _records(path: Path, mdfix: Optional[str]) -> List[dict]:
 
 
 def _front_matter_data(data: bytes, record: dict) -> Optional[dict]:
-    """
-    The front matter as a mapping, or None if it is not one.
-
-    Read once and used twice — the schema check and the bibliography lookup
-    both want it, and parsing the same YAML a second time would be a second
-    chance to disagree about what it says.
-    """
+    """The front matter as a mapping, or None if it is not one."""
     try:
         import yaml
     except ImportError:                          # pragma: no cover

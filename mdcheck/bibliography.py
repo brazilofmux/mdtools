@@ -6,13 +6,16 @@ bibliography is not making a mistake — it may be assembled later, or cited
 into a system mdtools knows nothing about — so with no source this reports
 nothing at all.
 
-Sources, in Pandoc's own order of specificity:
+Sources:
 
-    front matter `references:`   inline CSL, a list of `{id: ...}`
+    front matter `references:`   inline CSL, extra keys (merged with files)
     front matter `bibliography:` a path, or a list of them
     mdtools.toml `bibliography`  the project default
 
-Front matter wins, because it is the document saying what it cites against.
+A document that names `bibliography:` is saying what it cites against, and
+the project default is not used — including an explicit empty list, which
+is named-but-empty rather than not named. `references:` adds keys; it does
+not replace a bibliography file.
 
 Formats are BibTeX/BibLaTeX (`.bib`), CSL JSON and CSL YAML. Only the *keys*
 are read — nothing here cares what a reference says, only which names exist,
@@ -72,9 +75,10 @@ def read_keys(path: Path) -> Tuple[Set[str], Optional[str]]:
         return _bib_keys(text), None
     if suffix == ".json":
         try:
-            return _csl_keys(json.loads(text)), None
+            data = json.loads(text)
         except json.JSONDecodeError as exc:
             return set(), f"{path}: not valid JSON ({exc.msg})"
+        return _read_csl(data, path)
     if suffix in (".yaml", ".yml"):
         if yaml is None:
             return set(), f"{path}: PyYAML is required to read a CSL YAML file"
@@ -83,19 +87,32 @@ def read_keys(path: Path) -> Tuple[Set[str], Optional[str]]:
         except yaml.YAMLError as exc:
             detail = " ".join(str(exc).split())
             return set(), f"{path}: not valid YAML ({detail})"
-        if isinstance(data, dict) and "references" in data:
-            data = data["references"]
-        return _csl_keys(data), None
+        return _read_csl(data, path)
     return set(), (f"{path}: unknown bibliography format {suffix!r}; "
                    "expected .bib, .json, .yaml or .yml")
 
 
-def _as_paths(value: object) -> List[str]:
-    if isinstance(value, str):
-        return [value]
+def _read_csl(data: object, path: Path) -> Tuple[Set[str], Optional[str]]:
+    """A CSL list, or a mapping wrapping one under `references`."""
+    if isinstance(data, list):
+        items = data
+    elif isinstance(data, dict) and isinstance(data.get("references"), list):
+        items = data["references"]
+    else:
+        return set(), (f"{path}: not a CSL bibliography; "
+                       "expected a list or a mapping with a references list")
+    return _csl_keys(items), None
+
+
+def _as_paths(value: object) -> Optional[List[str]]:
+    """A path or a list of them, or None when the value is some other kind."""
+    if isinstance(value, (str, Path)):
+        return [str(value)]
     if isinstance(value, list):
-        return [str(v) for v in value if isinstance(v, (str, Path))]
-    return []
+        if not all(isinstance(v, (str, Path)) for v in value):
+            return None
+        return [str(v) for v in value]
+    return None
 
 
 def resolve(front: object, configured: Optional[object],
@@ -110,23 +127,30 @@ def resolve(front: object, configured: Optional[object],
     errors: List[str] = []
     keys: Set[str] = set()
     named = False
+    # A document that names bibliography: — including [] — is saying what
+    # it cites against. references: only adds keys.
+    own_files = False
 
     if isinstance(front, dict):
-        inline = _csl_keys(front.get("references"))
         if front.get("references") is not None:
             named = True
-            keys |= inline
-        paths = _as_paths(front.get("bibliography"))
-        if paths:
+            keys |= _csl_keys(front.get("references"))
+        if front.get("bibliography") is not None:
             named = True
-            for name in paths:
-                found, error = read_keys((document.parent / name))
-                keys |= found
-                if error:
-                    errors.append(error)
+            own_files = True
+            paths = _as_paths(front.get("bibliography"))
+            if paths is None:
+                errors.append(
+                    f"{document}: bibliography must be a path or a list of paths")
+            else:
+                for name in paths:
+                    found, error = read_keys(document.parent / name)
+                    keys |= found
+                    if error:
+                        errors.append(error)
 
-    if not named and configured:
-        for name in _as_paths(configured):
+    if not own_files and configured:
+        for name in _as_paths(configured) or []:
             named = True
             found, error = read_keys(Path(name))
             keys |= found

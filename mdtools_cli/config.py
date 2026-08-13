@@ -52,7 +52,8 @@ class Config:
     # Front-matter schema (issue #13). Empty means no schema, which means the
     # check does not run at all — a project without one is not "failing" it.
     frontmatter: Dict[str, Any] = field(default_factory=dict)
-    # Project default for citation resolution (issue #13). Front matter wins.
+    # Project default for citation resolution (issue #13). A document that
+    # names bibliography: replaces this; references: merge with it.
     bibliography: List[str] = field(default_factory=list)
     raw: Dict[str, Any] = field(default_factory=dict)
 
