@@ -88,8 +88,6 @@ file on every supported version.
 | `links` | [mdlinks](mdlinks.md) |
 | `vary` | prosevary |
 | `config` | the resolved configuration |
-| `check` | reserved; not implemented (issue #13) |
+| `check` | [mdcheck](mdcheck.md) |
 
-`check` exits 2 and says so rather than failing confusingly — the verb is
-reserved so a script written against it today will keep working when mdcheck
-lands.
+

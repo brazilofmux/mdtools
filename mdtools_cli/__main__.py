@@ -6,6 +6,7 @@ mdtools — one entry point for the toolkit (issue #17).
     mdtools terms   chapter.md
     mdtools links   chapter.md
     mdtools vary    chapter.md      # prosevary
+    mdtools check   .               # mdcheck, over a whole repository
     mdtools config                  # the resolved configuration
 
 The standalone commands keep working; this dispatches to exactly the same
@@ -42,7 +43,7 @@ usage: mdtools <command> [args...]
   links    check the link graph (mdlinks)
   vary     controlled lexical variation (prosevary)
   config   print the resolved project configuration
-  check    repository-aware validation (not implemented; see issue #13)
+  check    repository-aware validation (mdcheck)
 
 Every command exits 0 clean, 1 with findings, 2 on a usage or environment
 error. `mdtools <command> --help` shows that command's own options.
@@ -126,12 +127,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(json.dumps(config.resolved(), indent=2))
         return 0
 
-    if verb == "check":
-        print("mdtools: `check` is not implemented yet (issue #13). "
-              "`mdtools links` and `mdterms` cover part of it today.",
-              file=sys.stderr)
-        return 2
-
     if verb == "fix":
         # Only long options suppress the profile; short flags like -q/-i still
         # take project wrap/profile (common: `mdtools fix -i file.md`).
@@ -147,6 +142,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 2
         return result.returncode
 
+    if verb == "check":
+        return _run_module("mdcheck", _with_mdfix(config, rest))
     if verb == "query":
         return _run_module("mdquery", _with_mdfix(config, rest))
     if verb == "links":

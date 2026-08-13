@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# mdcheck launcher — works from a git clone or a make install.
+# Forces the mdtools package ahead of cwd so a leftover ./mdcheck/
+# directory cannot shadow the real tool.
+set -euo pipefail
+
+# `make install` rewrites this line to the installed libdir (…/lib/mdtools).
+# For a git clone, leave empty and resolve relative to this script.
+MDTOOLS_LIB="${MDTOOLS_LIB:-}"
+
+if [[ -z "${MDTOOLS_LIB}" ]]; then
+  HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  MDTOOLS_LIB="$(cd "${HERE}/.." && pwd)"
+fi
+
+exec python3 - "${MDTOOLS_LIB}" "$@" <<'PY'
+import runpy
+import sys
+
+lib = sys.argv[1]
+# Drop cwd ('') so a local ./mdcheck package cannot win.
+sys.path = [lib] + [p for p in sys.path if p not in ("", lib)]
+sys.argv = ["mdcheck"] + sys.argv[2:]
+runpy.run_module("mdcheck", run_name="__main__")
+PY
