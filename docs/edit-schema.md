@@ -167,6 +167,14 @@ directory fsync. Nothing is written until the whole edit list has validated
 and the result has passed the I4.3 check — a write that has to be undone is a
 write that should not have happened.
 
+**A write that fails is reported, not swallowed.** `fwrite` and `fprintf`
+signal failure by returning a short count, and a failure that has already
+drained the buffer leaves `fflush`, `fsync` and `fclose` with nothing to
+complain about — so mdfix checks `ferror` before treating a write as done.
+Without that it installed a truncated file over the original and exited 0;
+`tests/test_fault_injection.py` fills the disk (via `RLIMIT_FSIZE`) and holds
+it to the guarantee.
+
 ## Previewing
 
 ```console

@@ -155,6 +155,15 @@ Each has an identifier so issues and tests can cite it.
   concatenating every record's span reproduces the input byte for byte, so a
   serializer can no longer silently normalize a blank run, a hard break, or a
   line ending. The serializer itself is still L5 work.)*
+- **I5.4 A failed write never lands.** An observed write error does not
+  install a partial file: the input is unchanged, a failed two-arg
+  destination is unlinked, and the exit is nonzero. `-i` uses
+  temp-then-rename, so a mid-write kill also leaves the original (an
+  orphan temp may remain). The two-arg path writes the destination in
+  place, so a kill can leave a truncated `out.md`. *(Done for observed
+  errors via `ferror` — a short `fwrite` can drain the FILE so flush,
+  fsync and close succeed. Fault-injected in
+  `tests/test_fault_injection.py`.)*
 
 ### D — Diagnostics
 
