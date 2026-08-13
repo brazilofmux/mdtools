@@ -1,6 +1,6 @@
 # mdtools
 
-Private toolkit for markdown structure and controlled prose variation.
+Markdown structure and controlled prose variation.
 
 | Tool | Language | Job |
 |---|---|---|
@@ -12,8 +12,11 @@ Private toolkit for markdown structure and controlled prose variation.
 | **mdcheck** | Python 3 | Repository-aware validation; JSONL or SARIF |
 | **prosevary** | Python 3 | Generate-then-gate lexical variation (freeze terms, embeddings, local LLM) |
 
-These used to be copy-pasted across `slow32-book`, `mush`, `religions`, and others.
-This repo is the source of truth.
+These used to be copy-pasted across the manuscripts for
+[*Build Your Own Universe*](https://www.amazon.com/dp/B0HDK4DXWS) (SLOW-32),
+[*MUSH Reference Library*](https://www.amazon.com/dp/B0H8PXRGBS),
+[*Evolution of the Sacred*](https://www.amazon.com/dp/B0H1KPY947),
+and others. This repo is the source of truth.
 
 Writing a manuscript rather than a pass? [docs/writing.md](docs/writing.md) is
 the dialect from the author's side — what you can write, and what the tools
@@ -39,9 +42,9 @@ tables mdfix carries and how a refresh is verified.
 
 As of the import (2026-08-11), copies ranked:
 
-1. **`slow32-book/mdfix.rl`** — newest; adds `--no-arrow-aside` (notation arrows stay `→`)
-2. **`mush/mdfix.rl`** — one feature behind (missing that flag)
-3. **recycledreply / religions / slow-32 examples** — older shared baseline
+1. **`slow32-book/mdfix.rl`** ([*Build Your Own Universe*](https://www.amazon.com/dp/B0HDK4DXWS)) — newest; adds `--no-arrow-aside` (notation arrows stay `→`)
+2. **`mush/mdfix.rl`** ([*MUSH Reference Library*](https://www.amazon.com/dp/B0H8PXRGBS)) — one feature behind (missing that flag)
+3. **recycledreply / religions** ([*Evolution of the Sacred*](https://www.amazon.com/dp/B0H1KPY947)) **/ slow-32 examples** — older shared baseline
 
 Import took (1). Downstream trees should install from here instead of vendoring.
 
@@ -126,9 +129,11 @@ fix-md:
 	$(MDFIX) -i -v --no-arrow-aside *.md
 ```
 
-For the SLOW-32 book series, **always** pass `--no-arrow-aside` when the
-editorial bundle is on. The arrow-to-em-dash pass is correct for pure prose
-(e.g., mush) and wrong for technical notation pipelines (`C → IR → asm`).
+For the SLOW-32 book ([*Build Your Own Universe*](https://www.amazon.com/dp/B0HDK4DXWS)),
+**always** pass `--no-arrow-aside` when the editorial bundle is on. The
+arrow-to-em-dash pass is correct for pure prose (e.g.
+[*MUSH Reference Library*](https://www.amazon.com/dp/B0H8PXRGBS)) and wrong
+for technical notation pipelines (`C → IR → asm`).
 
 Since #60 the five editorial fixes need `--editorial` (implied by
 `--canonical` and `--technical`). Profile consumers keep that behavior.
@@ -160,9 +165,10 @@ advisory `--report` editorial metrics. Not a silent CI auto-fixer — human
 `git diff` before commit. Expect a long road to `mdfix`-grade maturity; the
 segmenter is the pacing item.
 
-Optional later: gRPC `VarySentence` service for warm model residency
-(Hyperia-style composition with embed-svc / local-model adapter).
+Optional later: a gRPC `VarySentence` service for warm model residency
+(local embed service / local-model adapter).
 
 ## License
 
-Private. All rights reserved unless noted otherwise.
+[MIT](LICENSE). The Unicode tables under `mdfix/vendor/` are extracts from
+[libutf](https://github.com/brazilofmux/utf), also MIT.

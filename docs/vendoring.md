@@ -3,7 +3,7 @@
 Status: shipped, 2026-08-13.
 
 `mdfix/vendor/` holds three extracts from
-[libutf](https://github.com/brazilofmux/utf):
+[libutf](https://github.com/brazilofmux/utf) (MIT, same as this repo):
 
 | | |
 |---|---|

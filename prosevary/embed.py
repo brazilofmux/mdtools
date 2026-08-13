@@ -3,7 +3,7 @@ Embedding backends.
 
 Priority order (first available wins unless forced):
   1. Ollama HTTP /api/embeddings
-  2. sentence-transformers in-process (Hyperia-style)
+  2. sentence-transformers in-process
   3. HashEmbedder — deterministic pseudo-vectors for offline scaffold tests
 
 Never lowercase technical prose before embedding.
@@ -115,7 +115,7 @@ class OllamaEmbedder(Embedder):
 
 
 class SentenceTransformerEmbedder(Embedder):
-    """Optional heavy path — same library family as Hyperia embed-svc."""
+    """Optional heavy path — sentence-transformers in-process."""
 
     def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
         from sentence_transformers import SentenceTransformer  # type: ignore
@@ -124,7 +124,7 @@ class SentenceTransformerEmbedder(Embedder):
         self._model = SentenceTransformer(model_name)
 
     def embed(self, text: str) -> List[float]:
-        # Do not lowercase. normalize_embeddings=True matches Hyperia's L2 norm.
+        # Do not lowercase identifiers. normalize_embeddings=True is L2.
         vec = self._model.encode(text, normalize_embeddings=True)
         return [float(x) for x in vec]
 
