@@ -31,8 +31,8 @@ _KEEP_PUNCT = frozenset("_-. ")
 # filter, which is why `A--B` slugs as 'ab' and not 'a-b'. Longest first.
 #
 # This is the reader's text normalization, not inline structure — the same
-# algorithm's input, not a second parser. It matters in practice because §7
-# gap 6 has mdfix itself still emitting ASCII `...` under Chicago.
+# algorithm's input, not a second parser. Author-typed `...` is passed
+# through and still has to slug like Pandoc.
 _SMART = (("---", "—"), ("--", "–"), ("...", "…"))
 
 

@@ -382,8 +382,9 @@ Still needed:
   [edit-schema.md](edit-schema.md)) so edit-lists are the only write path.
   Dual grammar and `test_tool_parity.py` are already gone.
 - Coverage for remaining §7 gaps, each with the Pandoc AST (or rendered
-  output) as the assertion — Unicode ellipsis under Chicago. Hard-break
-  preservation is covered by `HardBreakTests` and the transform matrix.
+  output) as the assertion. Hard-break preservation is covered by
+  `HardBreakTests` and the transform matrix; ellipsis is covered by
+  `ChicagoEllipsisTests`.
 - CI oracle version: §3 pins pandoc 3.10 in prose; CI installs distro
   pandoc. Failures should name the binary/version so an apt bump is
   diagnosable.

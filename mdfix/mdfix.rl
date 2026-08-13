@@ -4197,13 +4197,8 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
             # ── Dot: check for spaced-ellipsis or dot-run ──
             '.' => {
                 /*
-                 * Either Chicago flag, not just the first. With only
-                 * --chicago-punct-2 the dot rule used to pass each dot
-                 * through while the space rule stripped the gaps between
-                 * them, assembling a smart-dependent `...` that no single
-                 * rule had decided to emit. Whether a run of dots becomes an
-                 * ellipsis is this rule's question, so it is answered here
-                 * for both flags.
+                 * Either Chicago flag answers "is this run an ellipsis?"
+                 * here so the emit form cannot be assembled elsewhere.
                  */
                 if (!ctx->do_chicago_punct && !ctx->do_chicago_punct2) {
                     EMIT_CHAR('.');
@@ -5829,7 +5824,7 @@ static void usage(const char *prog)
         "\n"
         "Fixes (opt-in with --chicago-punct):\n"
         "  7. Em-dash spacing normalized      (word -- word → word—word)\n"
-        "  8. Ellipsis normalized             (. . . or .... → ...)\n"
+        "  8. Ellipsis normalized             (. . . or .... → …; also --chicago-punct-2)\n"
         "  9. Sentence double-space collapsed (\"End.  Next\" → \"End. Next\")\n"
         "\n"
         "Fixes (opt-in with --chicago-punct-2):\n"

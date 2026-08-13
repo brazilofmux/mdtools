@@ -4023,7 +4023,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	switch ( cs )
 	{
 tr0:
-#line 4410 "mdfix.rl"
+#line 4405 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
@@ -4118,7 +4118,7 @@ tr8:
             }}
 	goto st14;
 tr12:
-#line 4345 "mdfix.rl"
+#line 4340 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -4142,7 +4142,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 4390 "mdfix.rl"
+#line 4385 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -4163,7 +4163,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 4368 "mdfix.rl"
+#line 4363 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -4186,13 +4186,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 4410 "mdfix.rl"
+#line 4405 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 4290 "mdfix.rl"
+#line 4285 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -4218,13 +4218,8 @@ tr25:
 #line 4198 "mdfix.rl"
 	{te = p+1;{
                 /*
-                 * Either Chicago flag, not just the first. With only
-                 * --chicago-punct-2 the dot rule used to pass each dot
-                 * through while the space rule stripped the gaps between
-                 * them, assembling a smart-dependent `...` that no single
-                 * rule had decided to emit. Whether a run of dots becomes an
-                 * ellipsis is this rule's question, so it is answered here
-                 * for both flags.
+                 * Either Chicago flag answers "is this run an ellipsis?"
+                 * here so the emit form cannot be assembled elsewhere.
                  */
                 if (!ctx->do_chicago_punct && !ctx->do_chicago_punct2) {
                     EMIT_CHAR('.');
@@ -4271,13 +4266,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 4410 "mdfix.rl"
+#line 4405 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 4253 "mdfix.rl"
+#line 4248 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -4315,7 +4310,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 4312 "mdfix.rl"
+#line 4307 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -4455,7 +4450,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 4459 "mdfix.c"
+#line 4454 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -4481,7 +4476,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 4485 "mdfix.c"
+#line 4480 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -4525,7 +4520,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 4529 "mdfix.c"
+#line 4524 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -4574,7 +4569,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 4578 "mdfix.c"
+#line 4573 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -4593,7 +4588,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 4597 "mdfix.c"
+#line 4592 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -4619,7 +4614,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 4623 "mdfix.c"
+#line 4618 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -4668,7 +4663,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 4672 "mdfix.c"
+#line 4667 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -4748,7 +4743,7 @@ case 13:
 
 	}
 
-#line 4417 "mdfix.rl"
+#line 4412 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';
@@ -6164,7 +6159,7 @@ static void usage(const char *prog)
         "\n"
         "Fixes (opt-in with --chicago-punct):\n"
         "  7. Em-dash spacing normalized      (word -- word → word—word)\n"
-        "  8. Ellipsis normalized             (. . . or .... → ...)\n"
+        "  8. Ellipsis normalized             (. . . or .... → …; also --chicago-punct-2)\n"
         "  9. Sentence double-space collapsed (\"End.  Next\" → \"End. Next\")\n"
         "\n"
         "Fixes (opt-in with --chicago-punct-2):\n"
