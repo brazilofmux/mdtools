@@ -3261,11 +3261,104 @@ static void lint_serial_comma(const char *line, int linenum)
  *   - Collapse multiple trailing spaces down to at most one
  * Net effect: intentional line breaks survive, sloppy whitespace doesn't.
  */
-static int fix_trailing_ws(char *line, int linenum)
+/*
+ * Is the whitespace at the end of `line` a hard line break?
+ *
+ * dialect-policy §3 pins `-hard_line_breaks +escaped_line_breaks`, so two or
+ * more trailing spaces before a continuing line mean a `LineBreak` and not
+ * stray whitespace. Two passes used to destroy them — §7 gap 5 — because both
+ * treated "trailing" and "meaningless" as the same word.
+ *
+ * Three conditions, and all three are load-bearing:
+ *
+ *   - two or more trailing spaces. One is noise; CommonMark needs two.
+ *   - something other than whitespace on the line. A line of only spaces is
+ *     a blank line, not a break.
+ *   - a following line with content. A break at the end of a block breaks
+ *     nothing, and Pandoc drops it.
+ *
+ * `index` is the line's index in lines[], so the third condition can be
+ * asked. A caller that does not know the index passes -1 and gets the
+ * conservative answer: keep the break. Preserving one Pandoc would have
+ * ignored costs a little trailing whitespace; destroying a real one changes
+ * what the document says.
+ */
+/*
+ * Does the trailing whitespace contain a tab? Then mdfix does not touch the
+ * line at all.
+ *
+ * Pandoc expands a trailing tab to the next tab stop, so whether it is a hard
+ * break depends on the line's width: measured against pandoc 3.10, `xxx\t`
+ * is a soft break and `xx\t`, `xxxx\t` are hard ones — one space at width
+ * 3 mod 4, two or more otherwise. Reproducing that means hard-coding a tab
+ * stop of 4, which is Pandoc's *default* and not its contract (`--tab-stop`
+ * changes it). Encoding a reader flag in the fixer is the mistake §4 exists
+ * to prevent.
+ *
+ * Worse, reflowing makes the question unanswerable: wrapping changes the
+ * line's width, so the same tab expands differently in the output than it did
+ * in the input, and no choice preserves meaning.
+ *
+ * So these lines are left exactly as they are — not stripped, not normalized,
+ * not joined. Whatever Pandoc made of the bytes, it still makes. `-w` leaves
+ * a trailing tab it would otherwise remove, which is the direction to err in.
+ */
+static int trailing_has_tab(const char *line)
 {
-    (void)linenum;
+    int len = (int)strlen(line);
+    int k = len;
+    while (k > 0 && (line[k - 1] == ' ' || line[k - 1] == '\t'))
+        k--;
+    if (k == 0)
+        return 0;                  /* whitespace-only: a blank line */
+    for (int j = k; j < len; j++)
+        if (line[j] == '\t')
+            return 1;
+    return 0;
+}
+static int is_hard_break(const char *line, int index)
+{
+    int len = (int)strlen(line);
+    if (len < 3 || line[len - 1] != ' ' || line[len - 2] != ' ')
+        return 0;
+
+    int k = len;
+    while (k > 0 && (line[k - 1] == ' ' || line[k - 1] == '\t'))
+        k--;
+    if (k == 0)
+        return 0;
+
+    if (index < 0)
+        return 1;
+    if (index + 1 >= nlines)
+        return 0;
+    const char *next = lines[index + 1];
+    while (*next == ' ' || *next == '\t')
+        next++;
+    return *next != '\0';
+}
+
+static int fix_trailing_ws(char *line, int linenum, int index)
+{
     if (!opt_trail_ws)
         return 0;
+    if (trailing_has_tab(line))
+        return 0;
+
+    if (is_hard_break(line, index)) {
+        /* Normalize to exactly two: the break survives, and a five-space
+         * ending stops being five bytes nobody can see. */
+        int len = (int)strlen(line);
+        int orig = len;
+        while (len > 0 && (line[len - 1] == ' ' || line[len - 1] == '\t'))
+            len--;
+        line[len] = ' ';
+        line[len + 1] = ' ';
+        line[len + 2] = '\0';
+        if (len + 2 != orig)
+            record_fix(FIX_TRAILING_WS, linenum);
+        return len + 2 != orig;
+    }
 
     int len = (int)strlen(line);
     int orig = len;
@@ -3277,20 +3370,15 @@ static int fix_trailing_ws(char *line, int linenum)
     if (len == orig)
         return 0;   /* nothing to do */
 
-    /* Count how many trailing spaces (not tabs) we had */
-    int trailing_spaces = 0;
-    for (int j = len; j < orig; j++) {
-        if (line[j] == ' ')
-            trailing_spaces++;
-    }
-
-    /* If there were any spaces, preserve exactly one */
-    if (trailing_spaces > 0) {
-        line[len] = ' ';
-        line[len + 1] = '\0';
-    } else {
-        line[len] = '\0';
-    }
+    /*
+     * Strip it all. This used to keep one space when there had been any,
+     * which looks like an attempt at the hard break above that landed one
+     * space short: one trailing space means nothing to Pandoc, so the break
+     * was destroyed and a byte of noise was left in its place. Now that a
+     * real break is recognized and normalized to two, there is nothing left
+     * for a lone space to protect.
+     */
+    line[len] = '\0';
 
     /* Only count as a fix if we actually changed something */
     if ((int)strlen(line) != orig) {
@@ -3337,14 +3425,18 @@ static int display_columns(const char *text, int from, int to)
  * Wrap on display columns (mdfix_display_width): break only at ASCII spaces.
  * Unspaced tokens (including CJK without spaces) are not split.
  */
-static void emit_wrapped(FILE *out, const char *text, int width)
+static void emit_wrapped_break(FILE *out, const char *text, int width,
+                               int hard)
 {
     int len = (int)strlen(text);
     int pos = 0;
 
+    /* `hard` puts the two spaces back on the *last* line this unit emits, not
+     * on the first. Wrapping may turn one source line into several, and a
+     * break belongs where the author put it — at the end. */
     while (pos < len) {
         if (display_columns(text, pos, len) <= width) {
-            fprintf(out, "%s\n", text + pos);
+            fprintf(out, "%s%s\n", text + pos, hard ? "  " : "");
             return;
         }
 
@@ -3367,7 +3459,7 @@ static void emit_wrapped(FILE *out, const char *text, int width)
             while (break_at < len && text[break_at] != ' ')
                 break_at += utf8_cp_len(text, break_at, len);
             if (break_at >= len) {
-                fprintf(out, "%s\n", text + pos);
+                fprintf(out, "%s%s\n", text + pos, hard ? "  " : "");
                 return;
             }
         }
@@ -3411,6 +3503,35 @@ static void flush_paragraph(FILE *out)
     for (int i = 0; i < npara; i++) {
         const char *s = para_lines_buf[i];
         int slen = (int)strlen(s);
+
+        /*
+         * A line whose trailing whitespace holds a tab is emitted verbatim,
+         * and whatever was accumulated before it is flushed first so its
+         * bytes keep their original column. See trailing_has_tab.
+         */
+        if (trailing_has_tab(s)) {
+            if (pos > 0) {
+                joined[pos] = '\0';
+                emit_wrapped_break(out, joined, opt_wrap_width, 0);
+                pos = 0;
+            }
+            fprintf(out, "%s\n", s);
+            continue;
+        }
+
+        /*
+         * A hard break ends a wrap unit and keeps its two spaces.
+         *
+         * Joining across one would delete a LineBreak from the document
+         * (§7 gap 5): the two lines become one, and no amount of re-wrapping
+         * puts the break back. The index is unknown here — these lines were
+         * buffered and the paragraph may already have ended — so `-1` asks
+         * for the conservative answer. Inside a buffered paragraph another
+         * line always follows anyway, except for the last, and a break there
+         * is exactly the case `-1` keeps and Pandoc ignores.
+         */
+        int hard = (i < npara - 1) && is_hard_break(s, -1);
+
         /* Trim trailing whitespace before joining */
         while (slen > 0 && (s[slen - 1] == ' ' || s[slen - 1] == '\t'))
             slen--;
@@ -3420,10 +3541,11 @@ static void flush_paragraph(FILE *out)
         memcpy(joined + pos, s, slen);
         pos += slen;
 
-        /* If this line is short or is the last, flush the accumulated text */
-        if (i == npara - 1 || !should_join(s, opt_wrap_width)) {
+        /* If this line is short, ends in a hard break, or is the last, flush
+         * the accumulated text */
+        if (i == npara - 1 || hard || !should_join(s, opt_wrap_width)) {
             joined[pos] = '\0';
-            emit_wrapped(out, joined, opt_wrap_width);
+            emit_wrapped_break(out, joined, opt_wrap_width, hard);
             pos = 0;
         } else {
             /* Join with next line via space */
@@ -3919,7 +4041,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 3923 "mdfix.c"
+#line 4045 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -3927,20 +4049,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 3931 "mdfix.c"
+#line 4053 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 4316 "mdfix.rl"
+#line 4438 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 4067 "mdfix.rl"
+#line 4189 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -3980,7 +4102,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 3943 "mdfix.rl"
+#line 4065 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial || ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -4017,19 +4139,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 3936 "mdfix.rl"
+#line 4058 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 3936 "mdfix.rl"
+#line 4058 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 4251 "mdfix.rl"
+#line 4373 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -4053,7 +4175,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 4296 "mdfix.rl"
+#line 4418 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -4074,7 +4196,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 4274 "mdfix.rl"
+#line 4396 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -4097,13 +4219,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 4316 "mdfix.rl"
+#line 4438 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 4196 "mdfix.rl"
+#line 4318 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -4126,7 +4248,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 4109 "mdfix.rl"
+#line 4231 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_CHAR('.');
@@ -4177,13 +4299,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 4316 "mdfix.rl"
+#line 4438 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 4159 "mdfix.rl"
+#line 4281 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -4221,7 +4343,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 4218 "mdfix.rl"
+#line 4340 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -4255,7 +4377,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 4005 "mdfix.rl"
+#line 4127 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4268,7 +4390,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 3979 "mdfix.rl"
+#line 4101 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4282,7 +4404,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 4017 "mdfix.rl"
+#line 4139 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4295,7 +4417,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 3992 "mdfix.rl"
+#line 4114 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4309,7 +4431,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 4029 "mdfix.rl"
+#line 4151 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -4348,7 +4470,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 3936 "mdfix.rl"
+#line 4058 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -4361,7 +4483,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 4365 "mdfix.c"
+#line 4487 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -4387,7 +4509,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 4391 "mdfix.c"
+#line 4513 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -4431,7 +4553,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 4435 "mdfix.c"
+#line 4557 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -4480,7 +4602,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 4484 "mdfix.c"
+#line 4606 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -4499,7 +4621,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 4503 "mdfix.c"
+#line 4625 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -4525,7 +4647,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 4529 "mdfix.c"
+#line 4651 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -4574,7 +4696,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 4578 "mdfix.c"
+#line 4700 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -4654,7 +4776,7 @@ case 13:
 
 	}
 
-#line 4323 "mdfix.rl"
+#line 4445 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';
@@ -4741,7 +4863,7 @@ static void process(FILE *out)
         if (!fence.active && fmatter_close > 0) {
             if (i == 0) {
                 in_frontmatter = 1;
-                fix_trailing_ws(line, i + 1);
+                fix_trailing_ws(line, i + 1, i);
                 fprintf(out, "%s\n", line);
                 prev_content_type = LT_TEXT;
                 had_blank = 0;
@@ -4749,7 +4871,7 @@ static void process(FILE *out)
             }
             if (i == fmatter_close) {
                 in_frontmatter = 0;
-                fix_trailing_ws(line, i + 1);
+                fix_trailing_ws(line, i + 1, i);
                 fprintf(out, "%s\n", line);
                 prev_content_type = LT_TEXT;
                 had_blank = 0;
@@ -4761,7 +4883,7 @@ static void process(FILE *out)
 
         /* ── Inside frontmatter: pass through, just trim whitespace ── */
         if (in_frontmatter) {
-            fix_trailing_ws(line, i + 1);
+            fix_trailing_ws(line, i + 1, i);
             fprintf(out, "%s\n", line);
             continue;
         }
@@ -4787,7 +4909,7 @@ static void process(FILE *out)
             if (is_fence_closer(line, &fence)) {
                 fix_fence_canonical(line, i + 1, 0);
                 fence.active = 0;
-                fix_trailing_ws(line, i + 1);
+                fix_trailing_ws(line, i + 1, i);
             }
             fprintf(out, "%s\n", line);
             continue;
@@ -4812,7 +4934,7 @@ static void process(FILE *out)
             fix_fence_canonical(line, i + 1, 1);
             opener.open_line = i + 1;
             fence = opener;
-            fix_trailing_ws(line, i + 1);
+            fix_trailing_ws(line, i + 1, i);
             fprintf(out, "%s\n", line);
             /* Not LT_TEXT: indented code may follow a fence with no blank. */
             prev_content_type = LT_CODEFENCE;
@@ -5058,7 +5180,7 @@ static void process(FILE *out)
         apply_scanner(line, i + 1);
 
         /* Apply post-scanner C fixers */
-        fix_trailing_ws(line, i + 1);
+        fix_trailing_ws(line, i + 1, i);
         fix_bullet(line, i + 1);
         fix_heading_fmt(line, i + 1);
         fix_heading_space(line, i + 1);

@@ -100,13 +100,15 @@ Each has an identifier so issues and tests can cite it.
 
 - **I3.1 Non-interference.** For every optional transform, applied alone and
   in every shipped profile, the output still satisfies I2.1 and I2.2. This is
-  a test matrix, not a promise — `tests/test_transform_matrix.py` sweeps 14
-  transforms over 12 documents and pins the violations exactly, so both a new
-  one and a fixed one fail. *(Today false: `-w`, `--canonical`, `--wrap`, and
-  `--technical` destroy two-space hard breaks; Chicago punctuation emits
-  ASCII `...`, which violates I2.2 for emitted typography. Issue #49 —
-  `--wrap` non-ASCII width — is a wrap-quality bug outside this matrix’s
-  I2.1/I2.2 oracle.)*
+  a test matrix, not a promise — `tests/test_transform_matrix.py` sweeps every
+  transform over every document and pins the violations exactly, so both a new
+  one and a fixed one fail. That second half did its job: closing the hard
+  break gap failed this file, dialect-policy §7 and the matrix together, which
+  is what stops a fix from landing without its record being updated.
+  *(Hard breaks under `-w` / `--canonical` / `--wrap` / `--technical` are now
+  preserved. Still false: Chicago punctuation emits ASCII `...`, which
+  violates I2.2 for emitted typography. Issue #49 — `--wrap` non-ASCII width —
+  is a wrap-quality bug outside this matrix’s I2.1/I2.2 oracle.)*
 - **I3.2 Idempotence.** Applying a transform twice equals applying it once.
 - **I3.3 Opt-in.** No optional transform runs unless requested. *(Issue #60:
   the five editorial passes that predated the classification — bullet style,

@@ -106,10 +106,6 @@ CORPUS = {
 # (document, transform) -> which invariant it breaks.
 # dialect-policy §7 gaps 5 and 6, pinned as full dicts so a kind change fails.
 KNOWN_VIOLATIONS = {
-    ("hardbreak", "-w"): "I2.1",
-    ("hardbreak", "--canonical"): "I2.1",
-    ("hardbreak", "--wrap=78"): "I2.1",
-    ("hardbreak", "--technical"): "I2.1",
     ("ellipsis", "--chicago-punct"): "I2.2",
     ("ellipsis", "--chicago-punct-2"): "I2.2",
     ("ellipsis", "--canonical"): "I2.2",
@@ -238,35 +234,76 @@ class NonInterferenceTests(MatrixTestCase):
         self.assertGreaterEqual(len(CORPUS) * len(TRANSFORMS), 120)
 
     def test_most_combinations_are_clean(self) -> None:
-        # The pins are meant to be a short list, not a way of life.
+        # The pins are meant to be a short list, not a way of life. It got
+        # shorter when §7 gap 5 closed; it should not grow back.
         total = len(CORPUS) * len(TRANSFORMS)
-        self.assertLess(len(KNOWN_VIOLATIONS), total * 0.1)
+        self.assertLess(len(KNOWN_VIOLATIONS), total * 0.05)
 
 
 @unittest.skipUnless(PANDOC, "pandoc not installed")
-class KnownViolationDetailTests(MatrixTestCase):
+class HardBreakTests(MatrixTestCase):
     """
-    The two gaps, pinned individually so the failure explains itself.
+    §7 gap 5, closed. Both paths that destroyed a hard break, pinned so they
+    cannot regress quietly.
 
-    A matrix cell that goes red says "hardbreak/-w"; these say what broke.
+    A matrix cell going red says "hardbreak/-w"; these say what broke.
     """
 
-    def test_trailing_space_collapse_destroys_a_hard_break(self) -> None:
-        # §7 gap 5 / fix_trailing_ws path. Two trailing spaces are a hard
-        # break under the pinned profile; -w collapses any run to one.
+    def test_trailing_space_collapse_keeps_the_break(self) -> None:
+        # fix_trailing_ws path (-w and the profiles that enable it).
         source = "line one  \nline two\n"
         self.assertIn("LineBreak", self._native(source))
+        self.assertIn("LineBreak", self._native(self._fix(source, "-w")))
+
+    def test_wrap_keeps_the_break(self) -> None:
+        # flush_paragraph path. Pure --wrap never sets opt_trail_ws, and used
+        # to trim all trailing whitespace before joining.
+        source = "line one  \nline two\n"
+        self.assertIn("LineBreak", self._native(self._fix(source, "--wrap=78")))
+
+    def test_a_wrapped_line_keeps_the_break_at_its_end(self) -> None:
+        # The break belongs where the author put it. Wrapping can turn one
+        # source line into several; the two spaces go on the last of them,
+        # not the first.
+        source = ("This is a fairly long line of prose that will certainly "
+                  "need wrapping at seventy-eight columns  \nnext line\n")
+        out = self._fix(source, "--wrap=78")
+        self.assertIn("LineBreak", self._native(out))
+        body = [ln for ln in out.split("\n") if ln]
+        self.assertTrue(body[-2].endswith("  "), out)
+        self.assertFalse(body[0].endswith("  "), out)
+
+    def test_a_run_of_spaces_is_normalized_to_two(self) -> None:
+        source = "line one     \nline two\n"
+        out = self._fix(source, "-w")
+        self.assertIn("LineBreak", self._native(out))
+        self.assertEqual(out, "line one  \nline two\n")
+
+    def test_trailing_space_at_the_end_of_a_block_is_still_removed(self) -> None:
+        # Nothing follows, so it breaks nothing and Pandoc drops it. The
+        # cleanup -w exists for must survive the fix.
+        self.assertEqual(self._fix("only line  \n\nnext\n", "-w"),
+                         "only line\n\nnext\n")
+
+    def test_one_trailing_space_is_not_a_break(self) -> None:
+        source = "line one \nline two\n"
+        self.assertNotIn("LineBreak", self._native(source))
         self.assertNotIn("LineBreak", self._native(self._fix(source, "-w")))
 
-    def test_wrap_trailing_trim_destroys_a_hard_break(self) -> None:
-        # §7 gap 5 / flush_paragraph path. Pure --wrap never sets
-        # opt_trail_ws; it still strips the two-space hard break.
-        source = "line one  \nline two\n"
-        self.assertIn("LineBreak", self._native(source))
-        self.assertNotIn(
-            "LineBreak",
-            self._native(self._fix(source, "--wrap=78")),
-        )
+    def test_a_trailing_tab_is_left_exactly_as_it_was(self) -> None:
+        # Pandoc expands a trailing tab to the next tab stop, so whether it
+        # is a break depends on the line's width — `xxx\t` is soft, `xx\t`
+        # is hard. Reproducing that means hard-coding a tab stop of 4, which
+        # is Pandoc's default and not its contract. So mdfix does not touch
+        # these lines, and whatever Pandoc made of the bytes it still makes.
+        for source in ("line one\tline\nline two\n",
+                       "xx\t\nnext\n",
+                       "xxx\t\nnext\n"):
+            with self.subTest(source=source):
+                for transform in ("-w", "--wrap=78", "--technical"):
+                    out = self._fix(source, transform)
+                    self.assertEqual(self._native(out), self._native(source),
+                                     f"{transform}: {out!r}")
 
     def test_chicago_emits_ascii_ellipsis(self) -> None:
         # §7 gap 6. The mark mdtools emits must not be smart-dependent;

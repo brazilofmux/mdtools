@@ -150,7 +150,7 @@ Load-bearing extensions, with the behavior each one buys:
 | `+line_blocks` | `\|`-prefixed lines are `LineBlock`, whitespace- and line-count-significant. See §7. |
 | `+yaml_metadata_block` | Front matter is metadata, not prose. |
 | `+footnotes`, `+inline_notes` | Footnote definitions are structure, not paragraphs. |
-| `+escaped_line_breaks`, `-hard_line_breaks` | A two-space line ending is a hard break under this profile. **`mdfix -w` / `--canonical` / `--wrap` / `--technical` currently destroy hard breaks** — see §7. |
+| `+escaped_line_breaks`, `-hard_line_breaks` | A two-space line ending is a hard break under this profile, and every pass preserves it (normalizing a longer run to exactly two). |
 | `+smart` | See §4 — typographic output should be invariant under this flag. |
 | `+auto_identifiers`, `-gfm_auto_identifiers` | Heading anchors follow Pandoc's slug rules, which mdlinks (#14) will depend on. |
 | `+fenced_divs`, `+native_divs`, `+bracketed_spans`, `+native_spans` | Div and span syntax is structure to preserve, not prose. |
@@ -279,7 +279,7 @@ reproduced byte for byte; "prose" means eligible for rewriting.
 | **Line block** | `LineBlock` | **leaks — treated as prose** | protected via IR `line_block` | **gap** (mdfix) |
 | **Display math `$$`** | `Math` | **leaks — rewrites inside** | **leaks — offered to the LLM as a sentence** | **gap** |
 | **Raw LaTeX block** | `RawBlock` | **leaks — rewrites inside** | **leaks** | **gap** |
-| **Hard break (two trailing spaces)** | soft/hard break | **collapsed by `-w`, `--canonical`, `--wrap`, `--technical`** | n/a | **gap** |
+| **Hard break (two trailing spaces)** | `LineBreak` | preserved; a longer run normalized to two | n/a | ok |
 | **Ellipsis under Chicago** | text | **emits ASCII `...`, not `…`** | n/a | **gap** |
 
 ### Known gaps
@@ -308,15 +308,7 @@ Each was found by running the tools against Pandoc while pinning this profile
    it is still not “protected” in the byte-for-byte sense of this table.
    prosevary freezes the whole row.
 
-5. **Hard breaks under `-w`, `--canonical`, `--wrap` and `--technical`.**
-   Profile requires two trailing spaces to mean a hard break. Two separate
-   sites destroy them: `fix_trailing_ws` (when `opt_trail_ws` is set — `-w`
-   and profiles that enable it) collapses any trailing run to one space;
-   wrap’s `flush_paragraph` (pure `--wrap`, and `--technical` which enables
-   wrap) trims *all* trailing whitespace before emit/join. Closing this gap
-   needs both paths. See `tests/test_transform_matrix.py`.
-
-6. **Chicago ellipsis.** Under `--chicago-punct`, `--chicago-punct-2`,
+5. **Chicago ellipsis.** Under `--chicago-punct`, `--chicago-punct-2`,
    `--canonical` and `--technical`, spaced or run ellipses become ASCII
    `...`, which is smart-dependent under Pandoc (see §4). Target is U+2026
    `…`. An ellipsis the author already wrote as `...` is passed through
@@ -325,9 +317,19 @@ Each was found by running the tools against Pandoc while pinning this profile
 
 The first three are cases where a verbatim construct reaches a prose pass —
 the duplication argument in §2 restated as a bug report. Those become
-single-site fixes once the grammar lives in one place. The last three are
-mdfix profile/contract mismatches that the policy now records so CI and
-future work cannot treat them as already done.
+single-site fixes once the grammar lives in one place. The last two are mdfix
+profile/contract mismatches that the policy records so CI and future work
+cannot treat them as already done.
+
+**Closed:** hard breaks under `-w`, `--canonical`, `--wrap` and `--technical`.
+Both sites destroyed them — `fix_trailing_ws` collapsed any trailing run to a
+single space, which is not a break, and wrap’s `flush_paragraph` trimmed all
+trailing whitespace before joining. Both now recognize a break and preserve
+it, normalized to exactly two spaces and placed on the last line the wrapper
+emits. A line whose trailing whitespace contains a **tab** is left byte for
+byte: Pandoc expands it to the next tab stop, so whether it is a break depends
+on the line’s width and on `--tab-stop`, and mdfix will not encode a reader
+flag (§4).
 
 ## 8. Verification
 
