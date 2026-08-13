@@ -246,6 +246,24 @@ destination** — the consumer already has the `reference_def` records (which
 also carry `label` and `destination`). Collapsed `[text][]` emits
 `form: "reference"` with an empty `label` and the key in `text`.
 
+### Ordered-list markers
+
+`+fancy_lists`, `+startnum` and `+example_lists` are pinned, so Pandoc reads
+several marker forms as an `OrderedList`. mdfix recognizes:
+
+| | |
+|---|---|
+| `1. ` `23. ` `1) ` | decimal |
+| `@lab. ` `@. ` `(@lab) ` `(@) ` | example lists |
+
+**Alpha and roman — `a.`, `iv)` — are deliberately not recognized**, and that
+is a divergence from Pandoc pinned in `tests/test_ordered_markers.py`. They
+are indistinguishable from hard-wrapped prose without the context Pandoc uses,
+and the downstream corpora measure the cost: of 56 lines matching `a. ` after
+a prose line, 52 are sentence continuations. Recognizing them turns those into
+lists. Closing this needs Pandoc's rule — a list cannot interrupt a paragraph
+— rather than a wider predicate. Issue #90.
+
 ### Citations
 
 `+citations` is pinned by dialect-policy §3. One record per key, with
