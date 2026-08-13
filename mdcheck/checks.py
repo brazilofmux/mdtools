@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
 
 from mdquery.ir import find_mdfix, raw_records
+
+from .frontmatter import validate as validate_frontmatter
 from mdquery.slug import assign_slugs
 from mdlinks.graph import (
     _is_external,
@@ -74,7 +76,8 @@ def _records(path: Path, mdfix: Optional[str]) -> List[dict]:
     return raw_records([path], mdfix)
 
 
-def check_document(path: Path, mdfix: Optional[str] = None) -> List[Finding]:
+def check_document(path: Path, mdfix: Optional[str] = None,
+                   frontmatter: Optional[dict] = None) -> List[Finding]:
     """The checks nothing else performs."""
     findings: List[Finding] = []
     data = path.read_bytes()
@@ -87,6 +90,7 @@ def check_document(path: Path, mdfix: Optional[str] = None) -> List[Finding]:
             message=message))
 
     labels: Dict[str, int] = {}
+    saw_frontmatter = False
     for record in records:
         kind = record["kind"]
 
@@ -120,12 +124,39 @@ def check_document(path: Path, mdfix: Optional[str] = None) -> List[Finding]:
             else:
                 labels[label] = record["line"]
 
+        elif kind == "frontmatter" and frontmatter:
+            saw_frontmatter = True
+            # The whole block is the span; the line is the offending key's,
+            # from PyYAML's marks. A schema error points at the field, not at
+            # the document.
+            span = data[record["start"]:record["end"]].decode("utf-8", "replace")
+            body = "\n".join(span.splitlines()[1:-1])
+            for rule, severity, line, message in validate_frontmatter(
+                    body, frontmatter, record["line"]):
+                findings.append(Finding(
+                    path=str(path), rule=rule, severity=severity, line=line,
+                    start=record["start"], end=record["end"], message=message))
+
         elif kind == "paragraph":
             span = data[record["start"]:record["end"]].decode("utf-8", "replace")
             for marker, rule, message in LOSSY_HINTS:
                 if marker in span:
                     add(rule, "warning", record, message)
                     break
+
+    # A schema with required fields is not satisfied by having no front
+    # matter at all. Reporting only when a block exists would mean deleting
+    # the block silently passes the gate, which is how a gate stops being one.
+    if frontmatter and not saw_frontmatter:
+        required = sorted(name for name, spec
+                          in frontmatter.get("fields", {}).items()
+                          if spec["required"])
+        if required:
+            findings.append(Finding(
+                path=str(path), rule="check.frontmatter-missing",
+                severity="error", line=1, start=0, end=0,
+                message=("document has no front matter; required field(s) "
+                         + ", ".join(repr(r) for r in required))))
 
     return findings
 
@@ -189,11 +220,12 @@ def dialect_findings(path: Path, mdfix: Optional[str] = None) -> List[Finding]:
 
 
 def run(paths: Sequence[Path], mdfix: Optional[str] = None,
-        suppress: Iterable[str] = ()) -> List[Finding]:
+        suppress: Iterable[str] = (),
+        frontmatter: Optional[dict] = None) -> List[Finding]:
     files = discover(paths)
     findings: List[Finding] = []
     for path in files:
-        findings.extend(check_document(path, mdfix))
+        findings.extend(check_document(path, mdfix, frontmatter))
         findings.extend(dialect_findings(path, mdfix))
     findings.extend(check_repository(files, mdfix))
 

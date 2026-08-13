@@ -17,6 +17,7 @@ for. Everything works without a config file on every supported version.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -48,6 +49,9 @@ class Config:
     state_dir: Optional[Path] = None
     mdfix: Optional[str] = None
     suppress: List[str] = field(default_factory=list)  # mdcheck rule ids / prefixes
+    # Front-matter schema (issue #13). Empty means no schema, which means the
+    # check does not run at all — a project without one is not "failing" it.
+    frontmatter: Dict[str, Any] = field(default_factory=dict)
     raw: Dict[str, Any] = field(default_factory=dict)
 
     def resolved(self) -> Dict[str, Any]:
@@ -58,6 +62,7 @@ class Config:
             "profile": self.profile,
             "wrap": self.wrap,
             "editorial": self.editorial,
+            "frontmatter": self.frontmatter,
             "glossary": str(self.glossary) if self.glossary else None,
             "state_dir": str(self.state_dir) if self.state_dir else None,
             "mdfix": self.mdfix,
@@ -87,7 +92,87 @@ def find_config(start: Optional[Path] = None) -> Optional[Path]:
 
 _ALLOWED = {
     "profile", "wrap", "editorial", "glossary", "state_dir", "mdfix", "suppress",
+    "frontmatter",
 }
+
+# What a field may declare, and what a value may be.
+_FIELD_KEYS = {"type", "required", "one_of"}
+_TYPES = {"string", "number", "bool", "list", "date", "any"}
+# What to do about a key the schema does not mention.
+_UNKNOWN = {"allow", "warn", "error"}
+
+
+def _read_frontmatter(path: Path, section: Any) -> Dict[str, Any]:
+    """
+    The `[frontmatter]` table, validated as strictly as it will validate.
+
+    A schema nobody checked is worse than none: a typo in `requried` would
+    silently stop requiring anything, and the gate would pass a document
+    missing every field it was supposed to have. So every key, type name and
+    shape here is refused if it is not one this understands.
+    """
+    if not isinstance(section, dict):
+        raise ConfigError(f"{path}: [frontmatter] must be a table")
+
+    unknown = section.get("unknown", "allow")
+    if unknown not in _UNKNOWN:
+        raise ConfigError(
+            f"{path}: frontmatter.unknown must be one of "
+            f"{sorted(_UNKNOWN)}, not {unknown!r}")
+
+    raw_fields = section.get("fields", {})
+    if not isinstance(raw_fields, dict):
+        raise ConfigError(f"{path}: [frontmatter.fields] must be a table")
+
+    extra = sorted(set(section) - {"unknown", "fields"})
+    if extra:
+        raise ConfigError(
+            f"{path}: unknown frontmatter setting(s) {extra}. "
+            "Known: ['fields', 'unknown']")
+
+    fields: Dict[str, Any] = {}
+    for name, spec in raw_fields.items():
+        if not isinstance(spec, dict):
+            raise ConfigError(
+                f"{path}: [frontmatter.fields.{name}] must be a table")
+        bad = sorted(set(spec) - _FIELD_KEYS)
+        if bad:
+            raise ConfigError(
+                f"{path}: frontmatter field {name!r} has unknown key(s) {bad}. "
+                f"Known: {sorted(_FIELD_KEYS)}")
+        kind = spec.get("type", "any")
+        if kind not in _TYPES:
+            raise ConfigError(
+                f"{path}: frontmatter field {name!r} has type {kind!r}; "
+                f"expected one of {sorted(_TYPES)}")
+        required = spec.get("required", False)
+        if not isinstance(required, bool):
+            raise ConfigError(
+                f"{path}: frontmatter field {name!r}: required must be "
+                "true or false")
+        one_of = spec.get("one_of")
+        if one_of is not None:
+            if not isinstance(one_of, list) or not one_of:
+                raise ConfigError(
+                    f"{path}: frontmatter field {name!r}: one_of must be a "
+                    "non-empty list")
+            normalized = []
+            for item in one_of:
+                if isinstance(item, datetime.datetime):
+                    item = item.isoformat()
+                elif isinstance(item, datetime.date):
+                    item = item.isoformat()
+                if isinstance(item, bool) or isinstance(item, (int, float, str)):
+                    normalized.append(item)
+                else:
+                    raise ConfigError(
+                        f"{path}: frontmatter field {name!r}: one_of "
+                        "values must be strings, numbers, bools, or dates")
+            one_of = normalized
+        fields[str(name)] = {"type": kind, "required": required,
+                             "one_of": one_of}
+
+    return {"unknown": unknown, "fields": fields}
 
 
 def _resolve_mdfix(root: Path, value: str) -> str:
@@ -169,6 +254,8 @@ def _read(path: Path, root: Path) -> Config:
             setattr(config, key, (root / str(section[key])).resolve())
     if "mdfix" in section:
         config.mdfix = _resolve_mdfix(root, str(section["mdfix"]))
+    if "frontmatter" in section:
+        config.frontmatter = _read_frontmatter(path, section["frontmatter"])
     if "suppress" in section:
         value = section["suppress"]
         if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
