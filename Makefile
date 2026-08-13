@@ -4,7 +4,7 @@ BINDIR  ?= $(PREFIX)/bin
 LIBDIR  ?= $(PREFIX)/lib/mdtools
 PYTHON  ?= python3
 
-.PHONY: all mdfix prosevary-check mdquery-check mdterms-check install uninstall clean test check-sync asan check
+.PHONY: all mdfix prosevary-check mdquery-check mdterms-check mdlinks-check install uninstall clean test check-sync asan check
 
 all: mdfix
 
@@ -14,6 +14,11 @@ mdfix:
 mdterms-check: mdfix
 	./scripts/mdterms --help >/dev/null
 	@echo "mdterms CLI ok"
+
+mdlinks-check: mdfix
+	./scripts/mdlinks --help >/dev/null
+	./scripts/mdlinks README.md docs/*.md
+	@echo "mdlinks CLI ok"
 
 prosevary-check:
 	./scripts/prosevary --help >/dev/null
@@ -27,11 +32,14 @@ mdquery-check: mdfix
 install: mdfix
 	install -d "$(BINDIR)" "$(LIBDIR)"
 	install -m 755 mdfix/mdfix "$(BINDIR)/mdfix"
-	rm -rf "$(LIBDIR)/prosevary" "$(LIBDIR)/mdquery" "$(LIBDIR)/mdterms"
+	rm -rf "$(LIBDIR)/prosevary" "$(LIBDIR)/mdquery" "$(LIBDIR)/mdterms" \
+	       "$(LIBDIR)/mdlinks"
 	cp -R prosevary "$(LIBDIR)/prosevary"
 	cp -R mdquery "$(LIBDIR)/mdquery"
 	cp -R mdterms "$(LIBDIR)/mdterms"
-	rm -rf "$(LIBDIR)/prosevary/__pycache__" "$(LIBDIR)/mdquery/__pycache__" "$(LIBDIR)/mdterms/__pycache__"
+	cp -R mdlinks "$(LIBDIR)/mdlinks"
+	rm -rf "$(LIBDIR)/prosevary/__pycache__" "$(LIBDIR)/mdquery/__pycache__" "$(LIBDIR)/mdterms/__pycache__" \
+	       "$(LIBDIR)/mdlinks/__pycache__"
 	find "$(LIBDIR)/prosevary" -name '*.sqlite' -delete 2>/dev/null || true
 	find "$(LIBDIR)/prosevary" -name '*.sqlite-*' -delete 2>/dev/null || true
 	# Launcher with MDTOOLS_LIB fixed to this install
@@ -44,18 +52,21 @@ install: mdfix
 	sed -e 's|^MDTOOLS_LIB=.*|MDTOOLS_LIB="$(LIBDIR)"|' \
 		scripts/mdterms > "$(BINDIR)/mdterms"
 	chmod 755 "$(BINDIR)/mdterms"
-	@echo "Installed mdfix + prosevary + mdquery + mdterms → $(BINDIR)"
+	sed -e 's|^MDTOOLS_LIB=.*|MDTOOLS_LIB="$(LIBDIR)"|' \
+		scripts/mdlinks > "$(BINDIR)/mdlinks"
+	chmod 755 "$(BINDIR)/mdlinks"
+	@echo "Installed mdfix + prosevary + mdquery + mdterms + mdlinks → $(BINDIR)"
 	@echo "Ensure $(BINDIR) is on PATH."
 
 uninstall:
 	rm -f "$(BINDIR)/mdfix" "$(BINDIR)/prosevary" "$(BINDIR)/mdquery" \
-	      "$(BINDIR)/mdterms"
+	      "$(BINDIR)/mdterms" "$(BINDIR)/mdlinks"
 	rm -rf "$(LIBDIR)"
 
 clean:
 	$(MAKE) -C mdfix clean
 
-test: mdfix prosevary-check mdquery-check mdterms-check
+test: mdfix prosevary-check mdquery-check mdterms-check mdlinks-check
 	./mdfix/mdfix -h >/dev/null
 	$(PYTHON) -m unittest discover -s tests -v
 	@echo "ok"

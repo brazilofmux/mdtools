@@ -219,10 +219,12 @@ $ mdfix --emit-ir chapter.md | grep '"kind":"link"'
 | `footnote_ref` | `label` |
 | `raw_inline` | — ; **protected** |
 
-`form` is `inline`, `autolink`, `reference` or `shortcut`. Reference and
-shortcut links carry their **label rather than a resolved destination** — the
-consumer already has the `reference_def` records, and holding the document's
-link table in the emitter would buy nothing.
+`destination` is the bare URL: optional surrounding `<>` and a trailing title
+are stripped. `form` is `inline`, `autolink`, `reference` or `shortcut`.
+Reference and shortcut links carry their **label rather than a resolved
+destination** — the consumer already has the `reference_def` records (which
+also carry `label` and `destination`). Collapsed `[text][]` emits
+`form: "reference"` with an empty `label` and the key in `text`.
 
 These are **purely additive** — new kinds at `depth > 0`, which the nesting rule
 above already excludes from totality. No existing consumer changed and the
@@ -275,9 +277,10 @@ name, which the header record makes detectable.
 - **Remaining inline structure.** Links, images, code spans, footnote
   references and raw inline HTML are emitted (see [Inline records](#inline-records)).
   Still missing: emphasis/strong, citations, a full recursive inline tree
-  (nested markup inside link text), cell-level table structure, and title
-  attributes on destinations. Inline `endLine` is the construct's start line;
-  multi-line code spans are not joined across line boundaries.
+  (nested markup inside link text), cell-level table structure, and a separate
+  title field on destinations (titles are stripped, not retained). Inline
+  `endLine` is the construct's start line; multi-line code spans are not
+  joined across line boundaries.
 - **Partial nesting only.** Schema 3 emits plain list-item prose as nested
   `paragraph` records (`depth` / `parent`). A list is still one parent record,
   not a full tree of items; fence, table, raw HTML, indented code, heading, and

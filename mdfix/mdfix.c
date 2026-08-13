@@ -1342,6 +1342,41 @@ static int inline_link_len(const char *s, int *text_off, int *text_len)
 }
 
 /*
+ * Bare destination from the raw body between '(' and ')': drop optional
+ * surrounding <…> and a trailing title (space + "…" / '…' / (…)).
+ */
+static void dest_bare(const char *s, int len, int *off, int *out_len)
+{
+    int i = 0, j = len;
+    while (i < j && (s[i] == ' ' || s[i] == '\t'))
+        i++;
+    while (j > i && (s[j - 1] == ' ' || s[j - 1] == '\t'))
+        j--;
+    if (i < j && s[i] == '<') {
+        int k = i + 1;
+        while (k < j && s[k] != '>')
+            k++;
+        if (k < j) {
+            *off = i + 1;
+            *out_len = k - (i + 1);
+            return;
+        }
+    }
+    int k = i;
+    while (k < j) {
+        if (s[k] == '\\' && k + 1 < j) {
+            k += 2;
+            continue;
+        }
+        if (s[k] == ' ' || s[k] == '\t')
+            break;
+        k++;
+    }
+    *off = i;
+    *out_len = k - i;
+}
+
+/*
  * Word-ish for the intraword-underscore rule, UTF-8 aware.
  *
  * Byte-based isalnum treats every multibyte letter as punctuation, so
@@ -1845,14 +1880,16 @@ static void emit_inline(FILE *out, const char *text, long long base,
             int text_off = 0, text_len = 0;
             span = inline_link_len(text + i, &text_off, &text_len);
             if (span) {
-                /* Destination is everything between the '(' and the ')'. */
-                int dest_off = text_off + text_len + 2;
-                int dest_len = span - dest_off - 1;
+                int raw_off = text_off + text_len + 2;
+                int raw_len = span - raw_off - 1;
+                int bare_off = 0, bare_len = 0;
+                if (raw_len > 0)
+                    dest_bare(text + i + raw_off, raw_len, &bare_off, &bare_len);
                 ir_inline(out, image ? "image" : "link", base + i,
                           base + i + span, line, 0, depth, parent);
                 ir_inline_field(out, "text", text + i + text_off, text_len);
-                ir_inline_field(out, "destination", text + i + dest_off,
-                                dest_len > 0 ? dest_len : 0);
+                ir_inline_field(out, "destination",
+                                text + i + raw_off + bare_off, bare_len);
                 fputs(",\"form\":\"inline\"}\n", out);
                 i += span;
                 continue;
@@ -2209,8 +2246,37 @@ static void emit_ir(FILE *out, const char *source)
                         j++;
                     }
                 }
-                ir_block(out, def == 1 ? "reference_def" : "footnote_def",
-                         i, last, 0);
+                /* Label + destination so mdlinks need not re-parse the span. */
+                {
+                    const char *l = line;
+                    int b = 0;
+                    while (b < 3 && l[b] == ' ')
+                        b++;
+                    int label_start = b + 1 + (def == 2 ? 1 : 0);
+                    int label_end = label_start;
+                    while (l[label_end] && l[label_end] != ']') {
+                        if (l[label_end] == '\\' && l[label_end + 1])
+                            label_end += 2;
+                        else
+                            label_end++;
+                    }
+                    ir_open(out, def == 1 ? "reference_def" : "footnote_def",
+                            i, last, 0);
+                    ir_inline_field(out, "label", l + label_start,
+                                    label_end - label_start);
+                    if (def == 1) {
+                        int d = label_end + 2;   /* past "]:" */
+                        while (l[d] == ' ' || l[d] == '\t')
+                            d++;
+                        int bare_off = 0, bare_len = 0;
+                        /* Rest of the line is destination [+ optional title]. */
+                        dest_bare(l + d, (int)strlen(l + d),
+                                  &bare_off, &bare_len);
+                        ir_inline_field(out, "destination",
+                                        l + d + bare_off, bare_len);
+                    }
+                    fputs("}\n", out);
+                }
                 i = last;
                 /* Not LT_TEXT: a definition is not paragraph text, so
                  * indented code may follow it with no blank line. Pandoc
@@ -3627,7 +3693,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 3631 "mdfix.c"
+#line 3697 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -3635,20 +3701,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 3639 "mdfix.c"
+#line 3705 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 4024 "mdfix.rl"
+#line 4090 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 3775 "mdfix.rl"
+#line 3841 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -3688,7 +3754,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 3651 "mdfix.rl"
+#line 3717 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial || ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -3725,19 +3791,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 3644 "mdfix.rl"
+#line 3710 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 3644 "mdfix.rl"
+#line 3710 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 3959 "mdfix.rl"
+#line 4025 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -3761,7 +3827,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 4004 "mdfix.rl"
+#line 4070 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -3782,7 +3848,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 3982 "mdfix.rl"
+#line 4048 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -3805,13 +3871,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 4024 "mdfix.rl"
+#line 4090 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 3904 "mdfix.rl"
+#line 3970 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -3834,7 +3900,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 3817 "mdfix.rl"
+#line 3883 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_CHAR('.');
@@ -3885,13 +3951,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 4024 "mdfix.rl"
+#line 4090 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 3867 "mdfix.rl"
+#line 3933 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -3929,7 +3995,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 3926 "mdfix.rl"
+#line 3992 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -3963,7 +4029,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 3713 "mdfix.rl"
+#line 3779 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -3976,7 +4042,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 3687 "mdfix.rl"
+#line 3753 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -3990,7 +4056,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 3725 "mdfix.rl"
+#line 3791 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4003,7 +4069,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 3700 "mdfix.rl"
+#line 3766 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4017,7 +4083,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 3737 "mdfix.rl"
+#line 3803 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -4056,7 +4122,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 3644 "mdfix.rl"
+#line 3710 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -4069,7 +4135,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 4073 "mdfix.c"
+#line 4139 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -4095,7 +4161,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 4099 "mdfix.c"
+#line 4165 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -4139,7 +4205,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 4143 "mdfix.c"
+#line 4209 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -4188,7 +4254,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 4192 "mdfix.c"
+#line 4258 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -4207,7 +4273,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 4211 "mdfix.c"
+#line 4277 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -4233,7 +4299,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 4237 "mdfix.c"
+#line 4303 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -4282,7 +4348,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 4286 "mdfix.c"
+#line 4352 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -4362,7 +4428,7 @@ case 13:
 
 	}
 
-#line 4031 "mdfix.rl"
+#line 4097 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';

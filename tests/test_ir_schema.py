@@ -777,6 +777,12 @@ class InlineRecordTests(IRTestCase):
         self.assertEqual(record["destination"], "http://x")
         self.assertEqual(record["text"], "text")
 
+    def test_destination_strips_title_and_angle_brackets(self) -> None:
+        titled = self._inline('See [text](./a.md "Title") here.\n')[0]
+        self.assertEqual(titled["destination"], "./a.md")
+        angled = self._inline("See [text](<./a.md>) here.\n")[0]
+        self.assertEqual(angled["destination"], "./a.md")
+
     def test_image(self) -> None:
         record = self._inline("An ![alt](i.png) image.\n")[0]
         self.assertEqual(record["kind"], "image")

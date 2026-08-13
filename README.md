@@ -7,6 +7,7 @@ Private toolkit for markdown structure and controlled prose variation.
 | **mdfix** | Ragel → C | Deterministic markdown auto-fixer (lists, headings, Chicago passes, …) |
 | **mdquery** | Python 3 | Structural queries and extraction, via mdfix's IR |
 | **mdterms** | Python 3 | Glossary and terminology enforcement; emits edits for mdfix |
+| **mdlinks** | Python 3 | Link graph: broken anchors, undefined references, dead files |
 | **prosevary** | Python 3 | Generate-then-gate lexical variation (freeze terms, embeddings, local LLM) |
 
 These used to be copy-pasted across `slow32-book`, `mush`, `religions`, and others.
@@ -26,7 +27,8 @@ rule that Markdown grammar lives in exactly one implementation.
 `mdfix --emit-ir` reports block structure with byte spans and
 [docs/edit-schema.md](docs/edit-schema.md) is how changes come back, so a
 consumer never has to re-derive the grammar. [docs/mdquery.md](docs/mdquery.md) is the first
-tool built on it.
+tool built on it; [docs/mdterms.md](docs/mdterms.md) and
+[docs/mdlinks.md](docs/mdlinks.md) followed.
 
 ## Canonical history (mdfix)
 
@@ -55,6 +57,7 @@ make install PREFIX=$HOME/.local
 mdfix -h
 mdquery --help
 mdterms --help
+mdlinks --help
 prosevary --help
 ```
 
@@ -120,6 +123,7 @@ emphasis, bold colons, blockquote spacing) are still wanted without a profile.
 mdfix/           # Ragel source, generated C, Makefile
 mdquery/          # Python package (python -m mdquery)
 mdterms/          # Python package (python -m mdterms)
+mdlinks/          # Python package (python -m mdlinks)
 prosevary/        # Python package (python -m prosevary)
 docs/             # architecture decisions (start with architecture.md)
 scripts/          # install helpers
