@@ -14,6 +14,11 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from mdquery.ir import IRError
+from mdtools_cli.config import ConfigError
+from mdtools_cli.contract import (
+    FINDINGS, OK, USAGE, add_common, add_verbs, apply_edits, fail,
+    resolve_config, resolve_mdfix, write_edits,
+)
 
 from .graph import check, read
 from .repair import edits_for, suggest
@@ -27,8 +32,8 @@ def _parser() -> argparse.ArgumentParser:
                "accepts is one Pandoc resolves.",
     )
     parser.add_argument("files", nargs="*", type=Path)
-    parser.add_argument("--mdfix", metavar="PATH",
-                        help="mdfix binary (default: $MDFIX, sibling, PATH)")
+    add_common(parser)
+    add_verbs(parser)
     out = parser.add_mutually_exclusive_group()
     out.add_argument("--diagnostics", action="store_true",
                      help="report as JSONL (see docs/diagnostics.md)")
@@ -45,8 +50,8 @@ def _parser() -> argparse.ArgumentParser:
 
 def _exit_code(findings, warnings: bool) -> int:
     if any(f.severity == "error" for f in findings):
-        return 1
-    return 1 if (warnings and findings) else 0
+        return FINDINGS
+    return FINDINGS if (warnings and findings) else OK
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -58,12 +63,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # rather than required.
     files = list(args.files)
     if not files and args.edits is None:
-        print("mdlinks: no input files", file=sys.stderr)
-        return 2
+        return fail("mdlinks", "no input files")
+
+    try:
+        config = resolve_config(args.config, files[0] if files else args.edits)
+    except ConfigError as exc:
+        return fail("mdlinks", str(exc))
+    mdfix = resolve_mdfix(args.mdfix, config)
     if args.edits is not None:
         if not args.edits.is_file():
-            print(f"mdlinks: {args.edits}: not a file", file=sys.stderr)
-            return 2
+            return fail("mdlinks", f"{args.edits}: not a file")
         if args.edits.resolve() not in {p.resolve() for p in files}:
             files = [args.edits, *files]
 
@@ -71,13 +80,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     for path in missing:
         print(f"mdlinks: {path}: not a file", file=sys.stderr)
     if missing:
-        return 2
+        return USAGE
 
     try:
-        docs = [read(p, args.mdfix) for p in files]
+        docs = [read(p, mdfix) for p in files]
     except IRError as exc:
-        print(f"mdlinks: {exc}", file=sys.stderr)
-        return 2
+        return fail("mdlinks", str(exc))
 
     if args.graph:
         for doc in docs:
@@ -103,20 +111,34 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     "line": line, "start": start, "end": end,
                     "label": label,
                 }, ensure_ascii=False))
-        return 0
+        return OK
 
     findings = check(docs)
     suggestions = suggest(docs, findings)
 
     if args.edits is not None:
-        edits = edits_for(suggestions, args.edits)
-        if edits:
-            print(json.dumps({"kind": "edits", "schema": "mdtools-edits-1",
-                              "source": str(args.edits),
-                              "bytes": args.edits.stat().st_size}))
-            for edit in edits:
-                print(json.dumps(edit, ensure_ascii=False))
+        write_edits(sys.stdout, args.edits, edits_for(suggestions, args.edits))
         return _exit_code(findings, args.warnings)
+
+    if args.fix or args.diff:
+        # Repair every file in the run that has confident suggestions, one
+        # applier call per document. mdlinks never writes: mdfix validates the
+        # edits against the file and splices them, or refuses.
+        for path in files:
+            edits = edits_for(suggestions, path)
+            if not edits:
+                continue
+            rc = apply_edits(path, edits, mdfix=mdfix, diff=args.diff,
+                             quiet=True)
+            if rc != OK:
+                return USAGE
+        if args.diff:
+            return _exit_code(findings, args.warnings)
+        # Re-check: a repair can uncover the next one — a path that now
+        # resolves has anchors that can finally be judged — so the exit code
+        # must describe the file as it now stands, not as it was.
+        docs = [read(p, mdfix) for p in files]
+        return _exit_code(check(docs), args.warnings)
 
     if args.diagnostics:
         for finding in findings:
@@ -143,14 +165,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 noun = "candidate" if n == 1 else "candidates"
                 print(f"{where}{n} {noun}, not repaired: {shown}")
         if any(s.confident for s in suggestions):
-            target = next(s.finding.path for s in suggestions if s.confident)
             # Flush stdout so this stderr hint cannot overtake findings.
             sys.stdout.flush()
-            others = " ".join(str(p) for p in files if p.resolve() != Path(target).resolve())
-            scope = f" {others}" if others else ""
-            print(f"\nRepair the confident ones with:\n"
-                  f"  mdlinks --edits {target}{scope}"
-                  f" | mdfix --apply-edits -i {target}", file=sys.stderr)
+            scope = " ".join(str(p) for p in files)
+            print(f"\nSee what would change:\n"
+                  f"  mdlinks --diff {scope}\n"
+                  f"Then repair the confident ones:\n"
+                  f"  mdlinks --fix {scope}", file=sys.stderr)
 
     return _exit_code(findings, args.warnings)
 

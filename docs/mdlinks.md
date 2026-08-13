@@ -78,16 +78,19 @@ so the preview costs nothing and needs no flag.
 is never the tool that writes the file:
 
 ```console
-$ mdlinks --edits docs/guide.md README.md docs/*.md | mdfix --apply-edits -i docs/guide.md
+$ mdlinks --diff docs/*.md          # see the changes
+$ mdlinks --fix  docs/*.md          # make them
 ```
 
-Pipe the same edits through `mdfix --apply-edits --diff` first to see exactly
-what they would do, annotated with the rule and how sure mdlinks was — an
-identifier that matched is `high`, a nearest-neighbour guess is `medium`. See
-[edit-schema.md](edit-schema.md).
+`--diff` annotates each hunk with the rule and how sure mdlinks was: an
+identifier that matched is `high`, a nearest-neighbour guess is `medium`.
+`--fix` never writes the file itself — it hands the edits to
+`mdfix --apply-edits`, which validates them first. See
+[edit-schema.md](edit-schema.md) and [cli.md](cli.md).
 
-`--edits` names one file because the applier reads one document. Other paths
-are the scope a repair searches (same set the checker judges against). The
+`--edits` names one file because the applier reads one document; `--fix`
+repairs every file in the run. Either way the paths given are the scope a
+repair searches, the same set the checker judges against. For `--edits` the
 target is included automatically if it is not already listed.
 
 ### How a candidate is chosen

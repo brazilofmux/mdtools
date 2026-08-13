@@ -27,7 +27,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-from .config import ConfigError, Config, fix_flags, load
+from .config import ConfigError, Config, fix_flags, load, load_file
 
 VERBS = ("fix", "query", "terms", "links", "vary", "config", "check")
 
@@ -48,8 +48,12 @@ usage: mdtools <command> [args...]
 Every command exits 0 clean, 1 with findings, 2 on a usage or environment
 error. `mdtools <command> --help` shows that command's own options.
 
+--check reports, --diff previews, --fix repairs. --check is the default, and
+--fix hands its edits to mdfix rather than writing anything itself.
+
 Project settings come from mdtools.toml, discovered by walking up from the
-input file. `mdtools config` shows what was resolved and from where.
+input file, or named with --config. `mdtools config` shows what was resolved
+and from where. The full contract is in docs/cli.md.
 """
 
 
@@ -96,6 +100,19 @@ def _with_mdfix(config: Config, rest: Sequence[str]) -> List[str]:
     return list(rest)
 
 
+def _defers_config(rest: Sequence[str]) -> bool:
+    """
+    True when the user named a config for the tool itself.
+
+    The dispatcher must then inject nothing. Its own discovered settings would
+    arrive as *explicit* flags, which beat --config in the tool's precedence
+    order — so `mdtools terms --config ci.toml` would silently run with the
+    glossary from the discovered config instead of the named one. Every tool
+    reads mdtools.toml on its own now, so deferring costs nothing.
+    """
+    return _has_long_flag(rest, "--config")
+
+
 def _run_module(module: str, argv: Sequence[str]) -> int:
     """Dispatch in-process, so a traceback points at the real code."""
     import importlib
@@ -124,6 +141,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
 
     if verb == "config":
+        # `mdtools config --config ci.toml` inspects a named file, which is
+        # the natural way to check what a CI config actually resolves to.
+        for i, arg in enumerate(rest):
+            named = None
+            if arg == "--config" and i + 1 < len(rest):
+                named = rest[i + 1]
+            elif arg.startswith("--config="):
+                named = arg.split("=", 1)[1]
+            if named:
+                try:
+                    config = load_file(Path(named))
+                except ConfigError as exc:
+                    print(f"mdtools: {exc}", file=sys.stderr)
+                    return 2
+                break
         print(json.dumps(config.resolved(), indent=2))
         return 0
 
@@ -141,6 +173,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"mdtools: {exc}", file=sys.stderr)
             return 2
         return result.returncode
+
+    if _defers_config(rest):
+        module = {"check": "mdcheck", "query": "mdquery",
+                  "links": "mdlinks", "terms": "mdterms"}.get(verb)
+        if module:
+            return _run_module(module, rest)
 
     if verb == "check":
         return _run_module("mdcheck", _with_mdfix(config, rest))

@@ -14,6 +14,11 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Sequence
 
+from mdtools_cli.config import ConfigError
+from mdtools_cli.contract import (
+    FINDINGS, OK, USAGE, add_common, fail, resolve_config, resolve_mdfix,
+)
+
 from .ir import IRError, load
 from .query import (
     annotate,
@@ -42,10 +47,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
         help="emit JSONL (one object per result) instead of human output",
     )
-    parser.add_argument(
-        "--mdfix", metavar="PATH",
-        help="mdfix binary to use (default: $MDFIX, sibling build, then PATH)",
-    )
+    add_common(parser)
     parser.add_argument(
         "-q", "--quiet", action="store_true",
         help="suppress the under-reporting warning for nested containers",
@@ -139,7 +141,7 @@ def cmd_outline(args, documents) -> int:
                   f"{'#' * (block.level or 1)} {block.text}  [{block.slug}]")
 
     _emit([b.to_dict() for b in rows], args.json, human)
-    return 0
+    return OK
 
 
 def cmd_blocks(args, documents) -> int:
@@ -169,7 +171,7 @@ def cmd_blocks(args, documents) -> int:
                   f"[{block.start}:{block.end}] under {where}")
 
     _emit([b.to_dict() for b in rows], args.json, human)
-    return 0
+    return OK
 
 
 def cmd_section(args, documents) -> int:
@@ -179,7 +181,7 @@ def cmd_section(args, documents) -> int:
         available = ", ".join(b.slug or "" for b in outline(document)) or "none"
         print(f"mdquery: no heading with id {args.id!r} in {document.path}\n"
               f"available: {available}", file=sys.stderr)
-        return 1
+        return FINDINGS
     start, end = span
     data = document.path.read_bytes()
     if args.json:
@@ -192,7 +194,7 @@ def cmd_section(args, documents) -> int:
         }, ensure_ascii=False))
     else:
         sys.stdout.write(data[start:end].decode("utf-8", errors="replace"))
-    return 0
+    return OK
 
 
 def cmd_stats(args, documents) -> int:
@@ -217,7 +219,7 @@ def cmd_stats(args, documents) -> int:
                 print(f"  {n:5d}  {kind}")
 
     _emit(rows, args.json, human)
-    return 0
+    return OK
 
 
 COMMANDS = {
@@ -236,16 +238,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if missing:
         for path in missing:
             print(f"mdquery: {path}: not a file", file=sys.stderr)
-        return 2
+        return USAGE
 
     try:
-        documents = [annotate(d) for d in load(paths, args.mdfix)]
+        config = resolve_config(args.config, paths[0] if paths else None)
+    except ConfigError as exc:
+        return fail("mdquery", str(exc))
+
+    try:
+        documents = [annotate(d)
+                     for d in load(paths, resolve_mdfix(args.mdfix, config))]
     except IRError as exc:
-        print(f"mdquery: {exc}", file=sys.stderr)
-        return 2
+        return fail("mdquery", str(exc))
 
     if not documents:
-        return 0
+        return OK
 
     _warn_hidden(documents, args.quiet)
     return COMMANDS[args.command](args, documents)

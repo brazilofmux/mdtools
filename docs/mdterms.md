@@ -11,15 +11,17 @@ chapter.md:1: 'SLOW32' should be 'SLOW-32'
 chapter.md:3: 'pandoc' should be 'Pandoc'
 chapter.md:15: 'SLOW32' should be 'SLOW-32' (inside a code span)  [not auto-fixable]
 
-$ mdterms --edits chapter.md | mdfix --apply-edits -i chapter.md
+$ mdterms --diff chapter.md          # see the changes
+$ mdterms --fix  chapter.md          # make them
 ```
 
 The tool that decides what to change is never the tool that writes the file.
 mdfix validates every edit — bounds, overlap, encoding, staleness — and
 refuses any that would leave the document needing a required repair.
 
-Swap `-i` for `--diff` to see the changes without making them; each hunk names
-the rule that claimed it. See [edit-schema.md](edit-schema.md).
+`--fix` builds an edit list and hands it to `mdfix --apply-edits`; it never
+writes the file itself. `--edits` still prints that list if you want it. See
+[edit-schema.md](edit-schema.md) and [cli.md](cli.md).
 
 ## Only prose
 
