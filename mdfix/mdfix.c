@@ -228,6 +228,7 @@ static int  opt_spaced_emdash = 0;
 static int  opt_required   = 1;       /* L2: on unless --no-required */
 static int  opt_editorial  = 0;       /* L3 editorial bundle; --editorial */
 static int  opt_apply_edits = 0;      /* L5 applier; reads JSONL on stdin */
+static int  opt_diff = 0;             /* --diff: preview edits, write nothing */
 static int  opt_wrap_width = 0;       /* 0 = disabled */
 static int  opt_emit_ir   = 0;        /* structural IR to stdout; never writes */
 static int  opt_normalize_nfc = 0;    /* L3: rewrite to NFC; --normalize-nfc */
@@ -3918,7 +3919,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 3922 "mdfix.c"
+#line 3923 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -3926,20 +3927,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 3930 "mdfix.c"
+#line 3931 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 4315 "mdfix.rl"
+#line 4316 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 4066 "mdfix.rl"
+#line 4067 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -3979,7 +3980,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 3942 "mdfix.rl"
+#line 3943 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial || ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -4016,19 +4017,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 3935 "mdfix.rl"
+#line 3936 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 3935 "mdfix.rl"
+#line 3936 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 4250 "mdfix.rl"
+#line 4251 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -4052,7 +4053,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 4295 "mdfix.rl"
+#line 4296 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -4073,7 +4074,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 4273 "mdfix.rl"
+#line 4274 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -4096,13 +4097,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 4315 "mdfix.rl"
+#line 4316 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 4195 "mdfix.rl"
+#line 4196 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -4125,7 +4126,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 4108 "mdfix.rl"
+#line 4109 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_CHAR('.');
@@ -4176,13 +4177,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 4315 "mdfix.rl"
+#line 4316 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 4158 "mdfix.rl"
+#line 4159 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -4220,7 +4221,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 4217 "mdfix.rl"
+#line 4218 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -4254,7 +4255,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 4004 "mdfix.rl"
+#line 4005 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4267,7 +4268,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 3978 "mdfix.rl"
+#line 3979 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4281,7 +4282,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 4016 "mdfix.rl"
+#line 4017 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4294,7 +4295,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 3991 "mdfix.rl"
+#line 3992 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4308,7 +4309,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 4028 "mdfix.rl"
+#line 4029 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -4347,7 +4348,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 3935 "mdfix.rl"
+#line 3936 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -4360,7 +4361,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 4364 "mdfix.c"
+#line 4365 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -4386,7 +4387,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 4390 "mdfix.c"
+#line 4391 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -4430,7 +4431,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 4434 "mdfix.c"
+#line 4435 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -4479,7 +4480,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 4483 "mdfix.c"
+#line 4484 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -4498,7 +4499,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 4502 "mdfix.c"
+#line 4503 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -4524,7 +4525,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 4528 "mdfix.c"
+#line 4529 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -4573,7 +4574,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 4577 "mdfix.c"
+#line 4578 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -4653,7 +4654,7 @@ case 13:
 
 	}
 
-#line 4322 "mdfix.rl"
+#line 4323 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';
@@ -5204,10 +5205,34 @@ struct edit {
     char     *replacement;   /* owned */
     char     *rule;          /* owned, may be NULL */
     char     *expect;        /* owned, may be NULL: original bytes as seen */
+    /*
+     * Issue #12's edit model: what kind of change this is, how sure the
+     * producer is, and why. All optional and all owned.
+     *
+     * mdfix does not act on them — a low-confidence edit is applied exactly
+     * like a high-confidence one, because the producer already decided by
+     * sending it. They exist so a human reviewing `--diff` sees the same
+     * judgement the producer made, rather than a bare byte range. Validating
+     * them anyway is I4.2: accepted input is checked, not trusted, and a
+     * typo'd `confidance` that silently vanished would be worse than useless.
+     */
+    char     *severity;      /* owned, may be NULL */
+    char     *confidence;    /* owned, may be NULL */
+    char     *explanation;   /* owned, may be NULL */
 };
 
 static struct edit edits[MAX_EDITS];
 static int nedits = 0;
+
+static void free_edit_fields(struct edit *e)
+{
+    free(e->replacement);
+    free(e->rule);
+    free(e->expect);
+    free(e->severity);
+    free(e->confidence);
+    free(e->explanation);
+}
 
 static void free_edits(void)
 {
@@ -5215,6 +5240,9 @@ static void free_edits(void)
         free(edits[i].replacement);
         free(edits[i].rule);
         free(edits[i].expect);
+        free(edits[i].severity);
+        free(edits[i].confidence);
+        free(edits[i].explanation);
     }
     nedits = 0;
 }
@@ -5346,6 +5374,11 @@ static int parse_edit_object(const char *line, struct edit *e,
             if (e && strcmp(key, "replacement") == 0) slot = &e->replacement;
             else if (e && strcmp(key, "rule") == 0)   slot = &e->rule;
             else if (e && strcmp(key, "expect") == 0) slot = &e->expect;
+            else if (e && strcmp(key, "severity") == 0) slot = &e->severity;
+            else if (e && strcmp(key, "confidence") == 0)
+                slot = &e->confidence;
+            else if (e && strcmp(key, "explanation") == 0)
+                slot = &e->explanation;
             else if (kind && strcmp(key, "kind") == 0)     slot = kind;
             else if (schema && strcmp(key, "schema") == 0) slot = schema;
             if (slot) { free(*slot); *slot = val; } else free(val);
@@ -5420,13 +5453,13 @@ static int load_edits(const char *path, long long file_len)
             break;
         }
 
-        struct edit e = {0, 0, 0, NULL, NULL, NULL};
+        struct edit e = {0, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL};
         char *kind = NULL, *schema = NULL;
         long long bytes = -1;
         if (!parse_edit_object(trimmed, &e, &kind, &bytes, &schema)) {
             fprintf(stderr, "error: edit line %d is not a flat JSON object\n",
                     lineno);
-            free(e.replacement); free(e.rule); free(e.expect);
+            free_edit_fields(&e);
             free(kind); free(schema);
             rc = 1;
             break;
@@ -5445,7 +5478,7 @@ static int load_edits(const char *path, long long file_len)
                     bytes, path, file_len);
                 rc = 1;
             }
-            free(e.replacement); free(e.rule); free(e.expect);
+            free_edit_fields(&e);
             free(kind); free(schema);
             if (rc) break;
             line = nl ? nl + 1 : NULL;
@@ -5487,6 +5520,41 @@ static int utf8_is_boundary(const char *s, long long off, long long len)
 }
 
 /* I4.2: bounds, ordering, overlap, encoding, and staleness. */
+/*
+ * The vocabularies for `severity` and `confidence` (docs/edit-schema.md).
+ *
+ * Closed sets, and deliberately not numbers. A float confidence invites a
+ * precision nobody has calibrated — 0.82 means nothing a reader can check,
+ * while "medium" is a claim a producer can defend. mdlinks already reasons in
+ * exactly these steps: an exact identifier match is not the same kind of
+ * answer as a nearest-neighbour guess, and there is no ratio between them.
+ *
+ * Refusing an unknown value rather than ignoring it is I4.2. A producer that
+ * writes `"confidence":"certain"` has a bug; discovering it here costs one
+ * error message, and discovering it because a review step silently stopped
+ * filtering costs a wrong edit in the file.
+ */
+static const char *edit_severities[] = {"error", "warning", "info", NULL};
+static const char *edit_confidences[] = {"high", "medium", "low", NULL};
+
+static int in_vocabulary(const char *value, const char *const *allowed)
+{
+    for (int i = 0; allowed[i]; i++)
+        if (strcmp(value, allowed[i]) == 0)
+            return 1;
+    return 0;
+}
+
+static void vocabulary_error(int index, const char *field, const char *value,
+                             const char *const *allowed)
+{
+    fprintf(stderr, "error: edit %d has %s \"%s\"; expected one of",
+            index + 1, field, value);
+    for (int i = 0; allowed[i]; i++)
+        fprintf(stderr, "%s %s", i ? "," : "", allowed[i]);
+    fputs(".\n", stderr);
+}
+
 static int validate_edits(const char *src, long long len)
 {
     qsort(edits, (size_t)nedits, sizeof edits[0], edit_cmp);
@@ -5520,6 +5588,23 @@ static int validate_edits(const char *src, long long len)
                     "%s\n", i + 1, why);
             return 1;
         }
+        if (e->severity && !in_vocabulary(e->severity, edit_severities)) {
+            vocabulary_error(i, "severity", e->severity, edit_severities);
+            return 1;
+        }
+        if (e->confidence && !in_vocabulary(e->confidence, edit_confidences)) {
+            vocabulary_error(i, "confidence", e->confidence, edit_confidences);
+            return 1;
+        }
+        /* `explanation` is prose for a human, so there is nothing to check
+         * beyond the UTF-8 every accepted string already gets. */
+        if (e->explanation
+            && utf8_first_bad(e->explanation, (int)strlen(e->explanation),
+                              &why) >= 0) {
+            fprintf(stderr, "error: edit %d explanation is not valid UTF-8: "
+                    "%s\n", i + 1, why);
+            return 1;
+        }
         if (e->expect) {
             long long n = (long long)strlen(e->expect);
             if (n != e->end - e->start
@@ -5547,6 +5632,119 @@ static void splice_edits(FILE *out, const char *src, long long len)
     }
     if (cursor < len)
         fwrite(src + cursor, 1, (size_t)(len - cursor), out);
+}
+
+/* Line number (1-based) of the byte at `off`, and the offset of that line. */
+static int line_at(const char *src, long long off, long long *line_start)
+{
+    int line = 1;
+    long long start = 0;
+    for (long long i = 0; i < off; i++) {
+        if (src[i] == '\n') {
+            line++;
+            start = i + 1;
+        }
+    }
+    *line_start = start;
+    return line;
+}
+
+/* Offset just past the newline that ends the line containing `off`. */
+static long long line_end_after(const char *src, long long len, long long off)
+{
+    long long i = off;
+    while (i < len && src[i] != '\n')
+        i++;
+    return i < len ? i + 1 : len;
+}
+
+static void print_diff_lines(const char *text, long long len, char marker)
+{
+    long long i = 0;
+    while (i < len) {
+        long long j = i;
+        while (j < len && text[j] != '\n')
+            j++;
+        printf("%c %.*s\n", marker, (int)(j - i), text + i);
+        i = j < len ? j + 1 : len;
+    }
+    /* A range with no trailing newline is the file's last line; say so
+     * rather than let the diff imply one that is not there. */
+    if (len > 0 && text[len - 1] != '\n')
+        printf("\\ No newline at end of file\n");
+}
+
+/*
+ * Show what the edits would do, and write nothing (issue #12's `--diff`).
+ *
+ * Not a general diff: the edit list already says exactly which bytes change,
+ * so there is nothing to infer and no algorithm to get wrong. Each group of
+ * edits that lands on the same lines becomes one hunk of those lines before
+ * and after — which is also what makes the annotation possible. `git diff`
+ * can show the bytes; only this can say *which rule* claimed them and how
+ * sure it was.
+ *
+ * Edits are already sorted and non-overlapping by the time this runs.
+ */
+static void print_edit_diff(const char *path, const char *src, long long len)
+{
+    int i = 0;
+    while (i < nedits) {
+        long long first_line_start = 0;
+        int first_line = line_at(src, edits[i].start, &first_line_start);
+        long long stop = line_end_after(src, len, edits[i].end);
+
+        /* Extend the group while the next edit falls inside the lines this
+         * hunk already covers. Two fixes on one line are one hunk; printing
+         * the line twice, each time showing only one of the two changes,
+         * would show a state that never exists. */
+        int j = i + 1;
+        while (j < nedits && edits[j].start < stop) {
+            stop = line_end_after(src, len, edits[j].end);
+            j++;
+        }
+
+        int count = j - i;
+        printf("@@ %s:%d @@ %d edit%s\n", path, first_line,
+               count, count == 1 ? "" : "s");
+        for (int k = i; k < j; k++) {
+            const struct edit *e = &edits[k];
+            printf("#  %s", e->rule ? e->rule : "(no rule)");
+            if (e->severity)
+                printf(" [%s]", e->severity);
+            if (e->confidence)
+                printf(" confidence: %s", e->confidence);
+            putchar('\n');
+            if (e->explanation)
+                printf("#  %s\n", e->explanation);
+        }
+
+        print_diff_lines(src + first_line_start, stop - first_line_start, '-');
+
+        /* The same byte range with this group's edits spliced in. Built here
+         * rather than diffed out of the whole result: the hunk must show the
+         * lines these edits touch, not whatever a line-matching heuristic
+         * decided lines up. */
+        long long cursor = first_line_start;
+        char *after = NULL;
+        size_t after_len = 0;
+        FILE *mem = open_memstream(&after, &after_len);
+        if (mem) {
+            for (int k = i; k < j; k++) {
+                if (edits[k].start > cursor)
+                    fwrite(src + cursor, 1,
+                           (size_t)(edits[k].start - cursor), mem);
+                fputs(edits[k].replacement, mem);
+                cursor = edits[k].end;
+            }
+            if (cursor < stop)
+                fwrite(src + cursor, 1, (size_t)(stop - cursor), mem);
+            fclose(mem);
+            print_diff_lines(after, (long long)after_len, '+');
+            free(after);
+        }
+        i = j;
+    }
 }
 
 /*
@@ -5719,7 +5917,19 @@ static int apply_edits_file(const char *input_path, const char *output_path)
     }
 
     int rc = 0;
-    if (opt_dryrun) {
+    if (opt_diff) {
+        /* Preview only. Deliberately checked after I4.3 above, so a diff
+         * never shows a change the applier would go on to refuse. */
+        print_edit_diff(input_path, src, len);
+        if (fflush(stdout) != 0) {
+            fprintf(stderr, "error writing diff: ");
+            perror(NULL);
+            rc = 1;
+        }
+        if (!opt_quiet)
+            fprintf(stderr, "%s: %d edit%s, nothing written\n",
+                    input_path, nedits, nedits == 1 ? "" : "s");
+    } else if (opt_dryrun) {
         if (!opt_quiet)
             fprintf(stderr, "%s: would apply %d edit%s (dry run)\n",
                     input_path, nedits, nedits == 1 ? "" : "s");
@@ -5745,7 +5955,7 @@ static int apply_edits_file(const char *input_path, const char *output_path)
         }
     }
 
-    if (!opt_quiet && rc == 0 && !opt_dryrun)
+    if (!opt_quiet && rc == 0 && !opt_dryrun && !opt_diff)
         fprintf(stderr, "%s: applied %d edit%s\n",
                 input_path, nedits, nedits == 1 ? "" : "s");
 
@@ -5793,6 +6003,9 @@ static void usage(const char *prog)
         "        Read byte-span edits as JSONL on stdin and splice them into\n"
         "        the file. Untouched bytes are preserved exactly; overlapping\n"
         "        or out-of-range edits are refused. See docs/edit-schema.md\n"
+        "  --diff\n"
+        "        With --apply-edits, print what the edits would change and\n"
+        "        write nothing. Each hunk names the rules that claimed it\n"
         "  --editorial\n"
         "        Editorial passes: bullet style, emphasis in headings,\n"
         "        bold colons, arrow asides, blockquote spacing.\n"
@@ -6439,6 +6652,11 @@ int main(int argc, char *argv[])
         }
         if (strcmp(argv[argi], "--emit-ir") == 0) {
             opt_emit_ir = 1;
+            argi++;
+            continue;
+        }
+        if (strcmp(argv[argi], "--diff") == 0) {
+            opt_diff = 1;
             argi++;
             continue;
         }

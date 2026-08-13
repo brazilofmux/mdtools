@@ -78,12 +78,23 @@ class Finding:
         }
 
     def to_edit(self) -> dict:
+        # severity / confidence / explanation are issue #12's edit model, so
+        # `mdfix --apply-edits --diff` can show why a span is being claimed.
+        #
+        # Confidence is always high and that is not a shrug: a forbidden
+        # spelling is an exact string the glossary named, matched on word
+        # boundaries. There is no nearest-neighbour step here to be unsure
+        # about — the uncertain cases are the *protected* ones, and those are
+        # never turned into edits at all.
         return {
             "start": self.start,
             "end": self.end,
             "replacement": self.expected,
             "rule": self.rule,
             "expect": self.found,
+            "severity": self.severity,
+            "confidence": "high",
+            "explanation": f"the glossary prefers {self.expected!r}",
         }
 
 

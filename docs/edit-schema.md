@@ -63,10 +63,39 @@ document rather than fail. One integer catches it.
 | `replacement` | no (default `""`) | UTF-8 text to splice in. Empty deletes |
 | `expect` | no | The original bytes the consumer saw at that span |
 | `rule` | no | Stable rule ID, for diagnostics and suppression |
+| `severity` | no | `error`, `warning` or `info` |
+| `confidence` | no | `high`, `medium` or `low` |
+| `explanation` | no | One line of prose for a human reviewing the change |
 
 `expect` is the per-edit staleness guard, and it is worth sending. It costs
 one string and turns "the file moved underneath me" from silent corruption
 into a refusal naming the edit.
+
+### Severity, confidence and explanation
+
+These are issue #12's edit model, and mdfix **never acts on them**. A `low`
+edit is applied exactly like a `high` one, because sending it was the
+producer's decision — re-deciding here would put the same policy in two places
+and make the applier's behaviour depend on how carefully a producer phrased
+itself. They exist to be *read*: `--diff` shows them, so a reviewer sees the
+judgement behind a change and not only its byte range.
+
+They are validated anyway (**I4.2**). An unknown value is refused rather than
+ignored, because a field that vanishes when misspelled is worse than one that
+does not exist: a review step filtering on `confidence` would go on passing
+everything, and nothing would say so.
+
+Both vocabularies are closed sets, and confidence is deliberately not a
+number. A float invites a precision nobody has calibrated — `0.82` is not
+something a reader can check, while "medium" is a claim a producer can defend.
+The tools reason in exactly these steps: mdlinks marks an anchor it matched
+exactly as `high` and one it reached by edit distance as `medium`, and there
+is no ratio between those two kinds of answer.
+
+| Producer | Confidence it emits |
+|---|---|
+| mdterms | `high` — an exact spelling the glossary named |
+| mdlinks | `high` for an identifier or basename match, `medium` for nearest-neighbour |
 
 `start == end` inserts. An edit list may be in any order; the applier sorts
 by start, then end, then original input order (so same-offset inserts are
@@ -81,9 +110,12 @@ corrupts a manuscript, and each is refused with a diagnostic:
 - overlapping edits
 - a `replacement` that is not well-formed UTF-8
 - an `expect` that does not match the bytes at that span
+- a `severity` or `confidence` outside its vocabulary
+- an `explanation` that is not well-formed UTF-8
 - a `bytes` header that does not match the file
 - an unknown `schema`
 - malformed or nested JSON
+- a span that cuts a multi-byte UTF-8 character
 
 The input file itself must be valid UTF-8, the same L1 contract as
 `--emit-ir` (see #53).
@@ -127,6 +159,7 @@ that decides what to change is never the tool that writes the file.
 | `mdfix --apply-edits f.md` | Spliced document on stdout; `f.md` untouched |
 | `mdfix --apply-edits -i f.md` | In place, with a `.bak` |
 | `mdfix --apply-edits f.md out.md` | To `out.md` |
+| `mdfix --apply-edits --diff f.md` | What would change, on stdout. Writes nothing |
 
 The in-place path reuses the fixer's own writer, so it preserves permission
 bits and ownership, writes through a temp file, and renames atomically with a
@@ -134,11 +167,35 @@ directory fsync. Nothing is written until the whole edit list has validated
 and the result has passed the I4.3 check — a write that has to be undone is a
 write that should not have happened.
 
+## Previewing
+
+```console
+$ mdlinks --edits docs/guide.md | mdfix --apply-edits --diff docs/guide.md
+@@ docs/guide.md:5 @@ 2 edits
+#  links.broken-anchor [error] confidence: high
+#  the heading's identifier for that text
+#  links.broken-anchor [error] confidence: medium
+#  the closest anchor in that file
+- See [a](#instalation-guide) and [b](#overvew).
++ See [a](#installation-guide) and [b](#overview).
+```
+
+This is not a general diff, and it is not trying to be. The edit list already
+says exactly which bytes change, so there is nothing to infer: each group of
+edits landing on the same lines becomes one hunk of those lines before and
+after. `git diff` can show you the bytes afterwards. Only this can tell you
+*which rule* claimed them and how sure it was — which is the question a
+reviewer actually has.
+
+Edits that share a line are shown together, in one hunk. Printing the line
+once per edit would show a state that never exists: the line with half its
+changes applied.
+
+`--diff` runs **after** the I4.3 check, so a preview never shows a change the
+applier would then refuse to make.
+
 ## Not in schema 1
 
-- **Severity, confidence and explanation** on an edit. #12 asks for them and
-  they belong here, alongside the diagnostics contract (ID.1–ID.3) that has
-  the same shape.
 - **Composable overlaps.** Overlapping edits are refused outright. #12 leaves
   room for explicitly composable ones; nothing needs them yet.
 - **stdin for the document.** The document is named by path so its bytes can

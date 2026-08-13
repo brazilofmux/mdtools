@@ -18,6 +18,9 @@ The tool that decides what to change is never the tool that writes the file.
 mdfix validates every edit — bounds, overlap, encoding, staleness — and
 refuses any that would leave the document needing a required repair.
 
+Swap `-i` for `--diff` to see the changes without making them; each hunk names
+the rule that claimed it. See [edit-schema.md](edit-schema.md).
+
 ## Only prose
 
 A forbidden spelling inside a code block, a table cell, a link definition or

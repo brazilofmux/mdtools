@@ -121,7 +121,10 @@ Each has an identifier so issues and tests can cite it.
 - **I4.2 Validated IR in.** Accepted IR and edit lists are checked, not
   trusted: schema version, UTF-8, span bounds, ordering, and non-overlap.
   A violation is refused with a diagnostic. *(Issue #12: `--apply-edits`,
-  schema `mdtools-edits-1`; see [edit-schema.md](edit-schema.md).)*
+  schema `mdtools-edits-1`; see [edit-schema.md](edit-schema.md). Edits also
+  carry `severity`, `confidence` and `explanation`, validated against closed
+  vocabularies — mdfix never acts on them, but a field that vanished when
+  misspelled would silently defeat any consumer filtering on it.)*
 - **I4.3 Validate, do not repair.** An incoming edit that would break L2 is
   **rejected**, not silently fixed. See Q3. *(Done: the required set is run
   over the spliced result, and a result that would need a repair is refused.)*
@@ -194,7 +197,7 @@ lands.
 | L2 | Required set classified in [transforms.md](transforms.md) and on by default (`--no-required` for inspection). I2.3 holds for those three repairs. |
 | L3 | ~20 transforms exist. Editorial bundle is opt-in (`--editorial`; implied by `--canonical` / `--technical`), so I3.3 holds. I3.1 matrix in `tests/test_transform_matrix.py`; still false in the pinned §7 cases (hard breaks; Chicago ellipsis). |
 | L4 | Emits IR (`--emit-ir`, schema `mdtools-ir-3`, total), including destination spans so a consumer can rewrite a link without holding grammar. Accepts edit lists (`--apply-edits`, schema `mdtools-edits-1`) with I4.2 validation. **Still cannot accept IR** for rewrite; no general IR validator. |
-| L5 | **Splicing applier shipped** (`--apply-edits`). I5.1–I5.2 hold via splice-not-serialize. I5.3 (serialize round-trip) still needs a serializer. |
+| L5 | **Splicing applier shipped** (`--apply-edits`), with `--diff` to preview an edit list without writing. I5.1–I5.2 hold via splice-not-serialize. I5.3 (serialize round-trip) still needs a serializer. |
 | D | **`--diagnostics` shipped** (JSONL on stderr; path, line-level span, stable rule ids; ID.1–ID.3). Human progress suppressed so the stream stays parseable. L1 encoding errors and mdquery under-report warnings not yet on this stream; spans are not sub-line. |
 
 Known dialect gaps are tracked in dialect-policy §7 and ir-schema's divergence

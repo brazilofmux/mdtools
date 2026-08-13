@@ -81,6 +81,11 @@ is never the tool that writes the file:
 $ mdlinks --edits docs/guide.md README.md docs/*.md | mdfix --apply-edits -i docs/guide.md
 ```
 
+Pipe the same edits through `mdfix --apply-edits --diff` first to see exactly
+what they would do, annotated with the rule and how sure mdlinks was — an
+identifier that matched is `high`, a nearest-neighbour guess is `medium`. See
+[edit-schema.md](edit-schema.md).
+
 `--edits` names one file because the applier reads one document. Other paths
 are the scope a repair searches (same set the checker judges against). The
 target is included automatically if it is not already listed.
