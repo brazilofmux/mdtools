@@ -376,9 +376,9 @@ Still needed:
   `--apply-edits` (schema `mdtools-edits-1`; see
   [edit-schema.md](edit-schema.md)) so edit-lists are the only write path.
   Dual grammar and `test_tool_parity.py` are already gone.
-- Coverage for the §7 gaps, each with the Pandoc AST (or rendered output)
-  as the assertion — including hard-break preservation under `-w` and
-  Unicode ellipsis under Chicago.
+- Coverage for remaining §7 gaps, each with the Pandoc AST (or rendered
+  output) as the assertion — Unicode ellipsis under Chicago. Hard-break
+  preservation is covered by `HardBreakTests` and the transform matrix.
 - CI oracle version: §3 pins pandoc 3.10 in prose; CI installs distro
   pandoc. Failures should name the binary/version so an apt bump is
   diagnosable.

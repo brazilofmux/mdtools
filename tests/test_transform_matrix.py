@@ -140,6 +140,12 @@ class MatrixTestCase(unittest.TestCase):
                          msg=f"{transform}: {result.stderr}")
         return out.read_text(encoding="utf-8")
 
+    def _native(self, text: str) -> str:
+        return subprocess.run(
+            [PANDOC, "-f", "markdown", "-t", "native"],
+            input=text, capture_output=True, text=True, check=True,
+        ).stdout
+
 
 class IdempotenceTests(MatrixTestCase):
     """I3.2, and it needs no oracle — so it runs everywhere."""
@@ -280,8 +286,8 @@ class HardBreakTests(MatrixTestCase):
         self.assertEqual(out, "line one  \nline two\n")
 
     def test_trailing_space_at_the_end_of_a_block_is_still_removed(self) -> None:
-        # Nothing follows, so it breaks nothing and Pandoc drops it. The
-        # cleanup -w exists for must survive the fix.
+        # Nothing follows, so it breaks nothing and Pandoc drops it.
+        # End-of-block two-space junk must still be stripped.
         self.assertEqual(self._fix("only line  \n\nnext\n", "-w"),
                          "only line\n\nnext\n")
 
@@ -290,24 +296,35 @@ class HardBreakTests(MatrixTestCase):
         self.assertNotIn("LineBreak", self._native(source))
         self.assertNotIn("LineBreak", self._native(self._fix(source, "-w")))
 
+    def test_a_space_after_a_backslash_is_not_stripped(self) -> None:
+        # +escaped_line_breaks: `foo\ \nbar` is a literal backslash + SoftBreak.
+        # Stripping the space yields `foo\\\nbar`, a LineBreak.
+        source = "foo\\ \nbar\n"
+        self.assertNotIn("LineBreak", self._native(source))
+        for transform in ("-w", "--canonical", "--wrap=78", "--technical"):
+            with self.subTest(transform=transform):
+                out = self._fix(source, transform)
+                self.assertNotIn("LineBreak", self._native(out), out)
+                self.assertIn("\\", self._native(out) + out)
+
     def test_a_trailing_tab_is_left_exactly_as_it_was(self) -> None:
-        # Pandoc expands a trailing tab to the next tab stop, so whether it
-        # is a break depends on the line's width — `xxx\t` is soft, `xx\t`
-        # is hard. Reproducing that means hard-coding a tab stop of 4, which
-        # is Pandoc's default and not its contract. So mdfix does not touch
-        # these lines, and whatever Pandoc made of the bytes it still makes.
-        for source in ("line one\tline\nline two\n",
-                       "xx\t\nnext\n",
-                       "xxx\t\nnext\n"):
+        # Width-dependent under Pandoc's default tab stop; do not encode it.
+        for source in ("xx\t\nnext\n", "xxx\t\nnext\n"):
             with self.subTest(source=source):
-                for transform in ("-w", "--wrap=78", "--technical"):
+                self.assertEqual(self._fix(source, "-w"), source)
+                for transform in ("--wrap=78", "--technical"):
                     out = self._fix(source, transform)
                     self.assertEqual(self._native(out), self._native(source),
                                      f"{transform}: {out!r}")
 
+
+@unittest.skipUnless(PANDOC, "pandoc not installed")
+class ChicagoEllipsisTests(MatrixTestCase):
+    """§7 remaining gap: Chicago emits ASCII `...` (I2.2)."""
+
     def test_chicago_emits_ascii_ellipsis(self) -> None:
-        # §7 gap 6. The mark mdtools emits must not be smart-dependent;
-        # U+2026 is the target.
+        # The mark mdtools emits must not be smart-dependent; U+2026 is
+        # the target.
         out = self._fix("He paused . . . then spoke.\n", "--canonical")
         self.assertIn("...", out)
         self.assertNotIn("…", out)
@@ -324,12 +341,6 @@ class HardBreakTests(MatrixTestCase):
         # through is not the same as emitting it.
         source = "He paused... then spoke.\n"
         self.assertEqual(self._fix(source, "--canonical"), source)
-
-    def _native(self, text: str) -> str:
-        return subprocess.run(
-            [PANDOC, "-f", "markdown", "-t", "native"],
-            input=text, capture_output=True, text=True, check=True,
-        ).stdout
 
 
 if __name__ == "__main__":

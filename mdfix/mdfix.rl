@@ -3244,57 +3244,8 @@ static void lint_serial_comma(const char *line, int linenum)
     }
 }
 
-/*
- * Fix 5: Normalize trailing whitespace (opt-in via -w).
- *
- * In markdown, a single trailing space is a deliberate line break.
- * So we don't nuke all trailing whitespace — instead we:
- *   - Strip all trailing tabs
- *   - Collapse multiple trailing spaces down to at most one
- * Net effect: intentional line breaks survive, sloppy whitespace doesn't.
- */
-/*
- * Is the whitespace at the end of `line` a hard line break?
- *
- * dialect-policy §3 pins `-hard_line_breaks +escaped_line_breaks`, so two or
- * more trailing spaces before a continuing line mean a `LineBreak` and not
- * stray whitespace. Two passes used to destroy them — §7 gap 5 — because both
- * treated "trailing" and "meaningless" as the same word.
- *
- * Three conditions, and all three are load-bearing:
- *
- *   - two or more trailing spaces. One is noise; CommonMark needs two.
- *   - something other than whitespace on the line. A line of only spaces is
- *     a blank line, not a break.
- *   - a following line with content. A break at the end of a block breaks
- *     nothing, and Pandoc drops it.
- *
- * `index` is the line's index in lines[], so the third condition can be
- * asked. A caller that does not know the index passes -1 and gets the
- * conservative answer: keep the break. Preserving one Pandoc would have
- * ignored costs a little trailing whitespace; destroying a real one changes
- * what the document says.
- */
-/*
- * Does the trailing whitespace contain a tab? Then mdfix does not touch the
- * line at all.
- *
- * Pandoc expands a trailing tab to the next tab stop, so whether it is a hard
- * break depends on the line's width: measured against pandoc 3.10, `xxx\t`
- * is a soft break and `xx\t`, `xxxx\t` are hard ones — one space at width
- * 3 mod 4, two or more otherwise. Reproducing that means hard-coding a tab
- * stop of 4, which is Pandoc's *default* and not its contract (`--tab-stop`
- * changes it). Encoding a reader flag in the fixer is the mistake §4 exists
- * to prevent.
- *
- * Worse, reflowing makes the question unanswerable: wrapping changes the
- * line's width, so the same tab expands differently in the output than it did
- * in the input, and no choice preserves meaning.
- *
- * So these lines are left exactly as they are — not stripped, not normalized,
- * not joined. Whatever Pandoc made of the bytes, it still makes. `-w` leaves
- * a trailing tab it would otherwise remove, which is the direction to err in.
- */
+/* Trailing tab: leave the line alone — expansion depends on width and
+ * --tab-stop, which the fixer must not encode. */
 static int trailing_has_tab(const char *line)
 {
     int len = (int)strlen(line);
@@ -3308,6 +3259,9 @@ static int trailing_has_tab(const char *line)
             return 1;
     return 0;
 }
+
+/* Two+ trailing spaces, some content, and a following content line.
+ * index < 0 keeps the break (conservative). */
 static int is_hard_break(const char *line, int index)
 {
     int len = (int)strlen(line);
@@ -3328,6 +3282,17 @@ static int is_hard_break(const char *line, int index)
     while (*next == ' ' || *next == '\t')
         next++;
     return *next != '\0';
+}
+
+/* Odd-length trailing backslash run: `foo\ ` is a literal `\`, not a break. */
+static int ends_with_unescaped_backslash(const char *line, int content_len)
+{
+    int n = 0;
+    while (content_len > 0 && line[content_len - 1] == '\\') {
+        n++;
+        content_len--;
+    }
+    return n % 2 == 1;
 }
 
 static int fix_trailing_ws(char *line, int linenum, int index)
@@ -3355,29 +3320,27 @@ static int fix_trailing_ws(char *line, int linenum, int index)
     int len = (int)strlen(line);
     int orig = len;
 
-    /* Strip all trailing whitespace first */
     while (len > 0 && (line[len - 1] == ' ' || line[len - 1] == '\t'))
         len--;
 
     if (len == orig)
-        return 0;   /* nothing to do */
+        return 0;
 
-    /*
-     * Strip it all. This used to keep one space when there had been any,
-     * which looks like an attempt at the hard break above that landed one
-     * space short: one trailing space means nothing to Pandoc, so the break
-     * was destroyed and a byte of noise was left in its place. Now that a
-     * real break is recognized and normalized to two, there is nothing left
-     * for a lone space to protect.
-     */
-    line[len] = '\0';
-
-    /* Only count as a fix if we actually changed something */
-    if ((int)strlen(line) != orig) {
+    /* Keep one space after an unescaped `\`: stripping it makes
+     * `foo\ \nbar` into an escaped LineBreak under +escaped_line_breaks. */
+    if (ends_with_unescaped_backslash(line, len) && orig > len
+        && line[len] == ' ') {
+        line[len] = ' ';
+        line[len + 1] = '\0';
+        if (len + 1 == orig)
+            return 0;
         record_fix(FIX_TRAILING_WS, linenum);
         return 1;
     }
-    return 0;
+
+    line[len] = '\0';
+    record_fix(FIX_TRAILING_WS, linenum);
+    return 1;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -3496,11 +3459,7 @@ static void flush_paragraph(FILE *out)
         const char *s = para_lines_buf[i];
         int slen = (int)strlen(s);
 
-        /*
-         * A line whose trailing whitespace holds a tab is emitted verbatim,
-         * and whatever was accumulated before it is flushed first so its
-         * bytes keep their original column. See trailing_has_tab.
-         */
+        /* Trailing tab: emit verbatim so its column (and tab-stop) stay. */
         if (trailing_has_tab(s)) {
             if (pos > 0) {
                 joined[pos] = '\0';
@@ -3511,31 +3470,25 @@ static void flush_paragraph(FILE *out)
             continue;
         }
 
-        /*
-         * A hard break ends a wrap unit and keeps its two spaces.
-         *
-         * Joining across one would delete a LineBreak from the document
-         * (§7 gap 5): the two lines become one, and no amount of re-wrapping
-         * puts the break back. The index is unknown here — these lines were
-         * buffered and the paragraph may already have ended — so `-1` asks
-         * for the conservative answer. Inside a buffered paragraph another
-         * line always follows anyway, except for the last, and a break there
-         * is exactly the case `-1` keeps and Pandoc ignores.
-         */
+        /* Hard break ends the wrap unit. index unknown → conservative. */
         int hard = (i < npara - 1) && is_hard_break(s, -1);
 
-        /* Trim trailing whitespace before joining */
         while (slen > 0 && (s[slen - 1] == ' ' || s[slen - 1] == '\t'))
             slen--;
+        /* Keep one space after `\` when this fragment is emitted as a line
+         * end; a join space already protects a mid-paragraph `\`. */
+        int will_flush = (i == npara - 1 || hard
+                          || !should_join(s, opt_wrap_width));
+        if (!hard && will_flush && ends_with_unescaped_backslash(s, slen)
+            && slen < (int)strlen(s) && s[slen] == ' ')
+            slen++;
 
         if (pos + slen >= MAX_PARA)
             slen = MAX_PARA - pos - 1;
         memcpy(joined + pos, s, slen);
         pos += slen;
 
-        /* If this line is short, ends in a hard break, or is the last, flush
-         * the accumulated text */
-        if (i == npara - 1 || hard || !should_join(s, opt_wrap_width)) {
+        if (will_flush) {
             joined[pos] = '\0';
             emit_wrapped_break(out, joined, opt_wrap_width, hard);
             pos = 0;

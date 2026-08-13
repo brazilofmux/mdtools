@@ -59,7 +59,7 @@ without the transform, so applying one is an editorial choice.
 | `--scrivener-repair` | Rejoin emphasis split across blocks | A repair, but of an authoring accident, not of a dialect misread |
 | `--spaced-emdash` | Preserve `word — word` | Typographic preference |
 | `-w` | Remove trailing whitespace, keeping hard breaks | Whitespace hygiene; a two-space hard break is normalized, not collapsed |
-| `--wrap[=N]` | Hard-wrap paragraphs | Presentation; **breaks I2.1** via `-w` |
+| `--wrap[=N]` | Hard-wrap paragraphs | Presentation; a two-space break is kept on the last emitted line |
 | `--canonical` | Profile: editorial + chicago + structural canonicalizers + `-w` (not wrap) | Convenience bundle |
 | `--technical` | Profile: `--canonical` + spaced em-dash + wrap 78 | Convenience bundle |
 | `--normalize-nfc` | Compose text to Unicode NFC | Pandoc reads both spellings; changes byte offsets and heading anchors, so it is not in either profile — architecture **I1.2** |
