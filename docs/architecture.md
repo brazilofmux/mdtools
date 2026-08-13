@@ -155,6 +155,15 @@ Each has an identifier so issues and tests can cite it.
   concatenating every record's span reproduces the input byte for byte, so a
   serializer can no longer silently normalize a blank run, a hard break, or a
   line ending. The serializer itself is still L5 work.)*
+- **I5.4 A failed write never lands.** If any part of writing the output
+  fails, the input is left exactly as it was, no partial file is installed or
+  left behind, and the exit status says so. *(Done. The temp-then-rename order
+  gives the first two even when the process is killed mid-write; the third
+  needed `ferror`, because a write that fails after draining the buffer leaves
+  `fflush`, `fsync` and `fclose` with nothing to report — mdfix installed a
+  truncated file over the original and exited 0. Fault-injected in
+  `tests/test_fault_injection.py` with `RLIMIT_FSIZE`, in both the
+  write-fails and the process-is-killed variants.)*
 
 ### D — Diagnostics
 

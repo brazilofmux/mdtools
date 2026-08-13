@@ -5081,6 +5081,7 @@ static void print_summary(const char *path)
 
 /* Defined with the other write-path helpers, below. */
 static void fsync_parent_dir(const char *path);
+static int  finish_stdout(const char *what);
 static int  finalize_output(FILE **out_slot, const char *tmp_path);
 static int  write_inplace_buf(const char *input_path,
                              const char *buf, size_t buflen);
@@ -5821,11 +5822,8 @@ static int apply_edits_file(const char *input_path, const char *output_path)
          * never shows a change the applier would go on to refuse. */
         if (print_edit_diff(input_path, src, len) != 0)
             rc = 1;
-        if (fflush(stdout) != 0) {
-            fprintf(stderr, "error writing diff: ");
-            perror(NULL);
+        if (finish_stdout("diff") != 0)
             rc = 1;
-        }
         if (!opt_quiet)
             fprintf(stderr, "%s: %d edit%s, nothing written\n",
                     input_path, nedits, nedits == 1 ? "" : "s");
@@ -5848,11 +5846,8 @@ static int apply_edits_file(const char *input_path, const char *output_path)
         }
     } else {
         fwrite(tmpbuf, 1, tmplen, stdout);
-        if (fflush(stdout) != 0) {
-            fprintf(stderr, "error writing result: ");
-            perror(NULL);
+        if (finish_stdout("result") != 0)
             rc = 1;
-        }
     }
 
     if (!opt_quiet && rc == 0 && !opt_dryrun && !opt_diff)
@@ -6089,11 +6084,61 @@ static void fsync_parent_dir(const char *path)
  * Finish writing out, flush, fsync, and close. On any error, unlink tmp_path
  * (if non-NULL) and return -1. On success return 0; *out_slot is set NULL.
  */
+/*
+ * Finish writing to stdout, and say so if any of it failed.
+ *
+ * `fflush` alone is not enough: a write that already failed has drained the
+ * buffer, so there is nothing left to flush and the flush succeeds. `ferror`
+ * is what remembers. Getting this wrong on stdout is quieter than on a file
+ * and worse in a pipeline — a truncated `--emit-ir` stream is still valid
+ * JSONL, just with records missing, and the consumer has no way to tell.
+ */
+static int finish_stdout(const char *what)
+{
+    if (ferror(stdout)) {
+        fprintf(stderr, "error writing %s: ", what);
+        perror(NULL);
+        clearerr(stdout);
+        return 1;
+    }
+    if (fflush(stdout) != 0) {
+        fprintf(stderr, "error writing %s: ", what);
+        perror(NULL);
+        return 1;
+    }
+    return 0;
+}
+
 static int finalize_output(FILE **out_slot, const char *tmp_path)
 {
     FILE *out = *out_slot;
     if (!out)
         return -1;
+    /*
+     * Any write that already failed on this stream.
+     *
+     * `fwrite` and `fprintf` report failure by returning a short count, and
+     * nothing here checks — `process()` alone writes through hundreds of
+     * fprintf calls. When the failure has already drained the buffer there is
+     * nothing left for `fflush` to push, so flush, fsync and close all
+     * succeed and a truncated file gets installed over the original with exit
+     * status 0.
+     *
+     * Found by fault injection: under RLIMIT_FSIZE a 40090-byte manuscript
+     * came back 4096 bytes, cut mid-word, silently. The `.bak` still held the
+     * original, so the data was recoverable — but nothing said to go looking.
+     *
+     * `ferror` is the one call that sees all of it, whoever did the writing.
+     */
+    if (ferror(out)) {
+        fprintf(stderr, "Can't write output (disk full or quota exceeded?): ");
+        perror(NULL);
+        fclose(out);
+        *out_slot = NULL;
+        if (tmp_path)
+            unlink(tmp_path);
+        return -1;
+    }
     if (fflush(out) != 0) {
         fprintf(stderr, "Can't flush output: ");
         perror(NULL);
@@ -6490,12 +6535,7 @@ static int process_file(const char *input_path, const char *output_path)
     if (opt_emit_ir) {
         emit_ir(stdout, input_path);
         free_lines();
-        if (fflush(stdout) != 0) {
-            fprintf(stderr, "error writing IR: ");
-            perror(NULL);
-            return 1;
-        }
-        return 0;
+        return finish_stdout("IR");
     }
 
     /*
