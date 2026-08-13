@@ -105,10 +105,10 @@ Each has an identifier so issues and tests can cite it.
   one and a fixed one fail. That second half did its job: closing the hard
   break gap failed this file, dialect-policy §7 and the matrix together, which
   is what stops a fix from landing without its record being updated.
-  *(Hard breaks under `-w` / `--canonical` / `--wrap` / `--technical` are now
-  preserved. Still false: Chicago punctuation emits ASCII `...`, which
-  violates I2.2 for emitted typography. Issue #49 — `--wrap` non-ASCII width —
-  is a wrap-quality bug outside this matrix’s I2.1/I2.2 oracle.)*
+  *(Now **true**: the pin set is empty. It held four hard-break cells and four
+  ellipsis cells; dialect-policy §7 records what both were. Issue #49 —
+  `--wrap` non-ASCII width — is a wrap-quality bug outside this matrix’s
+  I2.1/I2.2 oracle and not a counterexample to it.)*
 - **I3.2 Idempotence.** Applying a transform twice equals applying it once.
 - **I3.3 Opt-in.** No optional transform runs unless requested. *(Issue #60:
   the five editorial passes that predated the classification — bullet style,
@@ -197,7 +197,7 @@ lands.
 |---|---|
 | L1 | Block parsing broad and Pandoc-verified. Inline parsing partial (identifiers only). UTF-8 validated (I1.1) and non-NFC reported (I1.2); both invariants now hold. Whole-file only; `MAX_LINES` 200000, `MAX_LINE` 8192. |
 | L2 | Required set classified in [transforms.md](transforms.md) and on by default (`--no-required` for inspection). I2.3 holds for those three repairs. |
-| L3 | ~20 transforms exist. Editorial bundle is opt-in (`--editorial`; implied by `--canonical` / `--technical`), so I3.3 holds. I3.1 matrix in `tests/test_transform_matrix.py`; still false for Chicago ellipsis (I2.2). Hard breaks are preserved. |
+| L3 | ~20 transforms exist. Editorial bundle is opt-in (`--editorial`; implied by `--canonical` / `--technical`), so I3.3 holds. I3.1 holds on the matrix (`tests/test_transform_matrix.py`); the ellipsis I2.2 gap is closed. Hard breaks are preserved. |
 | L4 | Emits IR (`--emit-ir`, schema `mdtools-ir-3`, total), including destination spans so a consumer can rewrite a link without holding grammar. Accepts edit lists (`--apply-edits`, schema `mdtools-edits-1`) with I4.2 validation. **Still cannot accept IR** for rewrite; no general IR validator. |
 | L5 | **Splicing applier shipped** (`--apply-edits`), with `--diff` to preview an edit list without writing. I5.1–I5.2 hold via splice-not-serialize. I5.3 (serialize round-trip) still needs a serializer. |
 | D | **`--diagnostics` shipped** (JSONL on stderr; path, line-level span, stable rule ids; ID.1–ID.3). Human progress suppressed so the stream stays parseable. L1 encoding errors and mdquery under-report warnings not yet on this stream; spans are not sub-line. |
@@ -269,8 +269,10 @@ the schema; designing it in is cheap now and a retrofit later.
 Shipped as `tests/test_transform_matrix.py`: for each optional transform alone,
 and for each shipped profile, assert I2.1 and I2.2 over a corpus, with known
 §7 violations pinned exactly. That matrix is what widened the hard-break and
-Chicago-ellipsis gap lists; wrap-quality bugs such as #49 need a separate
-width oracle.
+Chicago-ellipsis gap lists, and then what forced them closed — a fixed cell
+fails it just as a new one does, so neither gap could be repaired without its
+record moving in the same change. The pin set is now empty. Wrap-quality bugs
+such as #49 need a separate width oracle.
 
 ### Q6. How do L2 and L3 move from line-based fixers to IR-based transforms?
 

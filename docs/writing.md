@@ -58,6 +58,10 @@ on a flag your reader controls, and you do not control:
 | three dots | an ellipsis | unchanged, as typed |
 | a literal `—` | an em dash | an em dash |
 
+mdtools follows the same rule for anything it writes: `--canonical` turns a
+spaced `. . .` into `…`, never into `...`. What you typed as `...` is left
+alone — the rule is about what the tools emit, not what they tolerate.
+
 And `--` does not even mean an em dash — Pandoc reads it as an **en dash**. The
 literal character is the only spelling that means what you meant regardless of
 how the document is later processed.

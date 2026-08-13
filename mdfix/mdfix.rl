@@ -3949,6 +3949,20 @@ struct scan_ctx {
     int    linenum;
 };
 
+/*
+ * U+2026 HORIZONTAL ELLIPSIS, the mark this profile emits.
+ *
+ * dialect-policy §4: typography mdtools *writes* must render the same with
+ * and without Pandoc's `smart`. ASCII `...` does not — `smart` folds it to
+ * U+2026 and a bare reader leaves three periods — so emitting it makes the
+ * output depend on a flag the reader controls and the author does not.
+ *
+ * This is only about what mdfix emits. An ellipsis the author already wrote
+ * as `...` is passed through untouched; §4 constrains our output, not their
+ * input.
+ */
+#define ELLIPSIS "\xE2\x80\xA6"
+
 #define EMIT_CHAR(c) do { \
     if (ctx->oi < MAX_LINE - 1) ctx->out[ctx->oi++] = (c); \
 } while (0)
@@ -4182,7 +4196,11 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 
             # ── Dot: check for spaced-ellipsis or dot-run ──
             '.' => {
-                if (!ctx->do_chicago_punct) {
+                /*
+                 * Either Chicago flag answers "is this run an ellipsis?"
+                 * here so the emit form cannot be assembled elsewhere.
+                 */
+                if (!ctx->do_chicago_punct && !ctx->do_chicago_punct2) {
                     EMIT_CHAR('.');
                 } else {
                     /* Look ahead for spaced-dot pattern: ". . ." */
@@ -4204,9 +4222,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
                     }
 
                     if (dots >= 3) {
-                        EMIT_CHAR('.');
-                        EMIT_CHAR('.');
-                        EMIT_CHAR('.');
+                        EMIT_STR(ELLIPSIS, 3);
                         BUMP(FIX_CHI_ELLIPSIS);
                         fexec scan;
                     } else {
@@ -4218,9 +4234,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
                             look++;
                         }
                         if (run >= 4) {
-                            EMIT_CHAR('.');
-                            EMIT_CHAR('.');
-                            EMIT_CHAR('.');
+                            EMIT_STR(ELLIPSIS, 3);
                             BUMP(FIX_CHI_ELLIPSIS);
                             fexec look;
                         } else {
@@ -5810,7 +5824,7 @@ static void usage(const char *prog)
         "\n"
         "Fixes (opt-in with --chicago-punct):\n"
         "  7. Em-dash spacing normalized      (word -- word → word—word)\n"
-        "  8. Ellipsis normalized             (. . . or .... → ...)\n"
+        "  8. Ellipsis normalized             (. . . or .... → …; also --chicago-punct-2)\n"
         "  9. Sentence double-space collapsed (\"End.  Next\" → \"End. Next\")\n"
         "\n"
         "Fixes (opt-in with --chicago-punct-2):\n"

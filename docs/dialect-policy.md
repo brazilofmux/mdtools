@@ -190,11 +190,13 @@ version-dependent — 3.10 keeps them as a plain `Str` under both flags, while
 the reader is the same in every combination. It is the output that has to be
 reliable.
 
-**Target:** fully **smart-invariant** typography (including ellipsis as `…`).
-**Today:** mdfix's Chicago arrow/dash/quote passes emit Unicode for those
-marks, which is why they are correctness features. The Chicago ellipsis pass
-still normalizes to ASCII `...` under `--canonical` — the smart-dependent form
-in the table above. That is a known non-invariant until fixed (see §7).
+**Held.** mdfix's Chicago passes emit Unicode for every mark they write —
+arrows, dashes, quotes, and since the ellipsis fix, `…`. Nothing mdtools
+emits is smart-dependent, and `tests/test_transform_matrix.py` asserts it by
+rendering the output under both `markdown` and `markdown-smart`.
+
+The rule is about **output**. An ellipsis the author wrote as `...` is passed
+through untouched: §4 constrains what mdtools writes, not what it tolerates.
 
 ## 5. The indentation model
 
@@ -280,7 +282,7 @@ reproduced byte for byte; "prose" means eligible for rewriting.
 | **Display math `$$`** | `Math` | **leaks — rewrites inside** | **leaks — offered to the LLM as a sentence** | **gap** |
 | **Raw LaTeX block** | `RawBlock` | **leaks — rewrites inside** | **leaks** | **gap** |
 | **Hard break (two trailing spaces)** | `LineBreak` | preserved; a longer run normalized to two | n/a | ok |
-| **Ellipsis under Chicago** | text | **emits ASCII `...`, not `…`** | n/a | **gap** |
+| **Ellipsis under Chicago** | text | emits U+2026 `…` | n/a | ok |
 
 ### Known gaps
 
@@ -308,21 +310,17 @@ Each was found by running the tools against Pandoc while pinning this profile
    it is still not “protected” in the byte-for-byte sense of this table.
    prosevary freezes the whole row.
 
-5. **Chicago ellipsis.** Under `--chicago-punct`, `--chicago-punct-2`,
-   `--canonical` and `--technical`, spaced or run ellipses become ASCII
-   `...`, which is smart-dependent under Pandoc (see §4). Target is U+2026
-   `…`. An ellipsis the author already wrote as `...` is passed through
-   unchanged and is *not* a violation — §4 constrains what mdtools emits,
-   not what it tolerates.
+All four remaining gaps are cases where a verbatim construct reaches a prose
+pass — the duplication argument in §2 restated as a bug report. They become
+single-site fixes once the grammar lives in one place, and none of them is a
+profile/contract mismatch: `tests/test_transform_matrix.py` now pins **no**
+violations at all, so I3.1 holds for every optional transform over every
+document in its corpus.
 
-The first three are cases where a verbatim construct reaches a prose pass —
-the duplication argument in §2 restated as a bug report. Those become
-single-site fixes once the grammar lives in one place. The last two are mdfix
-profile/contract mismatches that the policy records so CI and future work
-cannot treat them as already done.
+### Closed
 
-**Closed:** hard breaks under `-w`, `--canonical`, `--wrap` and `--technical`.
-Both sites destroyed them — `fix_trailing_ws` collapsed any trailing run to a
+**Hard breaks** under `-w`, `--canonical`, `--wrap` and `--technical`. Both
+sites destroyed them — `fix_trailing_ws` collapsed any trailing run to a
 single space, which is not a break, and wrap’s `flush_paragraph` trimmed all
 trailing whitespace before joining. Both now recognize a break and preserve
 it, normalized to exactly two spaces and placed on the last line the wrapper
@@ -330,6 +328,13 @@ emits. A line whose trailing whitespace contains a **tab** is left byte for
 byte: Pandoc expands it to the next tab stop, so whether it is a break depends
 on the line’s width and on `--tab-stop`, and mdfix will not encode a reader
 flag (§4).
+
+**Chicago ellipsis.** A spaced run (`. . .`) or a run of four or more dots now
+becomes U+2026 `…` rather than ASCII `...`, under every flag that rewrites
+one. `--chicago-punct-2` was the awkward half: it reached `...` by stripping
+the spaces *between* the dots, so no rule had decided to emit an ellipsis and
+no rule could be blamed for the form. Whether a run of dots becomes an
+ellipsis is now answered in one place, for both Chicago flags.
 
 ## 8. Verification
 
@@ -377,8 +382,9 @@ Still needed:
   [edit-schema.md](edit-schema.md)) so edit-lists are the only write path.
   Dual grammar and `test_tool_parity.py` are already gone.
 - Coverage for remaining §7 gaps, each with the Pandoc AST (or rendered
-  output) as the assertion — Unicode ellipsis under Chicago. Hard-break
-  preservation is covered by `HardBreakTests` and the transform matrix.
+  output) as the assertion. Hard-break preservation is covered by
+  `HardBreakTests` and the transform matrix; ellipsis is covered by
+  `ChicagoEllipsisTests`.
 - CI oracle version: §3 pins pandoc 3.10 in prose; CI installs distro
   pandoc. Failures should name the binary/version so an apt bump is
   diagnosable.

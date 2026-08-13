@@ -49,7 +49,7 @@ without the transform, so applying one is an editorial choice.
 
 | Transform | What it does | Why optional |
 |---|---|---|
-| `--chicago-punct`, `--chicago-punct-2` | Em-dash spacing, ellipsis, sentence spacing | Editorial house style |
+| `--chicago-punct`, `--chicago-punct-2` | Em-dash spacing, ellipsis (to `…`), sentence spacing | Editorial house style |
 | `--chicago-abbrev` | `e.g.`/`i.e.` commas, `et al.` | Editorial house style |
 | `--serial-comma-lint`, `--chicago-number-lint` | Warn only | Never modify |
 | `--footnote-canonical` | Footnote ref/def style | Spaced and unspaced refs both parse |
