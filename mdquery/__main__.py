@@ -236,13 +236,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if missing:
         for path in missing:
             print(f"mdquery: {path}: not a file", file=sys.stderr)
-        return 1
+        return 2
 
     try:
         documents = [annotate(d) for d in load(paths, args.mdfix)]
     except IRError as exc:
         print(f"mdquery: {exc}", file=sys.stderr)
-        return 1
+        return 2
 
     if not documents:
         return 0
