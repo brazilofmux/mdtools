@@ -1103,7 +1103,8 @@ static int is_wrappable_at(const char *line, enum linetype type, int index)
 #define IR_SCHEMA "mdtools-ir-3"
 
 static void emit_inline(FILE *out, const char *text, long long base,
-                        int line, int depth, long long parent);
+                        int line, int depth, long long parent,
+                        int at_block_start);
 
 /*
  * A pipe-table delimiter row: `|---|---|`, `--|--`, `|:--|--:|`.
@@ -1616,7 +1617,7 @@ static void ir_emit_heading(FILE *out, int i)
     fputs("}\n", out);
 
     /* A link in a heading is where anchors and cross-references live. */
-    emit_inline(out, text, line_off[i] + p, i + 1, 1, line_off[i]);
+    emit_inline(out, text, line_off[i] + p, i + 1, 1, line_off[i], 0);
 }
 
 static const char *ir_raw_html_name(enum raw_html_kind kind)
@@ -1765,6 +1766,124 @@ static int inline_footnote_ref_len(const char *s, int *label_off, int *label_len
     return i + 1;
 }
 
+/* Key starts with letter/digit/_; internal punct only when a key
+ * character follows, so `@a.` at sentence end is the key `a`. */
+static int citation_key_len(const char *s)
+{
+    unsigned char first = (unsigned char)s[0];
+    if (!isalnum(first) && first != '_')
+        return 0;
+
+    int i = 0;
+    while (s[i]) {
+        unsigned char c = (unsigned char)s[i];
+        if (isalnum(c) || c == '_') {
+            i++;
+            continue;
+        }
+        /* Internal punctuation only with a key character after it. */
+        if (strchr(":.#$%&+?<>~/-", (char)c)) {
+            unsigned char next = (unsigned char)s[i + 1];
+            if (isalnum(next) || next == '_') {
+                i += 2;
+                continue;
+            }
+        }
+        break;
+    }
+    return i;
+}
+
+/* A word character or `.` before `@` makes an email, not a citation.
+ * `c >= 0x80` matches is_wordish_byte: miss `。@key` rather than invent
+ * after a real letter. */
+static int citation_follows_word(const char *text, int at)
+{
+    if (at <= 0)
+        return 0;
+    unsigned char c = (unsigned char)text[at - 1];
+    return is_wordish_byte(c) || c == '.';
+}
+
+/* Does the bracket opening at `at` hold at least one citation key?
+ * `](` keeps `[@a](url)` a link. */
+static int bracket_has_citation(const char *text, int at)
+{
+    int close = at + 1;
+    while (text[close] && text[close] != ']' && text[close] != '[')
+        close++;
+    if (text[close] != ']')
+        return 0;
+    if (text[close + 1] == '(' || text[close + 1] == '[')
+        return 0;
+    for (int k = at + 1; k < close; k++) {
+        if (text[k] != '@')
+            continue;
+        if (citation_follows_word(text, k))
+            continue;
+        if (citation_key_len(text + k + 1) > 0)
+            return 1;
+    }
+    return 0;
+}
+
+/* Mode only: inside `[...]` unless `](` makes it a link. */
+static int in_citation_bracket(const char *text, int at)
+{
+    int open = -1;
+    for (int k = at - 1; k >= 0; k--) {
+        if (text[k] == ']')
+            return 0;                  /* a closed bracket, not ours */
+        if (text[k] == '[') {
+            open = k;
+            break;
+        }
+    }
+    if (open < 0)
+        return 0;
+    for (int k = at + 1; text[k]; k++) {
+        if (text[k] == '[')
+            return 0;
+        if (text[k] == ']')
+            return text[k + 1] != '(';  /* `](` makes it a link's text */
+    }
+    return 0;
+}
+
+/* First content byte after indent and one `>` prefix. */
+static int citation_content_start(const char *text)
+{
+    int k = 0;
+    while (text[k] == ' ' || text[k] == '\t')
+        k++;
+    if (text[k] == '>') {
+        k++;
+        if (text[k] == ' ')
+            k++;
+        while (text[k] == ' ' || text[k] == '\t')
+            k++;
+    }
+    return k;
+}
+
+/* `@label.` or `(@label)` / `(@)` at the start of a block is an
+ * example list (+example_lists), not a citation. */
+static int is_example_list_marker(const char *text, int at, int at_block_start)
+{
+    if (!at_block_start)
+        return 0;
+    int start = citation_content_start(text);
+    if (text[start] == '(' && at == start + 1 && text[at] == '@') {
+        int n = citation_key_len(text + at + 1);
+        return text[at + 1 + n] == ')';
+    }
+    if (at != start)
+        return 0;
+    int n = citation_key_len(text + at + 1);
+    const char *after = text + at + 1 + n;
+    return after[0] == '.' && (after[1] == ' ' || after[1] == '\0');
+}
+
 /* `[text][label]` or `[text]`, neither followed by '('. Returns length. */
 static int inline_ref_link_len(const char *s, int *text_off, int *text_len,
                                int *label_off, int *label_len, int *shortcut)
@@ -1843,7 +1962,8 @@ static void ir_dest_span(FILE *out, long long start, int len)
  * multi-line blocks must call this once per line with that line's line_off.
  */
 static void emit_inline(FILE *out, const char *text, long long base,
-                        int line, int depth, long long parent)
+                        int line, int depth, long long parent,
+                        int at_block_start)
 {
     int i = 0;
     while (text[i]) {
@@ -1861,6 +1981,30 @@ static void emit_inline(FILE *out, const char *text, long long base,
             fputs("}\n", out);
             i += span;
             continue;
+        }
+
+        /* Bare `@key`. A `[` that bracket_has_citation accepts is claimed
+         * below so `[@a]` is not a shortcut link. */
+        if (text[i] == '@' && !is_example_list_marker(text, i, at_block_start)
+            && !citation_follows_word(text, i)) {
+            /* `email@example.com` is not a citation, and neither is `a@b`:
+             * Pandoc requires the `@` not to follow a word character. */
+            int klen = citation_key_len(text + i + 1);
+            if (klen > 0) {
+                int bracketed = in_citation_bracket(text, i);
+                const char *mode = "in-text";
+                if (bracketed)
+                    mode = (i > 0 && text[i - 1] == '-') ? "suppress-author"
+                                                         : "normal";
+                ir_inline(out, "citation", base + i, base + i + 1 + klen,
+                          line, 0, depth, parent);
+                ir_inline_field(out, "key", text + i + 1, klen);
+                fprintf(out, ",\"keyStart\":%lld,\"keyEnd\":%lld",
+                        base + i + 1, base + i + 1 + klen);
+                fprintf(out, ",\"mode\":\"%s\"}\n", mode);
+                i += 1 + klen;
+                continue;
+            }
         }
 
         if (text[i] == '<') {
@@ -1882,6 +2026,33 @@ static void emit_inline(FILE *out, const char *text, long long base,
                 i += span;
                 continue;
             }
+        }
+
+        /* Citation bracket, before the link scanners. `](` is a link. */
+        if (text[i] == '[' && bracket_has_citation(text, i)) {
+            int close = i + 1;
+            while (text[close] && text[close] != ']')
+                close++;
+            for (int k = i + 1; k < close; k++) {
+                if (text[k] != '@')
+                    continue;
+                if (citation_follows_word(text, k))
+                    continue;
+                int klen = citation_key_len(text + k + 1);
+                if (klen <= 0)
+                    continue;
+                const char *mode = (text[k - 1] == '-') ? "suppress-author"
+                                                        : "normal";
+                ir_inline(out, "citation", base + k, base + k + 1 + klen,
+                          line, 0, depth, parent);
+                ir_inline_field(out, "key", text + k + 1, klen);
+                fprintf(out, ",\"keyStart\":%lld,\"keyEnd\":%lld",
+                        base + k + 1, base + k + 1 + klen);
+                fprintf(out, ",\"mode\":\"%s\"}\n", mode);
+                k += klen;
+            }
+            i = text[close] ? close + 1 : close;
+            continue;
         }
 
         if (text[i] == '[' || (text[i] == '!' && text[i + 1] == '[')) {
@@ -1941,7 +2112,8 @@ static void emit_inline_lines(FILE *out, int from, int to, int depth)
 {
     long long parent = line_off[from];
     for (int k = from; k <= to; k++)
-        emit_inline(out, lines[k], line_off[k], k + 1, depth, parent);
+        emit_inline(out, lines[k], line_off[k], k + 1, depth, parent,
+                    k == from);
 }
 
 static void emit_list_children(FILE *out, int from, int to, long long parent)
@@ -2001,7 +2173,8 @@ static void emit_list_children(FILE *out, int from, int to, long long parent)
                     for (int k = run_start; k < j; k++) {
                         int skip = (k == i) ? marker : 0;
                         emit_inline(out, lines[k] + skip,
-                                    line_off[k] + skip, k + 1, 2, start);
+                                    line_off[k] + skip, k + 1, 2, start,
+                                    k == i);
                     }
                 }
             }
@@ -2224,7 +2397,8 @@ static void emit_ir(FILE *out, const char *source)
             fputs(",\"plain\":", out);
             ir_json_string(out, plain);
             fputs("}\n", out);
-            emit_inline(out, text, line_off[i] + start, i + 1, 1, line_off[i]);
+            emit_inline(out, text, line_off[i] + start, i + 1, 1, line_off[i],
+                        0);
             i++;
             prev_content_type = LT_HEADING;
             list_content_col = 0;
@@ -2304,6 +2478,37 @@ static void emit_ir(FILE *out, const char *source)
                                      bare_len);
                     }
                     fputs("}\n", out);
+                    /* Footnote bodies are prose. Start after `]:` so the
+                     * definition label is not a footnote_ref. Continuations
+                     * parent at the def; fences and extra-indented code
+                     * are not scanned. */
+                    if (def == 2) {
+                        int body = label_end + 2;   /* past "]:" */
+                        emit_inline(out, l + body, line_off[i] + body,
+                                    i + 1, 1, line_off[i], 1);
+                        struct fence_state in_fence = {0, 0, 0, 0, 0};
+                        for (int k = i + 1; k <= last; k++) {
+                            if (is_blank(lines[k]))
+                                continue;
+                            if (in_fence.active) {
+                                if (is_fence_closer(lines[k], &in_fence))
+                                    in_fence.active = 0;
+                                continue;
+                            }
+                            if (parse_fence_opener(lines[k], &in_fence))
+                                continue;
+                            if (indent_columns(lines[k], NULL) >= 8)
+                                continue;
+                            if (raw_html_open_kind(lines[k]) != RAW_HTML_NONE)
+                                continue;
+                            int chars = 0;
+                            indent_columns(lines[k], &chars);
+                            if (is_blockquote_line(lines[k] + chars))
+                                continue;
+                            emit_inline(out, lines[k], line_off[k],
+                                        k + 1, 1, line_off[i], 0);
+                        }
+                    }
                 }
                 i = last;
                 /* Not LT_TEXT: a definition is not paragraph text, so
@@ -2390,7 +2595,8 @@ static void emit_ir(FILE *out, const char *source)
             ir_block(out, "paragraph", i, j, 0);
             /* Per-line bases keep CRLF offsets honest; no synthetic join. */
             for (int k = i; k <= j; k++)
-                emit_inline(out, lines[k], line_off[k], k + 1, 1, line_off[i]);
+                emit_inline(out, lines[k], line_off[k], k + 1, 1, line_off[i],
+                            k == i);
             i = j;
             prev_content_type = LT_TEXT;
             list_content_col = 0;
