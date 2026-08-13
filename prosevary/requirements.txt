@@ -1,6 +1,6 @@
 # Core (scaffold runs with stdlib + PyYAML only)
 PyYAML>=6.0
 
-# Optional: in-process embeddings (Hyperia-style). Prefer Ollama when available.
+# Optional: in-process embeddings. Prefer Ollama when available.
 # sentence-transformers>=3.0.0
 # torch>=2.0.0

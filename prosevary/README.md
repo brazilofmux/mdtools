@@ -16,7 +16,7 @@ deterministic Ragel scanner for structure and punctuation. This tool is a
 
 | Layer | Language | Why |
 |---|---|---|
-| Orchestration, YAML freeze, JSON logs, HTTP to models | **Python 3** | Matches Hyperia embed clients; rapid prompt/iteration work |
+| Orchestration, YAML freeze, JSON logs, HTTP to models | **Python 3** | Rapid prompt/iteration work; HTTP to local embed/LLM endpoints |
 | Synonym lexicon + run/embedding cache | **SQLite** (one file) | Large-ish word data without a server; first-class in C *and* Python if we split later |
 | Markdown segmenter / freeze tokenizer (future) | **C optional** | Only if Python becomes the bottleneck or we want mdfix-grade structural guarantees |
 
@@ -30,14 +30,14 @@ Those dominate both runtime and engineering cost. Writing the *glue* in C
 buys nothing; writing a future segmenter in C is plausible once the protocol
 stabilizes.
 
-**Do not vendor Hyperia as a hard dependency.** Reuse *ideas* and optionally
-point at a running `embed-svc` gRPC endpoint. Default path is local:
+Default path is local. An optional gRPC embed endpoint is a later
+composition, not a dependency:
 
 - embeddings: Ollama `/api/embeddings` or `sentence-transformers` in-process
 - generate/judge: Ollama `/api/chat`
 
-If you reuse Hyperia’s preprocessor, turn **lowercase off** — this book is
-full of `SLOW-32`, `DBT`, and commit-shaped identifiers.
+Do not lowercase tokens — this book is full of `SLOW-32`, `DBT`, and
+commit-shaped identifiers.
 
 ## Database: what needs one, and how big
 
