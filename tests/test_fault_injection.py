@@ -178,16 +178,21 @@ class StdoutTests(FaultTestCase):
         self.assertNotEqual(result.returncode, 0)
 
     def test_a_truncated_diff_is_reported(self) -> None:
+        # The hunk has to be larger than CAP so RLIMIT_FSIZE bites, but
+        # each result line must stay under MAX_LINE or I4.3 refuses the
+        # splice before print_edit_diff / finish_stdout ever run.
         path = self._write("a.md", "# T\n\nThe quick fox.\n")
         data = path.read_bytes()
         i = data.index(b"quick")
         edits = ('{"kind":"edits","schema":"mdtools-edits-1","source":"%s",'
                  '"bytes":%d}\n{"start":%d,"end":%d,"replacement":"%s"}\n'
-                 % (path, len(data), i, i + 5, "slow " * 2000))
+                 % (path, len(data), i, i + 5, "slow " * 1000))
         result = self._capped("-q", "--apply-edits", "--diff", str(path),
                               stdin=edits.encode(),
                               stdout_to=self.dir / "cap.diff")
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"diff", result.stderr)
+        self.assertNotIn(b"cannot validate the spliced result", result.stderr)
 
     def test_the_pipe_caveat_is_real(self) -> None:
         # Guards the comment at the top of this file. If RLIMIT_FSIZE ever did

@@ -6081,10 +6081,6 @@ static void fsync_parent_dir(const char *path)
 }
 
 /*
- * Finish writing out, flush, fsync, and close. On any error, unlink tmp_path
- * (if non-NULL) and return -1. On success return 0; *out_slot is set NULL.
- */
-/*
  * Finish writing to stdout, and say so if any of it failed.
  *
  * `fflush` alone is not enough: a write that already failed has drained the
@@ -6109,27 +6105,18 @@ static int finish_stdout(const char *what)
     return 0;
 }
 
+/*
+ * Finish writing out, flush, fsync, and close. On any error, unlink tmp_path
+ * (if non-NULL) and return -1. On success return 0; *out_slot is set NULL.
+ *
+ * Check `ferror` before flush: a short `fwrite` can drain the FILE and
+ * leave flush/fsync/close succeeding.
+ */
 static int finalize_output(FILE **out_slot, const char *tmp_path)
 {
     FILE *out = *out_slot;
     if (!out)
         return -1;
-    /*
-     * Any write that already failed on this stream.
-     *
-     * `fwrite` and `fprintf` report failure by returning a short count, and
-     * nothing here checks — `process()` alone writes through hundreds of
-     * fprintf calls. When the failure has already drained the buffer there is
-     * nothing left for `fflush` to push, so flush, fsync and close all
-     * succeed and a truncated file gets installed over the original with exit
-     * status 0.
-     *
-     * Found by fault injection: under RLIMIT_FSIZE a 40090-byte manuscript
-     * came back 4096 bytes, cut mid-word, silently. The `.bak` still held the
-     * original, so the data was recoverable — but nothing said to go looking.
-     *
-     * `ferror` is the one call that sees all of it, whoever did the writing.
-     */
     if (ferror(out)) {
         fprintf(stderr, "Can't write output (disk full or quota exceeded?): ");
         perror(NULL);

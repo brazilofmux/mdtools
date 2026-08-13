@@ -155,15 +155,15 @@ Each has an identifier so issues and tests can cite it.
   concatenating every record's span reproduces the input byte for byte, so a
   serializer can no longer silently normalize a blank run, a hard break, or a
   line ending. The serializer itself is still L5 work.)*
-- **I5.4 A failed write never lands.** If any part of writing the output
-  fails, the input is left exactly as it was, no partial file is installed or
-  left behind, and the exit status says so. *(Done. The temp-then-rename order
-  gives the first two even when the process is killed mid-write; the third
-  needed `ferror`, because a write that fails after draining the buffer leaves
-  `fflush`, `fsync` and `fclose` with nothing to report — mdfix installed a
-  truncated file over the original and exited 0. Fault-injected in
-  `tests/test_fault_injection.py` with `RLIMIT_FSIZE`, in both the
-  write-fails and the process-is-killed variants.)*
+- **I5.4 A failed write never lands.** An observed write error does not
+  install a partial file: the input is unchanged, a failed two-arg
+  destination is unlinked, and the exit is nonzero. `-i` uses
+  temp-then-rename, so a mid-write kill also leaves the original (an
+  orphan temp may remain). The two-arg path writes the destination in
+  place, so a kill can leave a truncated `out.md`. *(Done for observed
+  errors via `ferror` — a short `fwrite` can drain the FILE so flush,
+  fsync and close succeed. Fault-injected in
+  `tests/test_fault_injection.py`.)*
 
 ### D — Diagnostics
 
