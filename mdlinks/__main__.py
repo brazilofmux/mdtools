@@ -36,8 +36,8 @@ def _parser() -> argparse.ArgumentParser:
                      help="print the link graph as JSONL instead of checking")
     out.add_argument("--edits", metavar="FILE", type=Path,
                      help="write an edit list repairing FILE for "
-                          "`mdfix --apply-edits`; FILE must be among the "
-                          "files given, which are the scope repairs draw on")
+                          "`mdfix --apply-edits`; other paths are the scope "
+                          "repairs draw on (FILE is added if not listed)")
     parser.add_argument("--warnings", action="store_true",
                         help="also fail on warnings (unused definitions)")
     return parser
@@ -52,25 +52,24 @@ def _exit_code(findings, warnings: bool) -> int:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parser().parse_args(argv)
 
+    # --edits is per document; other positionals are search scope. Include
+    # the target automatically so `mdlinks --edits a.md b.md` works.
+    files = list(args.files)
     if args.edits is not None:
-        # The applier reads one document and its `bytes` header is that
-        # document's size, so edits are per file. The rest of the run is not
-        # noise: a moved file is only findable because the other files were
-        # named, which is the same scope rule the checker already uses.
-        given = {p.resolve() for p in args.files}
-        if args.edits.resolve() not in given:
-            print(f"mdlinks: --edits {args.edits}: not among the files given",
-                  file=sys.stderr)
+        if not args.edits.is_file():
+            print(f"mdlinks: {args.edits}: not a file", file=sys.stderr)
             return 2
+        if args.edits.resolve() not in {p.resolve() for p in files}:
+            files = [args.edits, *files]
 
-    missing = [p for p in args.files if not p.is_file()]
+    missing = [p for p in files if not p.is_file()]
     for path in missing:
         print(f"mdlinks: {path}: not a file", file=sys.stderr)
     if missing:
         return 2
 
     try:
-        docs = [read(p, args.mdfix) for p in args.files]
+        docs = [read(p, args.mdfix) for p in files]
     except IRError as exc:
         print(f"mdlinks: {exc}", file=sys.stderr)
         return 2
@@ -129,21 +128,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if note.confident:
                 print(f"{where}did you mean {note.replacement!r}? "
                       f"({note.reason})")
+            elif note.unwritable and len(note.candidates) == 1:
+                print(f"{where}found {note.candidates[0]!r} but cannot "
+                      f"write it bare (needs <> or escapes)")
             else:
-                # Ambiguity is reported, never resolved — issue #14. Showing
-                # the candidates is the whole value: the tool has done the
-                # search, and the choice is the part it cannot make.
+                # Ambiguity is reported, never resolved — issue #14.
                 shown = ", ".join(repr(c) for c in note.candidates)
-                print(f"{where}{len(note.candidates)} candidates, "
-                      f"not repaired: {shown}")
+                n = len(note.candidates)
+                noun = "candidate" if n == 1 else "candidates"
+                print(f"{where}{n} {noun}, not repaired: {shown}")
         if any(s.confident for s in suggestions):
             target = next(s.finding.path for s in suggestions if s.confident)
-            # The report is on stdout and this hint is on stderr; without the
-            # flush the hint overtakes the findings it refers to whenever
-            # stdout is a pipe.
+            # Flush stdout so this stderr hint cannot overtake findings.
             sys.stdout.flush()
+            others = " ".join(str(p) for p in files if p.resolve() != Path(target).resolve())
+            scope = f" {others}" if others else ""
             print(f"\nRepair the confident ones with:\n"
-                  f"  mdlinks --edits {target} {' '.join(map(str, args.files))}"
+                  f"  mdlinks --edits {target}{scope}"
                   f" | mdfix --apply-edits -i {target}", file=sys.stderr)
 
     return _exit_code(findings, args.warnings)

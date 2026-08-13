@@ -24,7 +24,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from mdquery.slug import slugify
 
-from .graph import Document, Finding
+from .graph import Document, Finding, _split
 
 # Repairable rules. `links.undefined-reference` is deliberately absent: a
 # reference with no definition is usually a *missing definition*, and renaming
@@ -33,11 +33,9 @@ from .graph import Document, Finding
 # convincing diff.
 REPAIRABLE = frozenset({"links.broken-anchor", "links.missing-file"})
 
-# A replacement must be writable as a bare destination. Anything needing
-# angle brackets or backslash escapes is refused rather than emitted wrong:
-# mdlinks would have to know how the original was spelled to re-spell it, and
-# that is grammar it does not hold.
-_UNWRITABLE = set(" \t\"'()<>\\")
+# Bare destinations cannot carry these without <> or escapes (balanced ()
+# are allowed in CommonMark, so parentheses are not in this set).
+_UNWRITABLE = set(" \t\"'<>\\")
 
 
 @dataclass
@@ -47,6 +45,8 @@ class Suggestion:
     candidates: List[str]
     replacement: Optional[str] = None    # the whole new destination
     reason: str = ""
+    # True when a unique candidate exists but cannot be written bare.
+    unwritable: bool = False
 
     @property
     def confident(self) -> bool:
@@ -186,7 +186,8 @@ def suggest(docs: Sequence[Document],
             continue
 
         destination = finding.target.destination
-        target, _, anchor = destination.partition("#")
+        # Same split as check(): decode percent-escapes in the fragment.
+        target, anchor = _split(destination)
 
         if finding.rule == "links.broken-anchor":
             other = doc
@@ -206,10 +207,15 @@ def suggest(docs: Sequence[Document],
             replacements = [c + suffix for c in candidates]
 
         replacement = None
-        if len(replacements) == 1 and not (_UNWRITABLE & set(replacements[0])):
-            replacement = replacements[0]
+        unwritable = False
+        if len(replacements) == 1:
+            if _UNWRITABLE & set(replacements[0]):
+                unwritable = True
+            else:
+                replacement = replacements[0]
         out.append(Suggestion(finding=finding, candidates=candidates,
-                              replacement=replacement, reason=reason))
+                              replacement=replacement, reason=reason,
+                              unwritable=unwritable))
     return out
 
 

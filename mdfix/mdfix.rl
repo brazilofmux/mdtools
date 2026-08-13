@@ -1826,20 +1826,8 @@ static void ir_inline_field(FILE *out, const char *name,
     ir_json_string(out, buf);
 }
 
-/*
- * Where the bare destination sits in the file, alongside what it says.
- *
- * A consumer that wants to *repair* a link needs to replace the destination
- * and nothing else. Without this it would have to find the destination inside
- * the record's span itself — locating `](` or `]:`, skipping a title, honouring
- * escapes — which is Markdown grammar, and grammar lives here (dialect-policy
- * §2). Emitting the span is what keeps mdlinks' repair path free of a second
- * parser, the same way `destination` itself kept its checking path free of one.
- *
- * Half-open, into the file on disk, like every other span (I1.3). Omitted
- * entirely when the destination is empty, so a consumer never sees a zero-width
- * span it might treat as an insertion point.
- */
+/* Half-open byte span of the bare destination; omitted when empty so it is
+ * not mistaken for an insertion point. */
 static void ir_dest_span(FILE *out, long long start, int len)
 {
     if (len <= 0)

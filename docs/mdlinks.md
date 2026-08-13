@@ -81,19 +81,20 @@ is never the tool that writes the file:
 $ mdlinks --edits docs/guide.md README.md docs/*.md | mdfix --apply-edits -i docs/guide.md
 ```
 
-`--edits` names one file because the applier reads one document. The other
-paths are not decoration — they are the scope a repair searches, the same set
-the checker judges against.
+`--edits` names one file because the applier reads one document. Other paths
+are the scope a repair searches (same set the checker judges against). The
+target is included automatically if it is not already listed.
 
 ### How a candidate is chosen
 
-For a **broken anchor**, in this order, first hit wins:
+For a **broken anchor**, in this order, first hit wins (percent-escapes in the
+fragment are decoded first, matching the checker):
 
 1. The heading's identifier for the text as written — `#Installation Guide`
    for `installation-guide`. Deterministic, and the most common way a
    hand-written anchor is wrong.
 2. The same anchor, differently cased.
-3. The closest anchor by edit distance, within `len // 4`.
+3. The closest anchor by edit distance, within `max(1, len // 4)`.
 
 For a **missing file**, a file of that name among the documents given or
 sitting beside them. The `#fragment` is carried across unchanged.
@@ -105,9 +106,9 @@ sitting beside them. The `#fragment` is carried across unchanged.
   fixer that is usually right is worse than one that is sometimes silent: a
   wrong repair is a plausible diff pointing at the wrong section.
 - **No candidate within the bound.** A distant anchor is not offered at all.
-- **A destination that cannot be written bare** — one needing `<>` or
-  backslash escapes. Re-spelling it means knowing how the original was
-  spelled, which is grammar mdlinks does not hold.
+- **A destination that cannot be written bare** — spaces, quotes, `<>`, or
+  backslashes (balanced parentheses are allowed). Re-spelling those means
+  knowing how the original was spelled, which is grammar mdlinks does not hold.
 - **`links.undefined-reference`.** Renaming the label to whichever definition
   is closest would point the text at a different destination entirely. That is
   not a repair; it is a guess with a convincing diff. The honest fix is

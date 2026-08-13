@@ -88,6 +88,13 @@ class AnchorRepairTests(RepairTestCase):
         self.assertEqual(self._one(page).replacement,
                          "#configuration-reference")
 
+    def test_percent_escaped_fragment_is_decoded(self) -> None:
+        # check() unquotes anchors; repair must match so #instalation%2Dguide
+        # can resolve to installation-guide.
+        page = self._write("a.md", "# Installation Guide\n\n"
+                                   "See [x](#instalation%2Dguide).\n")
+        self.assertEqual(self._one(page).replacement, "#installation-guide")
+
     def test_an_anchor_in_another_file_is_repaired(self) -> None:
         a = self._write("a.md", "See [x](b.md#overvew).\n")
         b = self._write("b.md", "# B\n\n## Overview\n")
@@ -131,6 +138,12 @@ class MovedFileRepairTests(RepairTestCase):
         a = self._write("a.md", "See [x](notes.md).\n")
         notes = self._write("docs/notes.md", "# Notes\n")
         self.assertEqual(self._one(a, notes).replacement, "docs/notes.md")
+
+    def test_parentheses_in_a_filename_are_allowed(self) -> None:
+        # CommonMark bare destinations may contain balanced ().
+        a = self._write("a.md", "See [x](old/report(2024).md).\n")
+        target = self._write("report(2024).md", "# Report\n")
+        self.assertEqual(self._one(a, target).replacement, "report(2024).md")
 
     def test_two_files_with_the_same_name_are_not_repaired(self) -> None:
         a = self._write("a.md", "See [x](old/page.md).\n")
@@ -228,11 +241,29 @@ class RefusalTests(RepairTestCase):
         self.assertEqual([s.candidates for s in suggestions],
                          [["my notes.md"]])
         self.assertTrue(all(not s.confident for s in suggestions))
+        self.assertTrue(all(s.unwritable for s in suggestions))
         self.assertEqual(edits_for(suggestions, a), [])
 
     def test_external_links_are_untouched(self) -> None:
         a = self._write("a.md", "See [x](https://example.com/gone#frag).\n")
         self.assertEqual(self._suggest(a), [])
+
+
+class CliEditsTests(RepairTestCase):
+    def test_edits_target_need_not_be_listed_twice(self) -> None:
+        from mdlinks import __main__ as cli
+        import io
+        from contextlib import redirect_stdout, redirect_stderr
+
+        a = self._write("a.md", "# Overview\n\nSee [x](#overvew).\n")
+        b = self._write("b.md", "# B\n")
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = cli.main(["--edits", str(a), str(b)])
+        self.assertEqual(rc, 1, msg=err.getvalue())
+        rows = [json.loads(line) for line in out.getvalue().splitlines()]
+        self.assertEqual(rows[0]["kind"], "edits")
+        self.assertEqual(rows[1]["replacement"], "#overview")
 
 
 class EditShapeTests(RepairTestCase):
