@@ -50,11 +50,25 @@ a table that agrees on single code points can still disagree on a pair.
 Record the result in the commit. Both refreshes so far report zero
 mismatches, and both found real bugs on the way in.
 
+## Licence
+
+libutf is MIT, and MIT requires the copyright and permission notice to travel
+with "all copies or substantial portions". A 4,700-line table extract is a
+substantial portion, and a vendored file is exactly the case where the notice
+gets lost: upstream keeps one `LICENSE` at the root of a repository these
+files do not travel with.
+
+So each extract carries the copyright and permission notice in its banner.
+The standalone full text is `vendor/LICENSE.libutf`.
+`tests/test_vendor_manifest.py` fails if a future extract arrives without
+the notice, or if the standalone text moves.
+
 ## Refreshing
 
-1. Rebuild libutf and re-extract, keeping the two mechanical changes: tables
-   go `static`, and entry points are renamed `utf_*` → `mdfix_*` so a build
-   that one day links libutf cannot bind to this copy instead.
+1. Rebuild libutf and re-extract, keeping the mechanical changes: the
+   copyright and licence notice, tables go `static`, and entry points are
+   renamed `utf_*` → `mdfix_*` so a build that one day links libutf cannot
+   bind to this copy instead.
 2. Run the oracle sweep. Put the numbers in the commit message.
 3. Update `MANIFEST` — hash and upstream commit — in the same commit as the
    extract.

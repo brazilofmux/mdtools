@@ -1,6 +1,26 @@
 /*
  * utf_word.c — Unicode word-character classification.
  *
+ * Copyright (c) 2025 Stephen Dennis and the TinyMUX contributors.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included
+ * in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+ * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ *
  * VENDORED, DO NOT EDIT. Extracted from libutf:
  *
  *     https://github.com/brazilofmux/utf
@@ -15,9 +35,11 @@
  * a C compiler. Upstream keeps this pair compilable standalone for exactly
  * that, so nothing else comes with it.
  *
- * Two mechanical changes from upstream, re-applied on each refresh rather
+ * Mechanical changes from upstream, re-applied on each refresh rather
  * than remembered:
  *
+ *   0. This copyright and licence notice, which upstream carries in
+ *      LICENSE rather than per file.
  *   1. Tables are `static` and live in this file, so they cannot collide with
  *      a build that also links libutf.
  *   2. The entry points are renamed `utf_*` -> `mdfix_*`, as

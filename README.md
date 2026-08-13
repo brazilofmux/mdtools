@@ -44,7 +44,7 @@ As of the import (2026-08-11), copies ranked:
 
 1. **`slow32-book/mdfix.rl`** ([*Build Your Own Universe*](https://www.amazon.com/dp/B0HDK4DXWS)) — newest; adds `--no-arrow-aside` (notation arrows stay `→`)
 2. **`mush/mdfix.rl`** ([*MUSH Reference Library*](https://www.amazon.com/dp/B0H8PXRGBS)) — one feature behind (missing that flag)
-3. **recycledreply / religions** ([*Evolution of the Sacred*](https://www.amazon.com/dp/B0H1KPY947)) **/ slow-32 examples** — older shared baseline
+3. **religions** ([*Evolution of the Sacred*](https://www.amazon.com/dp/B0H1KPY947)) **and earlier examples** — older shared baseline
 
 Import took (1). Downstream trees should install from here instead of vendoring.
 

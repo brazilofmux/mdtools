@@ -30,6 +30,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 VENDOR = ROOT / "mdfix" / "vendor"
 MANIFEST = VENDOR / "MANIFEST"
+LIBUTF_COPYRIGHT = (
+    "Copyright (c) 2025 Stephen Dennis and the TinyMUX contributors")
+# Fingerprint of vendor/LICENSE.libutf. The .c extracts stay in MANIFEST;
+# this file is not an extract, so it is pinned here instead.
+LIBUTF_LICENCE_SHA256 = (
+    "a4271ea44456f01cfd7b646c69de1e6cba16b397ec7db297bca3fe804aa37975")
 
 
 def _entries() -> list:
@@ -72,6 +78,20 @@ class ManifestTests(unittest.TestCase):
             with self.subTest(file=name):
                 self.assertTrue(commit, f"{name} has no upstream commit")
                 self.assertRegex(commit, r"^[0-9a-f]{7,40}$")
+
+    def test_every_extract_carries_the_upstream_notice(self) -> None:
+        for _, name, _ in _entries():
+            with self.subTest(file=name):
+                head = (VENDOR / name).read_text(encoding="utf-8")[:2500]
+                self.assertIn(LIBUTF_COPYRIGHT, head)
+                self.assertIn("Permission is hereby granted", head)
+                self.assertIn("without restriction", head)
+
+    def test_the_full_licence_text_is_present(self) -> None:
+        data = (VENDOR / "LICENSE.libutf").read_bytes()
+        self.assertEqual(hashlib.sha256(data).hexdigest(),
+                         LIBUTF_LICENCE_SHA256)
+        self.assertIn(LIBUTF_COPYRIGHT, data.decode("utf-8"))
 
     def test_the_commit_matches_the_file_header(self) -> None:
         # The banner and the manifest are two records of the same fact, and
