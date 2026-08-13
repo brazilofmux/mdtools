@@ -359,56 +359,79 @@ class AnchorTests(NFCTestCase):
         self.assertEqual(self._identifier(out), "h\u00e9ading")
 
 
-class SegmentOverrunTests(NFCTestCase):
+class LongSequenceTests(NFCTestCase):
     """
-    The vendored normalizer truncates a long combining sequence silently.
+    Runs of composition exclusions, which used to be truncated in silence.
 
-    A "segment" ends at the next code point that is both a starter and
-    NFC_QC=Yes. A composition exclusion such as U+0958 is a starter with
-    NFC_QC=No, so a run of them never ends one, and everything past 128
-    decomposed code points is dropped with no error and no short return the
-    caller could detect. Reproduced against libutf directly.
+    libutf ended a dirty segment only at a starter with NFC_QC=Yes. A
+    composition exclusion such as U+0958 is a starter with NFC_QC=**No**, so a
+    run of them never ended one and everything past the segment cap was
+    dropped with no error and no short return the caller could detect — 2700
+    copies came back as 64.
 
-    mdfix cannot patch a verbatim copy, so it declines the call. These tests
-    pin the decline, because the failure mode they replace is the worst one a
-    text tool has: the file comes back shorter and nothing says so.
+    mdfix could not patch a verbatim vendored copy, so it measured segments
+    itself and refused any document that might trip it. This class pinned that
+    refusal. Both defects are fixed upstream (brazilofmux/utf#1 for the
+    segmentation, #2 for the unreportable truncation), the refreshed copy
+    carries the fixes, and the workaround is gone — so these now assert the
+    normalization instead.
+
+    Which is exactly what the pin was for: the refresh could not land quietly.
     """
 
-    # 2700 x U+0958 normalizes to 64 characters instead of 2700.
-    PATHOLOGICAL = "\u0958" * 2700
+    # 1300 x U+0958: 3900 bytes in, 7800 out after NFC — both under MAX_LINE.
+    # 2700 copies expand to 16200 bytes and are refused after NFC as an
+    # over-long line, pinned separately below.
+    PATHOLOGICAL = "\u0958" * 1300
 
-    def test_the_input_really_does_break_the_normalizer(self) -> None:
-        # If a libutf refresh ever fixes this, this assertion still holds
-        # (the input is still not NFC) but the refusal below should be
-        # revisited. Kept adjacent so the two are read together.
-        self.assertNotEqual(
-            unicodedata.normalize("NFC", self.PATHOLOGICAL), self.PATHOLOGICAL)
-        self.assertEqual(
-            len(unicodedata.normalize("NFC", self.PATHOLOGICAL)), 5400)
+    def test_the_input_is_still_the_hard_case(self) -> None:
+        # It is only interesting while it is genuinely not NFC and genuinely
+        # expands. If a future Unicode revision changed either, the tests
+        # below would pass for the wrong reason.
+        composed = unicodedata.normalize("NFC", self.PATHOLOGICAL)
+        self.assertNotEqual(composed, self.PATHOLOGICAL)
+        self.assertEqual(len(composed), 2600)
+        self.assertGreater(len(composed.encode("utf-8")),
+                           len(self.PATHOLOGICAL.encode("utf-8")))
 
-    def test_it_is_refused_rather_than_truncated(self) -> None:
+    def test_a_long_run_normalizes_completely(self) -> None:
+        # 3900 bytes in, 7800 out, none of it dropped.
+        text = self.PATHOLOGICAL + "\n"
+        out = self._fix(text, "--normalize-nfc")
+        self.assertEqual(out, unicodedata.normalize("NFC", text))
+        self.assertEqual(len(out.encode("utf-8")), 7801)
+
+    def test_it_is_not_refused_any_more(self) -> None:
         src = self._write(self.PATHOLOGICAL + "\n")
         out = self.dir / "out.md"
         result = subprocess.run(
             [str(MDFIX), "-q", "--normalize-nfc", str(src), str(out)],
             capture_output=True, text=True,
         )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("refuses to normalize", result.stderr)
-        self.assertFalse(out.exists(), "a partial file was left behind")
-        self.assertEqual(src.read_text(encoding="utf-8"),
-                         self.PATHOLOGICAL + "\n")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertTrue(out.exists())
 
-    def test_the_refusal_names_a_location(self) -> None:
-        text = "A clean first line.\n" + self.PATHOLOGICAL + "\n"
-        src = self._write(text)
+    def test_an_over_long_result_is_still_refused(self) -> None:
+        # A different limit and a correct one: mdfix does not split or
+        # truncate a line past MAX_LINE. Pinned so the message is not later
+        # mistaken for the normalization bug this class used to be about.
+        src = self._write("\u0958" * 2700 + "\n")
         result = subprocess.run(
             [str(MDFIX), "-q", "--normalize-nfc", str(src),
              str(self.dir / "out.md")],
             capture_output=True, text=True,
         )
-        self.assertIn("line 2", result.stderr)
-        self.assertIn(f"byte {len('A clean first line.') + 1}", result.stderr)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("after NFC normalization", result.stderr)
+        self.assertIn("limit", result.stderr)
+
+    def test_a_stacked_sequence_normalizes(self) -> None:
+        # The other shape the old cap reached: many marks on one base. 500 is
+        # far past UAX #15's Stream-Safe limit of 30 non-starters and still
+        # comes back whole.
+        text = "a" + "\u0301" * 500 + "\n"
+        self.assertEqual(self._fix(text, "--normalize-nfc"),
+                         unicodedata.normalize("NFC", text))
 
     def test_detection_still_works_on_it(self) -> None:
         # Refusing to *rewrite* must not cost the report. I1.2's first half
@@ -456,7 +479,8 @@ class VendorTests(unittest.TestCase):
 
     def test_upstream_names_are_gone(self) -> None:
         text = self.VENDOR.read_text(encoding="utf-8")
-        for symbol in ("utf_nfc_is_nfc", "utf_nfc_normalize"):
+        for symbol in ("utf_nfc_is_nfc", "utf_nfc_normalize",
+                       "utf_nfc_normalize_bound"):
             with self.subTest(symbol=symbol):
                 self.assertNotIn(f" {symbol}(", text)
         self.assertIn("mdfix_nfc_normalize", text)
@@ -467,11 +491,12 @@ class VendorTests(unittest.TestCase):
         # linkage — a table, a helper — is a collision waiting to happen.
         text = self.VENDOR.read_text(encoding="utf-8")
         exported = re.findall(r"^(?!static\b)(?:const |unsigned |int |void |"
-                              r"size_t |uint32_t )[^;{]*\b(\w+)\s*[\(\[]",
+                              r"size_t |uint32_t |mdfix_nfc_status )"
+                              r"[^;{]*\b(\w+)\s*[\(\[]",
                               text, re.M)
         self.assertEqual(sorted(set(exported)),
                          ["mdfix_nfc_ccc_qc", "mdfix_nfc_is_nfc",
-                          "mdfix_nfc_normalize"])
+                          "mdfix_nfc_normalize", "mdfix_nfc_normalize_bound"])
 
     def test_every_build_target_compiles_it(self) -> None:
         # Including the sanitizer target. A vendored file added to `mdfix`

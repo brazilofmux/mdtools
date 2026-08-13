@@ -73,7 +73,7 @@ Each has an identifier so issues and tests can cite it.
   spanning the offending code point; the UAX #15 quick check, so it is cheap
   enough to leave on and is allowed to say "maybe". `--normalize-nfc` is the
   opt-in L3 rewrite. The Unicode data is vendored from libutf in
-  `mdfix/vendor/utf_nfc.c`.)*
+  `mdfix/vendor/utf_nfc.c`, including the bound and status API.)*
 - **I1.3 Spans address the file on disk.** Every IR offset indexes the input
   bytes exactly as they were read, including CRLF and a missing final newline.
 - **I1.4 Parsing is whole-file.** Block classification is context-dependent,

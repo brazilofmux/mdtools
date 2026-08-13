@@ -3791,78 +3791,13 @@ static long long nfc_first_bad(const char *s, int len, int *plen)
 /*
  * L3: rewrite lines[] to NFC when --normalize-nfc is set (off by default).
  * Runs after the IR early-return so emitted spans still address the file on
- * disk. Destination is sized past UAX #15's 3× NFC expansion; length-checked
- * because libutf may truncate without reporting (brazilofmux/utf#2).
+ * disk.
+ *
+ * NFC can expand, so the destination is sized with
+ * `mdfix_nfc_normalize_bound` (UAX #15's 3x). Any non-OK status means
+ * refuse rather than emit a prefix.
  */
 #define NFC_DST_MAX (MAX_LINE * 3 + 8)
-
-/*
- * Refuse input that would hit libutf's silent segment truncate
- * (brazilofmux/utf#1). Bound dirty segments at 31 input code points so the
- * decomposed form stays ≤124 of the normalizer's 128-slot segment.
- * Returns the byte offset of the first over-long segment, or -1.
- */
-#define NFC_SEGMENT_MAX 31
-
-static long long nfc_segment_overrun(const char *s, int len)
-{
-    const unsigned char *p = (const unsigned char *)s;
-    int i = 0, seg_start = 0, last_ccc = 0;
-
-    while (i < len) {
-        if (p[i] < 0x80) {              /* ASCII ends a segment */
-            seg_start = i;
-            last_ccc = 0;
-            i++;
-            continue;
-        }
-        const char *why = NULL;
-        int n = utf8_sequence_len(p + i, len - i, &why);
-        if (n == 0)
-            return -1;                  /* I1.1 already refused this file */
-
-        int ccc, qc;
-        mdfix_nfc_ccc_qc(p + i, p + i + n, &ccc, &qc);
-        if (qc == 0 && (ccc == 0 || last_ccc <= ccc)) {
-            if (ccc == 0)
-                seg_start = i;
-            last_ccc = ccc;
-            i += n;
-            continue;
-        }
-
-        /* A dirty segment starts at seg_start and runs to the next clean
-         * starter. Count its code points as upstream will see them. */
-        i += n;
-        while (i < len) {
-            if (p[i] < 0x80)
-                break;
-            int n2 = utf8_sequence_len(p + i, len - i, &why);
-            if (n2 == 0)
-                return -1;
-            int ccc2, qc2;
-            mdfix_nfc_ccc_qc(p + i, p + i + n2, &ccc2, &qc2);
-            if (ccc2 == 0 && qc2 == 0)
-                break;
-            i += n2;
-        }
-
-        int points = 0;
-        for (int k = seg_start; k < i; ) {
-            int nk = utf8_sequence_len(p + k, len - k, &why);
-            if (nk == 0)
-                return -1;
-            k += nk;
-            points++;
-        }
-        if (points > NFC_SEGMENT_MAX)
-            return seg_start;
-
-        seg_start = i;
-        last_ccc = 0;
-    }
-    return -1;
-}
 
 static int normalize_lines_nfc(void)
 {
@@ -3874,25 +3809,26 @@ static int normalize_lines_nfc(void)
         if (nfc_first_bad(lines[i], len, &bad_len) < 0)
             continue;               /* already NFC — nothing to write */
 
-        long long overrun = nfc_segment_overrun(lines[i], len);
-        if (overrun >= 0) {
+        if (mdfix_nfc_normalize_bound((size_t)len) > sizeof dst) {
+            /* Unreachable while MAX_LINE bounds a line and NFC_DST_MAX is
+             * 3x it, which is the same bound. Stated so that changing either
+             * one is caught here rather than in someone's manuscript. */
             fprintf(stderr,
-                "error: line %d, byte %lld: a combining sequence longer than "
-                "%d code points.\n"
-                "The bundled normalizer truncates these silently, so mdfix "
-                "refuses to normalize\nrather than lose text. The file is "
-                "unchanged; report this input.\n",
-                i + 1, line_off[i] + overrun, NFC_SEGMENT_MAX);
+                "error: line %d needs a larger normalization buffer than "
+                "mdfix has.\nThis should be unreachable; please report it.\n",
+                i + 1);
             return 1;
         }
 
         size_t nout = 0;
-        mdfix_nfc_normalize((const unsigned char *)lines[i], (size_t)len,
-                            dst, sizeof dst, &nout);
-        if (nout >= sizeof dst) {
+        mdfix_nfc_status st = mdfix_nfc_normalize(
+            (const unsigned char *)lines[i], (size_t)len, dst, sizeof dst,
+            &nout);
+        if (st != MDFIX_NFC_OK) {
             fprintf(stderr,
-                "error: line %d overflows the normalization buffer.\n"
-                "This should be unreachable; please report it.\n", i + 1);
+                "error: line %d could not be normalized (status %d); the "
+                "result would be\na prefix of the correct answer. The file is "
+                "unchanged; please report this input.\n", i + 1, (int)st);
             return 1;
         }
         if (nout > (size_t)(MAX_LINE - 1)) {
