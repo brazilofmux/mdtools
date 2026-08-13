@@ -5236,14 +5236,8 @@ static void free_edit_fields(struct edit *e)
 
 static void free_edits(void)
 {
-    for (int i = 0; i < nedits; i++) {
-        free(edits[i].replacement);
-        free(edits[i].rule);
-        free(edits[i].expect);
-        free(edits[i].severity);
-        free(edits[i].confidence);
-        free(edits[i].explanation);
-    }
+    for (int i = 0; i < nedits; i++)
+        free_edit_fields(&edits[i]);
     nedits = 0;
 }
 
@@ -5658,6 +5652,15 @@ static long long line_end_after(const char *src, long long len, long long off)
     return i < len ? i + 1 : len;
 }
 
+/*
+ * Last byte included by half-open [start, end). Empty inserts (start == end)
+ * use start so the line of the insertion point is still covered.
+ */
+static long long span_last_byte(long long start, long long end)
+{
+    return end > start ? end - 1 : start;
+}
+
 static void print_diff_lines(const char *text, long long len, char marker)
 {
     long long i = 0;
@@ -5685,14 +5688,16 @@ static void print_diff_lines(const char *text, long long len, char marker)
  * sure it was.
  *
  * Edits are already sorted and non-overlapping by the time this runs.
+ * Returns 0, or 1 on I/O failure.
  */
-static void print_edit_diff(const char *path, const char *src, long long len)
+static int print_edit_diff(const char *path, const char *src, long long len)
 {
     int i = 0;
     while (i < nedits) {
         long long first_line_start = 0;
         int first_line = line_at(src, edits[i].start, &first_line_start);
-        long long stop = line_end_after(src, len, edits[i].end);
+        long long stop = line_end_after(src, len,
+            span_last_byte(edits[i].start, edits[i].end));
 
         /* Extend the group while the next edit falls inside the lines this
          * hunk already covers. Two fixes on one line are one hunk; printing
@@ -5700,7 +5705,8 @@ static void print_edit_diff(const char *path, const char *src, long long len)
          * would show a state that never exists. */
         int j = i + 1;
         while (j < nedits && edits[j].start < stop) {
-            stop = line_end_after(src, len, edits[j].end);
+            stop = line_end_after(src, len,
+                span_last_byte(edits[j].start, edits[j].end));
             j++;
         }
 
@@ -5729,22 +5735,25 @@ static void print_edit_diff(const char *path, const char *src, long long len)
         char *after = NULL;
         size_t after_len = 0;
         FILE *mem = open_memstream(&after, &after_len);
-        if (mem) {
-            for (int k = i; k < j; k++) {
-                if (edits[k].start > cursor)
-                    fwrite(src + cursor, 1,
-                           (size_t)(edits[k].start - cursor), mem);
-                fputs(edits[k].replacement, mem);
-                cursor = edits[k].end;
-            }
-            if (cursor < stop)
-                fwrite(src + cursor, 1, (size_t)(stop - cursor), mem);
-            fclose(mem);
-            print_diff_lines(after, (long long)after_len, '+');
-            free(after);
+        if (!mem) {
+            fprintf(stderr, "error: cannot buffer a --diff hunk\n");
+            return 1;
         }
+        for (int k = i; k < j; k++) {
+            if (edits[k].start > cursor)
+                fwrite(src + cursor, 1,
+                       (size_t)(edits[k].start - cursor), mem);
+            fputs(edits[k].replacement, mem);
+            cursor = edits[k].end;
+        }
+        if (cursor < stop)
+            fwrite(src + cursor, 1, (size_t)(stop - cursor), mem);
+        fclose(mem);
+        print_diff_lines(after, (long long)after_len, '+');
+        free(after);
         i = j;
     }
+    return 0;
 }
 
 /*
@@ -5920,7 +5929,8 @@ static int apply_edits_file(const char *input_path, const char *output_path)
     if (opt_diff) {
         /* Preview only. Deliberately checked after I4.3 above, so a diff
          * never shows a change the applier would go on to refuse. */
-        print_edit_diff(input_path, src, len);
+        if (print_edit_diff(input_path, src, len) != 0)
+            rc = 1;
         if (fflush(stdout) != 0) {
             fprintf(stderr, "error writing diff: ");
             perror(NULL);
@@ -6772,6 +6782,10 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    if (opt_diff && !opt_apply_edits) {
+        fprintf(stderr, "--diff previews an edit list; pass --apply-edits.\n");
+        return 1;
+    }
     if (opt_apply_edits && opt_canonical_lint) {
         fprintf(stderr,
             "--apply-edits writes a document; --canonical-lint is a gate. "

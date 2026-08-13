@@ -204,6 +204,40 @@ class DiffTests(EditModelTestCase):
                           {"start": b, "end": b + 4, "replacement": "5"})
         self.assertEqual(self._hunks(diff), 2)
 
+    def test_whole_line_edit_does_not_pull_the_next_line(self) -> None:
+        # Half-open end on the next line's first byte must still bound the
+        # hunk to the line that was actually included.
+        path = self._file("one\ntwo\n")
+        data = path.read_bytes()
+        # Replace "one\n" entirely: [0, 4).
+        diff = self._diff(path, {"start": 0, "end": 4, "replacement": "ONE\n"})
+        self.assertEqual(self._hunks(diff), 1)
+        self.assertIn("- one", diff)
+        self.assertIn("+ ONE", diff)
+        self.assertNotIn("- two", diff)
+        self.assertNotIn("+ two", diff)
+
+    def test_consecutive_line_edits_are_separate_hunks(self) -> None:
+        path = self._file("one\ntwo\n")
+        data = path.read_bytes()
+        # Whole first line including newline, then second line body.
+        diff = self._diff(path,
+                          {"start": 0, "end": 4, "replacement": "ONE\n"},
+                          {"start": 4, "end": 7, "replacement": "TWO"})
+        self.assertEqual(self._hunks(diff), 2)
+        self.assertIn("@@ ", diff)
+        self.assertIn(":1 @@", diff)
+        self.assertIn(":2 @@", diff)
+
+    def test_diff_requires_apply_edits(self) -> None:
+        path = self._file("# T\n")
+        result = subprocess.run(
+            [str(MDFIX), "-q", "--diff", str(path)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("--apply-edits", result.stderr)
+
     def test_a_missing_final_newline_is_marked(self) -> None:
         path = self._file("one\ntwo")
         i = path.read_bytes().index(b"two")
