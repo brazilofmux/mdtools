@@ -69,7 +69,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     suppress: List[str] = list(args.suppress) + list(config.suppress)
 
     try:
-        findings = run(args.paths, resolve_mdfix(args.mdfix, config), suppress)
+        findings = run(args.paths, resolve_mdfix(args.mdfix, config),
+                       suppress, config.frontmatter)
     except IRError as exc:
         return fail("mdcheck", str(exc))
 

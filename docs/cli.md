@@ -89,6 +89,12 @@ different one has no way to notice.
 `mdtools config` prints what was resolved and from where, and takes
 `--config PATH` itself so you can check what a CI config resolves to.
 
+Settings are `profile`, `wrap`, `editorial`, `glossary`, `state_dir`, `mdfix`,
+`suppress`, and the `[frontmatter]` table that mdcheck validates against — see
+[mdcheck.md](mdcheck.md). An unknown setting is an error rather than something
+ignored: a project that misspells one and gets silence is a project running
+without the rule it thought it had.
+
 On Python 3.10 there is no `tomllib`, so a config file that is *present*
 cannot be read — and mdtools refuses rather than ignoring it. Quietly
 proceeding is how a tool ends up doing something the project did not ask for.
