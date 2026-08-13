@@ -1827,6 +1827,28 @@ static void ir_inline_field(FILE *out, const char *name,
 }
 
 /*
+ * Where the bare destination sits in the file, alongside what it says.
+ *
+ * A consumer that wants to *repair* a link needs to replace the destination
+ * and nothing else. Without this it would have to find the destination inside
+ * the record's span itself — locating `](` or `]:`, skipping a title, honouring
+ * escapes — which is Markdown grammar, and grammar lives here (dialect-policy
+ * §2). Emitting the span is what keeps mdlinks' repair path free of a second
+ * parser, the same way `destination` itself kept its checking path free of one.
+ *
+ * Half-open, into the file on disk, like every other span (I1.3). Omitted
+ * entirely when the destination is empty, so a consumer never sees a zero-width
+ * span it might treat as an insertion point.
+ */
+static void ir_dest_span(FILE *out, long long start, int len)
+{
+    if (len <= 0)
+        return;
+    fprintf(out, ",\"destinationStart\":%lld,\"destinationEnd\":%lld",
+            start, start + len);
+}
+
+/*
  * Walk one line's content (no terminator), emitting inline records.
  * `base` is the file offset of text[0]; spans are base + index so CRLF
  * multi-line blocks must call this once per line with that line's line_off.
@@ -1858,6 +1880,7 @@ static void emit_inline(FILE *out, const char *text, long long base,
                 ir_inline(out, "link", base + i, base + i + span, line,
                           0, depth, parent);
                 ir_inline_field(out, "destination", text + i + 1, span - 2);
+                ir_dest_span(out, base + i + 1, span - 2);
                 fputs(",\"form\":\"autolink\"}\n", out);
                 i += span;
                 continue;
@@ -1900,6 +1923,7 @@ static void emit_inline(FILE *out, const char *text, long long base,
                 ir_inline_field(out, "text", text + i + text_off, text_len);
                 ir_inline_field(out, "destination",
                                 text + i + raw_off + bare_off, bare_len);
+                ir_dest_span(out, base + i + raw_off + bare_off, bare_len);
                 fputs(",\"form\":\"inline\"}\n", out);
                 i += span;
                 continue;
@@ -2284,6 +2308,8 @@ static void emit_ir(FILE *out, const char *source)
                                   &bare_off, &bare_len);
                         ir_inline_field(out, "destination",
                                         l + d + bare_off, bare_len);
+                        ir_dest_span(out, line_off[i] + d + bare_off,
+                                     bare_len);
                     }
                     fputs("}\n", out);
                 }
