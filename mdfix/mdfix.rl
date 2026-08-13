@@ -2201,8 +2201,37 @@ static void emit_ir(FILE *out, const char *source)
                         j++;
                     }
                 }
-                ir_block(out, def == 1 ? "reference_def" : "footnote_def",
-                         i, last, 0);
+                /*
+                 * The label, and for a link definition the destination, are
+                 * emitted rather than left for a consumer to parse: mdlinks
+                 * needs both to resolve a reference, and digging them out of
+                 * the span would be Markdown grammar on the wrong side of
+                 * the boundary.
+                 */
+                {
+                    const char *l = line;
+                    int b = 0;
+                    while (b < 3 && l[b] == ' ')
+                        b++;
+                    int label_start = b + 1 + (def == 2 ? 1 : 0);
+                    int label_end = label_start;
+                    while (l[label_end] && l[label_end] != ']')
+                        label_end++;
+                    ir_open(out, def == 1 ? "reference_def" : "footnote_def",
+                            i, last, 0);
+                    ir_inline_field(out, "label", l + label_start,
+                                    label_end - label_start);
+                    if (def == 1) {
+                        int d = label_end + 2;   /* past "]:" */
+                        while (l[d] == ' ' || l[d] == '\t')
+                            d++;
+                        int e = d;
+                        while (l[e] && l[e] != ' ' && l[e] != '\t')
+                            e++;
+                        ir_inline_field(out, "destination", l + d, e - d);
+                    }
+                    fputs("}\n", out);
+                }
                 i = last;
                 /* Not LT_TEXT: a definition is not paragraph text, so
                  * indented code may follow it with no blank line. Pandoc
