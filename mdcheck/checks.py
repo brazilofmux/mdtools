@@ -18,6 +18,7 @@ from typing import Dict, Iterable, List, Optional, Sequence
 
 from mdquery.ir import find_mdfix, raw_records
 
+from .bibliography import resolve as resolve_bibliography
 from .frontmatter import validate as validate_frontmatter
 from mdquery.slug import assign_slugs
 from mdlinks.graph import (
@@ -76,8 +77,24 @@ def _records(path: Path, mdfix: Optional[str]) -> List[dict]:
     return raw_records([path], mdfix)
 
 
+def _front_matter_data(data: bytes, record: dict) -> Optional[dict]:
+    """The front matter as a mapping, or None if it is not one."""
+    try:
+        import yaml
+    except ImportError:                          # pragma: no cover
+        return None
+    span = data[record["start"]:record["end"]].decode("utf-8", "replace")
+    body = "\n".join(span.splitlines()[1:-1])
+    try:
+        parsed = yaml.safe_load(body)
+    except yaml.YAMLError:
+        return None                              # the schema check reports it
+    return parsed if isinstance(parsed, dict) else None
+
+
 def check_document(path: Path, mdfix: Optional[str] = None,
-                   frontmatter: Optional[dict] = None) -> List[Finding]:
+                   frontmatter: Optional[dict] = None,
+                   bibliography: Optional[Sequence[str]] = None) -> List[Finding]:
     """The checks nothing else performs."""
     findings: List[Finding] = []
     data = path.read_bytes()
@@ -91,6 +108,8 @@ def check_document(path: Path, mdfix: Optional[str] = None,
 
     labels: Dict[str, int] = {}
     saw_frontmatter = False
+    front_data: Optional[dict] = None
+    citations: List[dict] = []
     for record in records:
         kind = record["kind"]
 
@@ -124,8 +143,11 @@ def check_document(path: Path, mdfix: Optional[str] = None,
             else:
                 labels[label] = record["line"]
 
-        elif kind == "frontmatter" and frontmatter:
+        elif kind == "frontmatter":
             saw_frontmatter = True
+            front_data = _front_matter_data(data, record)
+            if not frontmatter:
+                continue
             # The whole block is the span; the line is the offending key's,
             # from PyYAML's marks. A schema error points at the field, not at
             # the document.
@@ -136,6 +158,9 @@ def check_document(path: Path, mdfix: Optional[str] = None,
                 findings.append(Finding(
                     path=str(path), rule=rule, severity=severity, line=line,
                     start=record["start"], end=record["end"], message=message))
+
+        elif kind == "citation":
+            citations.append(record)
 
         elif kind == "paragraph":
             span = data[record["start"]:record["end"]].decode("utf-8", "replace")
@@ -157,6 +182,25 @@ def check_document(path: Path, mdfix: Optional[str] = None,
                 severity="error", line=1, start=0, end=0,
                 message=("document has no front matter; required field(s) "
                          + ", ".join(repr(r) for r in required))))
+
+    # Citations, once the whole document has been walked: the bibliography
+    # may be named in front matter, which is read before any citation is.
+    known, problems = resolve_bibliography(front_data, bibliography, path)
+    for problem in problems:
+        findings.append(Finding(
+            path=str(path), rule="check.bibliography-unreadable",
+            severity="error", line=1, start=0, end=0, message=problem))
+    if known is not None and not problems:
+        # Not while a source failed to load: an unreadable bibliography looks
+        # like an empty one, and reporting every citation as unresolved buries
+        # the finding that actually matters.
+        for record in citations:
+            if record["key"] not in known:
+                findings.append(Finding(
+                    path=str(path), rule="check.unresolved-citation",
+                    severity="error", line=record["line"],
+                    start=record["start"], end=record["end"],
+                    message=f"no bibliography entry for @{record['key']}"))
 
     return findings
 
@@ -221,11 +265,12 @@ def dialect_findings(path: Path, mdfix: Optional[str] = None) -> List[Finding]:
 
 def run(paths: Sequence[Path], mdfix: Optional[str] = None,
         suppress: Iterable[str] = (),
-        frontmatter: Optional[dict] = None) -> List[Finding]:
+        frontmatter: Optional[dict] = None,
+        bibliography: Optional[Sequence[str]] = None) -> List[Finding]:
     files = discover(paths)
     findings: List[Finding] = []
     for path in files:
-        findings.extend(check_document(path, mdfix, frontmatter))
+        findings.extend(check_document(path, mdfix, frontmatter, bibliography))
         findings.extend(dialect_findings(path, mdfix))
     findings.extend(check_repository(files, mdfix))
 

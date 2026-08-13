@@ -42,6 +42,8 @@ trust.
 | `check.frontmatter-value` | error | a value outside its `one_of` |
 | `check.frontmatter-unknown` | warning or error | a field the schema does not mention |
 | `check.frontmatter-invalid` | error | front matter that is not a YAML mapping |
+| `check.unresolved-citation` | error | a citation key with no bibliography entry |
+| `check.bibliography-unreadable` | error | a bibliography that could not be read |
 | `dialect.*` | mixed | mdfix diagnostics: `fix` → error (required repairs), warnings stay warnings |
 | `links.*` | mixed | everything [mdlinks](mdlinks.md) reports |
 
@@ -141,7 +143,44 @@ unknown type name or a malformed field table is an error — exit `2`, because
 the project's settings are unusable and that is not a finding about the prose
 ([cli.md](cli.md)).
 
+## Citations
+
+Off unless a bibliography is named. A document with citations and no
+bibliography is not making a mistake — it may be assembled later, or cited
+into a system mdtools knows nothing about.
+
+Sources:
+
+| | |
+|---|---|
+| front matter `references:` | inline CSL, extra keys, merged with files |
+| front matter `bibliography:` | a path, or a list of them, relative to the document |
+| `mdtools.toml` `bibliography` | the project default, relative to its root |
+
+A document that names `bibliography:` is saying what it cites against, and
+the project default is not used — including an explicit empty list, which is
+named-but-empty rather than not named. `references:` adds keys; it does not
+replace a bibliography file. Formats are BibTeX/BibLaTeX (`.bib`), CSL JSON
+and CSL YAML; only the keys are read, so none of this is a citation formatter.
+
+```console
+$ mdcheck paper.md
+paper.md:7: error: no bibliography entry for @ghost [check.unresolved-citation]
+```
+
+**Named-but-empty is not the same as not named.** With no bibliography the
+check does not run; with an empty one every citation really is unresolved.
+Collapsing the two would make every citation in every unconfigured document an
+error, which is the fastest way to have a check switched off.
+
+**A bibliography that will not load is one finding, not one per citation.** An
+unreadable file looks exactly like an empty one, so reporting each citation
+would bury the finding that matters — the file — under noise from the
+document.
+
 ## Not yet
 
-**Unresolved citations.** The IR does not emit citations yet, so there is
-nothing for mdcheck to resolve — that is #88, and this check follows it.
+**Unused references** — a bibliography entry nothing cites. It is the mirror
+of the check above and much noisier: a shared `refs.bib` across a book is
+expected to hold entries a given chapter does not cite, so it would need to be
+a repository-wide question rather than a per-document one.
