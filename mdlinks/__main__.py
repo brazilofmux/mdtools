@@ -11,7 +11,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import Optional, Sequence
 
 from mdquery.ir import IRError
 
@@ -58,14 +58,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(json.dumps({
                 "kind": "document", "path": str(doc.path),
                 "anchors": doc.anchors,
-                "definitions": sorted(doc.definitions),
+                "definitions": {
+                    label: dest
+                    for label, (_line, dest) in sorted(doc.definitions.items())
+                },
+                "footnotes": sorted(doc.footnotes),
             }, ensure_ascii=False))
             for link in doc.links:
                 print(json.dumps({
                     "kind": link.kind, "path": str(doc.path),
                     "line": link.line, "start": link.start, "end": link.end,
                     "form": link.form, "destination": link.destination,
-                    "label": link.label,
+                    "label": link.label, "text": link.text,
+                }, ensure_ascii=False))
+            for label, line, start, end in doc.footnote_refs:
+                print(json.dumps({
+                    "kind": "footnote_ref", "path": str(doc.path),
+                    "line": line, "start": start, "end": end,
+                    "label": label,
                 }, ensure_ascii=False))
         return 0
 

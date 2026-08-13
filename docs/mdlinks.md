@@ -29,13 +29,22 @@ text. Percent-escapes in the fragment are decoded before comparison.
 | Rule | Severity | |
 |---|---|---|
 | `links.broken-anchor` | error | `#anchor` no heading provides |
-| `links.undefined-reference` | error | `[x][label]` with no definition |
+| `links.undefined-reference` | error | `[x][label]`, collapsed `[text][]`, or shortcut `[label]` with no definition |
 | `links.undefined-footnote` | error | a footnote reference with no definition |
-| `links.missing-file` | error | a relative path not on disk |
+| `links.missing-file` | error | a relative path not on disk (inline **or** via a resolved reference definition) |
 | `links.unused-definition` | warning | a definition nothing uses |
 | `links.unused-footnote` | warning | a footnote definition nothing references |
 
 Errors exit 1; warnings alone exit 0 unless `--warnings` is passed.
+
+Reference-style and shortcut links are **followed** to their definition
+destination, then checked the same way as inline links (missing file, broken
+anchor). Collapsed forms `[text][]` resolve with the link text as the label.
+Labels match CommonMark rules (whitespace collapsed, case-insensitive).
+
+Undefined **shortcuts** (`[brackets]` with no matching definition) are
+errors. CommonMark would leave them as plain text; mdlinks treats them as
+broken references so accidental editorial markers stay visible.
 
 Links inside **table cells, list items and headings** are checked, because the
 inline records cover them. That was the point of scanning those: five of the
@@ -63,5 +72,5 @@ slug away from a broken one.
 |---|---|
 | `mdlinks FILE...` | Human report |
 | `mdlinks --diagnostics FILE...` | JSONL, per [diagnostics.md](diagnostics.md) |
-| `mdlinks --graph FILE...` | The graph itself: anchors, definitions, every link |
+| `mdlinks --graph FILE...` | The graph: anchors, definitions, footnotes, every link and footnote ref |
 | `--warnings` | Fail on warnings too |

@@ -1,25 +1,13 @@
 """
-Build and check the link graph.
-
-**No Markdown grammar.** Links, images and definitions come from
-`mdfix --emit-ir` as records with destinations and labels; anchors come from
-mdquery's Pandoc-compatible slugs. mdlinks never looks at a bracket.
-
-What it checks:
-
-  - an internal anchor that no heading provides
-  - a reference or shortcut link with no definition
-  - a definition nothing uses
-  - a relative path that is not on disk, and its anchor if it names one
+Build and check the link graph from mdfix IR — no Markdown grammar.
 """
 
 from __future__ import annotations
 
-import posixpath
 import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from mdquery.ir import raw_records
 from mdquery.slug import assign_slugs
@@ -35,6 +23,7 @@ class Link:
     form: str            # inline | autolink | reference | shortcut
     destination: str     # "" for reference forms
     label: str
+    text: str = ""       # link text; used for collapsed [text][]
 
 
 @dataclass
@@ -42,7 +31,8 @@ class Document:
     path: Path
     anchors: List[str] = field(default_factory=list)
     links: List[Link] = field(default_factory=list)
-    definitions: Dict[str, int] = field(default_factory=dict)   # label -> line
+    # label key -> (line, destination)
+    definitions: Dict[str, Tuple[int, str]] = field(default_factory=dict)
     footnotes: Dict[str, int] = field(default_factory=dict)
     footnote_refs: List = field(default_factory=list)
 
@@ -63,6 +53,33 @@ class Finding:
                 "start": self.start, "end": self.end, "message": self.message}
 
 
+def _normalize_label(label: str) -> str:
+    """CommonMark label: collapse whitespace, then case-fold."""
+    return " ".join(label.split()).casefold()
+
+
+def _normalize_destination(destination: str) -> str:
+    """Bare URL if IR still carries <> or a trailing title (defensive)."""
+    s = destination.strip()
+    if s.startswith("<") and ">" in s:
+        inner, _, rest = s[1:].partition(">")
+        if not rest.strip() or rest.lstrip()[:1] in "\"'(":
+            return inner.strip()
+    # Unquoted destination ends at the first unescaped space (title follows).
+    out = []
+    i = 0
+    while i < len(s):
+        if s[i] == "\\" and i + 1 < len(s):
+            out.append(s[i + 1])
+            i += 2
+            continue
+        if s[i] in " \t":
+            break
+        out.append(s[i])
+        i += 1
+    return "".join(out)
+
+
 def read(path: Path, mdfix: Optional[str] = None) -> Document:
     doc = Document(path=path)
     headings: List[str] = []
@@ -75,12 +92,16 @@ def read(path: Path, mdfix: Optional[str] = None) -> Document:
                 path=path, line=record["line"],
                 start=record["start"], end=record["end"],
                 kind=kind, form=record.get("form", "inline"),
-                destination=record.get("destination", ""),
-                label=record.get("label", ""),
+                destination=record.get("destination", "") or "",
+                label=record.get("label", "") or "",
+                text=record.get("text", "") or "",
             ))
         elif kind == "reference_def":
-            doc.definitions.setdefault(record.get("label", "").lower(),
-                                       record["line"])
+            key = _normalize_label(record.get("label", "") or "")
+            if key and key not in doc.definitions:
+                dest = _normalize_destination(
+                    record.get("destination", "") or "")
+                doc.definitions[key] = (record["line"], dest)
         elif kind == "footnote_def":
             doc.footnotes.setdefault(record.get("label", ""), record["line"])
         elif kind == "footnote_ref":
@@ -113,38 +134,52 @@ def check(docs: Sequence[Document]) -> List[Finding]:
             path=str(doc.path), rule=rule, severity=severity,
             line=link.line, start=link.start, end=link.end, message=message))
 
+    def check_destination(doc, link, destination: str) -> None:
+        destination = _normalize_destination(destination)
+        if not destination or _is_external(destination):
+            return
+        target, anchor = _split(destination)
+        if not target:
+            if anchor and anchor not in doc.anchors:
+                add(doc, link, "links.broken-anchor",
+                    f"no heading with anchor #{anchor}")
+            return
+        resolved = (doc.path.parent / target).resolve()
+        if not resolved.exists():
+            add(doc, link, "links.missing-file",
+                f"{target} does not exist")
+            return
+        if anchor:
+            other = by_path.get(resolved)
+            if other is None and resolved.suffix == ".md":
+                return   # not in scope; cannot judge its anchors
+            if other is not None and anchor not in other.anchors:
+                add(doc, link, "links.broken-anchor",
+                    f"{target} has no anchor #{anchor}")
+
     for doc in docs:
         used = set()
         for link in doc.links:
             if link.form in ("reference", "shortcut"):
-                label = link.label.lower()
-                used.add(label)
-                if label not in doc.definitions:
+                # Collapsed [text][]: IR label is empty; CommonMark uses text.
+                label = link.label
+                if link.form == "reference" and not label:
+                    label = link.text
+                key = _normalize_label(label)
+                used.add(key)
+                if key not in doc.definitions:
+                    shown = label or link.label or link.text
                     add(doc, link, "links.undefined-reference",
-                        f"no definition for [{link.label}]")
+                        f"no definition for [{shown}]")
+                    continue
+                _line, dest = doc.definitions[key]
+                check_destination(doc, link, dest)
                 continue
             if link.form == "autolink" or _is_external(link.destination):
                 continue
-            target, anchor = _split(link.destination)
-            if not target:
-                if anchor and anchor not in doc.anchors:
-                    add(doc, link, "links.broken-anchor",
-                        f"no heading with anchor #{anchor}")
-                continue
-            resolved = (doc.path.parent / target).resolve()
-            if not resolved.exists():
-                add(doc, link, "links.missing-file",
-                    f"{target} does not exist")
-                continue
-            if anchor:
-                other = by_path.get(resolved)
-                if other is None and resolved.suffix == ".md":
-                    continue   # not in scope; cannot judge its anchors
-                if other is not None and anchor not in other.anchors:
-                    add(doc, link, "links.broken-anchor",
-                        f"{target} has no anchor #{anchor}")
+            check_destination(doc, link, link.destination)
 
-        for label, line in doc.definitions.items():
+        for label, (line, _dest) in doc.definitions.items():
             if label not in used:
                 findings.append(Finding(
                     path=str(doc.path), rule="links.unused-definition",

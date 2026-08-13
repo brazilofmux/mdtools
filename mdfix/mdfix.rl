@@ -1334,6 +1334,41 @@ static int inline_link_len(const char *s, int *text_off, int *text_len)
 }
 
 /*
+ * Bare destination from the raw body between '(' and ')': drop optional
+ * surrounding <…> and a trailing title (space + "…" / '…' / (…)).
+ */
+static void dest_bare(const char *s, int len, int *off, int *out_len)
+{
+    int i = 0, j = len;
+    while (i < j && (s[i] == ' ' || s[i] == '\t'))
+        i++;
+    while (j > i && (s[j - 1] == ' ' || s[j - 1] == '\t'))
+        j--;
+    if (i < j && s[i] == '<') {
+        int k = i + 1;
+        while (k < j && s[k] != '>')
+            k++;
+        if (k < j) {
+            *off = i + 1;
+            *out_len = k - (i + 1);
+            return;
+        }
+    }
+    int k = i;
+    while (k < j) {
+        if (s[k] == '\\' && k + 1 < j) {
+            k += 2;
+            continue;
+        }
+        if (s[k] == ' ' || s[k] == '\t')
+            break;
+        k++;
+    }
+    *off = i;
+    *out_len = k - i;
+}
+
+/*
  * Word-ish for the intraword-underscore rule, UTF-8 aware.
  *
  * Byte-based isalnum treats every multibyte letter as punctuation, so
@@ -1837,14 +1872,16 @@ static void emit_inline(FILE *out, const char *text, long long base,
             int text_off = 0, text_len = 0;
             span = inline_link_len(text + i, &text_off, &text_len);
             if (span) {
-                /* Destination is everything between the '(' and the ')'. */
-                int dest_off = text_off + text_len + 2;
-                int dest_len = span - dest_off - 1;
+                int raw_off = text_off + text_len + 2;
+                int raw_len = span - raw_off - 1;
+                int bare_off = 0, bare_len = 0;
+                if (raw_len > 0)
+                    dest_bare(text + i + raw_off, raw_len, &bare_off, &bare_len);
                 ir_inline(out, image ? "image" : "link", base + i,
                           base + i + span, line, 0, depth, parent);
                 ir_inline_field(out, "text", text + i + text_off, text_len);
-                ir_inline_field(out, "destination", text + i + dest_off,
-                                dest_len > 0 ? dest_len : 0);
+                ir_inline_field(out, "destination",
+                                text + i + raw_off + bare_off, bare_len);
                 fputs(",\"form\":\"inline\"}\n", out);
                 i += span;
                 continue;
@@ -2201,13 +2238,7 @@ static void emit_ir(FILE *out, const char *source)
                         j++;
                     }
                 }
-                /*
-                 * The label, and for a link definition the destination, are
-                 * emitted rather than left for a consumer to parse: mdlinks
-                 * needs both to resolve a reference, and digging them out of
-                 * the span would be Markdown grammar on the wrong side of
-                 * the boundary.
-                 */
+                /* Label + destination so mdlinks need not re-parse the span. */
                 {
                     const char *l = line;
                     int b = 0;
@@ -2215,8 +2246,12 @@ static void emit_ir(FILE *out, const char *source)
                         b++;
                     int label_start = b + 1 + (def == 2 ? 1 : 0);
                     int label_end = label_start;
-                    while (l[label_end] && l[label_end] != ']')
-                        label_end++;
+                    while (l[label_end] && l[label_end] != ']') {
+                        if (l[label_end] == '\\' && l[label_end + 1])
+                            label_end += 2;
+                        else
+                            label_end++;
+                    }
                     ir_open(out, def == 1 ? "reference_def" : "footnote_def",
                             i, last, 0);
                     ir_inline_field(out, "label", l + label_start,
@@ -2225,10 +2260,12 @@ static void emit_ir(FILE *out, const char *source)
                         int d = label_end + 2;   /* past "]:" */
                         while (l[d] == ' ' || l[d] == '\t')
                             d++;
-                        int e = d;
-                        while (l[e] && l[e] != ' ' && l[e] != '\t')
-                            e++;
-                        ir_inline_field(out, "destination", l + d, e - d);
+                        int bare_off = 0, bare_len = 0;
+                        /* Rest of the line is destination [+ optional title]. */
+                        dest_bare(l + d, (int)strlen(l + d),
+                                  &bare_off, &bare_len);
+                        ir_inline_field(out, "destination",
+                                        l + d + bare_off, bare_len);
                     }
                     fputs("}\n", out);
                 }

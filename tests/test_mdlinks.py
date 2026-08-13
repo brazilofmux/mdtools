@@ -1,26 +1,15 @@
-"""
-mdlinks — the Markdown link graph (issue #14).
-
-The first consumer of the inline records, and the reason they exist: links are
-inline, so before them mdlinks could not be written at all without a second
-parser.
-
-Anchors are Pandoc's, via mdquery's slug rules, so a link mdlinks accepts is
-one Pandoc resolves. That is the property worth having — a link checker that
-disagrees with the renderer is worse than none.
-"""
+"""mdlinks checks the Markdown link graph from mdfix IR (issue #14)."""
 
 from __future__ import annotations
 
 import json
-import re
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 from mdlinks import __main__ as cli
 from mdlinks.graph import check, read
+from mdquery.ir import raw_records
 
 ROOT = Path(__file__).resolve().parents[1]
 MDFIX = ROOT / "mdfix" / "mdfix"
@@ -127,8 +116,18 @@ class ReferenceTests(LinksTestCase):
         path = self._write("a.md", "See [id] here.\n\n[id]: http://y\n")
         self.assertEqual(self._check(path), [])
 
+    def test_undefined_shortcut_is_an_error(self) -> None:
+        # Policy: bare [brackets] without a definition are broken refs,
+        # not plain text — so accidental editorial markers stay visible.
+        path = self._write("a.md", "See [sic] in the prose.\n")
+        self.assertEqual(self._rules(path), ["links.undefined-reference"])
+
     def test_labels_are_case_insensitive(self) -> None:
         path = self._write("a.md", "See [x][ID].\n\n[id]: http://y\n")
+        self.assertEqual(self._check(path), [])
+
+    def test_labels_collapse_whitespace(self) -> None:
+        path = self._write("a.md", "See [x][foo  bar].\n\n[foo bar]: http://y\n")
         self.assertEqual(self._check(path), [])
 
     def test_unused_definition_is_a_warning(self) -> None:
@@ -136,6 +135,31 @@ class ReferenceTests(LinksTestCase):
         findings = self._check(path)
         self.assertEqual([f.rule for f in findings], ["links.unused-definition"])
         self.assertEqual(findings[0].severity, "warning")
+
+    def test_collapsed_reference_uses_link_text(self) -> None:
+        path = self._write("a.md", "See [id][] here.\n\n[id]: http://y\n")
+        self.assertEqual(self._check(path), [])
+
+    def test_reference_destination_missing_file(self) -> None:
+        path = self._write("a.md", "See [x][id].\n\n[id]: ./nope.md\n")
+        self.assertEqual(self._rules(path), ["links.missing-file"])
+
+    def test_reference_cross_file_anchor(self) -> None:
+        b = self._write("b.md", "# Other\n")
+        a = self._write("a.md", "See [x][id].\n\n[id]: ./b.md#nope\n")
+        self.assertEqual(self._rules(a, b), ["links.broken-anchor"])
+
+    def test_reference_cross_file_anchor_that_exists(self) -> None:
+        b = self._write("b.md", "# Other\n")
+        a = self._write("a.md", "See [x][id].\n\n[id]: ./b.md#other\n")
+        self.assertEqual(self._check(a, b), [])
+
+    def test_reference_def_carries_label_and_destination(self) -> None:
+        path = self._write("a.md", "[id]: ./b.md#frag \"Title\"\n")
+        defs = [r for r in raw_records([path]) if r["kind"] == "reference_def"]
+        self.assertEqual(len(defs), 1)
+        self.assertEqual(defs[0]["label"], "id")
+        self.assertEqual(defs[0]["destination"], "./b.md#frag")
 
 
 class FootnoteTests(LinksTestCase):
@@ -160,6 +184,21 @@ class FileTests(LinksTestCase):
     def test_existing_relative_file_is_silent(self) -> None:
         self._write("b.md", "# Other\n")
         path = self._write("a.md", "See [x](./b.md).\n")
+        self.assertEqual(self._check(path), [])
+
+    def test_title_on_destination_is_stripped(self) -> None:
+        self._write("b.md", "# Other\n")
+        path = self._write("a.md", 'See [x](./b.md "Title").\n')
+        self.assertEqual(self._check(path), [])
+
+    def test_angle_bracket_destination(self) -> None:
+        self._write("b.md", "# Other\n")
+        path = self._write("a.md", "See [x](<./b.md>).\n")
+        self.assertEqual(self._check(path), [])
+
+    def test_angle_bracket_reference_destination(self) -> None:
+        self._write("b.md", "# Other\n")
+        path = self._write("a.md", "See [x][id].\n\n[id]: <./b.md>\n")
         self.assertEqual(self._check(path), [])
 
     def test_cross_file_anchor(self) -> None:
@@ -217,12 +256,15 @@ class CliTests(LinksTestCase):
             self.assertTrue(row["rule"].startswith("links."))
 
     def test_graph_output(self) -> None:
-        path = self._write("a.md", "# T\n\nSee [x](#t).\n")
+        path = self._write("a.md", "# T\n\nSee [x](#t).\n\nText[^1].\n\n[^1]: N.\n")
         rc, out, _ = self._run("--graph", str(path))
         self.assertEqual(rc, 0)
         rows = [json.loads(line) for line in out.splitlines()]
         self.assertEqual(rows[0]["anchors"], ["t"])
-        self.assertEqual(rows[1]["destination"], "#t")
+        self.assertEqual(rows[0]["footnotes"], ["1"])
+        kinds = [r["kind"] for r in rows]
+        self.assertIn("link", kinds)
+        self.assertIn("footnote_ref", kinds)
 
     def test_repository_documentation_has_no_broken_links(self) -> None:
         docs = [ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md"))]
