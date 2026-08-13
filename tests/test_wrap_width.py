@@ -125,7 +125,7 @@ class VendorTests(unittest.TestCase):
     """The vendored table is generated; keep it recognizably so."""
 
     def test_provenance_is_recorded(self) -> None:
-        head = VENDOR.read_text(encoding="utf-8")[:1200]
+        head = VENDOR.read_text(encoding="utf-8")[:2500]
         self.assertIn("VENDORED, DO NOT EDIT", head)
         self.assertIn("github.com/brazilofmux/utf", head)
         self.assertIn("commit", head)

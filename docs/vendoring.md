@@ -58,9 +58,10 @@ substantial portion, and a vendored file is exactly the case where the notice
 gets lost: upstream keeps one `LICENSE` at the root of a repository these
 files do not travel with.
 
-So each extract carries the notice in its banner, the full text sits in
-`vendor/LICENSE.libutf`, and `tests/test_vendor_manifest.py` fails if a future
-extract arrives without it.
+So each extract carries the copyright and permission notice in its banner.
+The standalone full text is `vendor/LICENSE.libutf`.
+`tests/test_vendor_manifest.py` fails if a future extract arrives without
+the notice, or if the standalone text moves.
 
 ## Refreshing
 
