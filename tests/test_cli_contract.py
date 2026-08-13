@@ -261,6 +261,26 @@ class VerbTests(ContractTestCase):
         self.assertIn("protected", result.stdout)
         self.assertIn("`pandoc`", (self.dir / "a.md").read_text("utf-8"))
 
+    def test_fix_still_reports_overlapping_terms(self) -> None:
+        # Two glossary entries that both forbid the same span: edits_for
+        # drops the cluster, so nothing is applied. --fix must still exit 1.
+        (self.dir / "glossary_terms.yaml").write_text(
+            "terms:\n"
+            "  - term: Foo\n    forbidden: [ABC]\n"
+            "  - term: Bar\n    forbidden: [ABC]\n",
+            encoding="utf-8")
+        self._write("a.md", "# T\n\nSee ABC here.\n")
+        result = self._run("mdterms", "--fix", "a.md")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("ABC", (self.dir / "a.md").read_text("utf-8"))
+        self.assertTrue(result.stdout.strip())
+
+    def test_fix_prints_remaining_link_findings(self) -> None:
+        self._write("a.md", "# T\n\nSee [x](#nope).\n")
+        result = self._run("mdlinks", "--fix", "a.md")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no heading with anchor", result.stdout)
+
     def test_the_verbs_are_mutually_exclusive(self) -> None:
         self._write("a.md", "# T\n\nBody.\n")
         for tool in FIX_TOOLS:
@@ -269,16 +289,25 @@ class VerbTests(ContractTestCase):
                 self.assertEqual(result.returncode, 2)
 
     def test_fix_goes_through_the_applier(self) -> None:
-        # The contract's real guarantee: no Python tool writes a document.
-        # If one did, an edit that breaks L2 would land instead of being
-        # refused, so a broken mdfix must make --fix fail rather than succeed
-        # by falling back to writing the file itself.
+        # The stub implements --emit-ir (so IR succeeds) and fails on
+        # --apply-edits. If --fix wrote the file itself, this would still
+        # change the document and exit 0.
+        stub = self.dir / "mdfix-stub"
+        stub.write_text(
+            "#!/usr/bin/env python3\n"
+            "import subprocess, sys\n"
+            "if '--apply-edits' in sys.argv:\n"
+            "    sys.stderr.write('stub: apply refused\\n')\n"
+            "    sys.exit(2)\n"
+            f"raise SystemExit(subprocess.call([{str(MDFIX)!r}] + sys.argv[1:]))\n",
+            encoding="utf-8")
+        stub.chmod(0o755)
         self._write("a.md", "# Overview\n\nSee [x](#overvew).\n")
         before = (self.dir / "a.md").read_bytes()
-        result = self._run("mdlinks", "--fix", "--mdfix", "/nonexistent/mdfix",
-                           "a.md")
-        self.assertEqual(result.returncode, 2)
+        result = self._run("mdlinks", "--fix", "--mdfix", str(stub), "a.md")
+        self.assertEqual(result.returncode, 2, msg=result.stderr)
         self.assertEqual((self.dir / "a.md").read_bytes(), before)
+        self.assertIn("apply refused", result.stderr)
 
 
 class DispatcherTests(ContractTestCase):
@@ -316,6 +345,21 @@ class DispatcherTests(ContractTestCase):
     def test_a_named_config_that_is_missing_exits_two(self) -> None:
         result = self._mdtools("config", "--config", "absent.toml")
         self.assertEqual(result.returncode, 2)
+
+    def test_config_without_a_path_exits_two(self) -> None:
+        result = self._mdtools("config", "--config")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--config", result.stderr)
+
+    @needs_toml
+    def test_a_broken_discovered_toml_does_not_block_named_config(self) -> None:
+        # Discovery must not run when --config is given: a bad mdtools.toml
+        # must not prevent inspecting a named good one.
+        self._write("mdtools.toml", "this is not valid toml = = =\n")
+        self._write("ci.toml", '[mdtools]\nprofile = "technical"\n')
+        result = self._mdtools("config", "--config", "ci.toml")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn('"profile": "technical"', result.stdout)
 
     def test_the_verbs_reach_the_tools(self) -> None:
         self._write("a.md", "# Overview\n\nWe use pandoc: [x](#overvew).\n")

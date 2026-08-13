@@ -123,11 +123,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 return USAGE
         if args.diff:
             return FINDINGS if findings else OK
-        # After --fix, only what could not be fixed is still a finding.
-        unfixed = [f for f in findings if not f.fixable]
-        for finding in unfixed:
+        # Re-scan: overlapping fixable clusters are dropped from the edit
+        # list without being applied, and still-wrong prose is still a finding.
+        remaining = []
+        try:
+            for path in args.files:
+                remaining.extend(scan(path, terms, mdfix))
+        except IRError as exc:
+            return fail("mdterms", str(exc))
+        for finding in remaining:
             print(f"{finding.path}:{finding.line}: {finding.message}")
-        return FINDINGS if unfixed else OK
+        return FINDINGS if remaining else OK
 
     if args.diagnostics:
         for finding in findings:

@@ -54,6 +54,35 @@ def _exit_code(findings, warnings: bool) -> int:
     return FINDINGS if (warnings and findings) else OK
 
 
+def _print_report(findings, suggestions, files) -> None:
+    notes = {id(s.finding): s for s in suggestions}
+    for finding in findings:
+        print(f"{finding.path}:{finding.line}: "
+              f"{finding.severity}: {finding.message}")
+        note = notes.get(id(finding))
+        if note is None or not note.candidates:
+            continue
+        where = f"{finding.path}:{finding.line}: note: "
+        if note.confident:
+            print(f"{where}did you mean {note.replacement!r}? "
+                  f"({note.reason})")
+        elif note.unwritable and len(note.candidates) == 1:
+            print(f"{where}found {note.candidates[0]!r} but cannot "
+                  f"write it bare (needs <> or escapes)")
+        else:
+            shown = ", ".join(repr(c) for c in note.candidates)
+            n = len(note.candidates)
+            noun = "candidate" if n == 1 else "candidates"
+            print(f"{where}{n} {noun}, not repaired: {shown}")
+    if any(s.confident for s in suggestions):
+        sys.stdout.flush()
+        scope = " ".join(str(p) for p in files)
+        print(f"\nSee what would change:\n"
+              f"  mdlinks --diff {scope}\n"
+              f"Then repair the confident ones:\n"
+              f"  mdlinks --fix {scope}", file=sys.stderr)
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parser().parse_args(argv)
 
@@ -136,42 +165,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return _exit_code(findings, args.warnings)
         # Re-check: a repair can uncover the next one — a path that now
         # resolves has anchors that can finally be judged — so the exit code
-        # must describe the file as it now stands, not as it was.
-        docs = [read(p, mdfix) for p in files]
-        return _exit_code(check(docs), args.warnings)
+        # and the report must describe the file as it now stands.
+        try:
+            docs = [read(p, mdfix) for p in files]
+        except IRError as exc:
+            return fail("mdlinks", str(exc))
+        leftover = check(docs)
+        leftover_suggestions = suggest(docs, leftover)
+        if args.diagnostics:
+            for finding in leftover:
+                print(json.dumps(finding.to_diagnostic(), ensure_ascii=False))
+        else:
+            _print_report(leftover, leftover_suggestions, files)
+        return _exit_code(leftover, args.warnings)
 
     if args.diagnostics:
         for finding in findings:
             print(json.dumps(finding.to_diagnostic(), ensure_ascii=False))
     else:
-        notes = {id(s.finding): s for s in suggestions}
-        for finding in findings:
-            print(f"{finding.path}:{finding.line}: "
-                  f"{finding.severity}: {finding.message}")
-            note = notes.get(id(finding))
-            if note is None or not note.candidates:
-                continue
-            where = f"{finding.path}:{finding.line}: note: "
-            if note.confident:
-                print(f"{where}did you mean {note.replacement!r}? "
-                      f"({note.reason})")
-            elif note.unwritable and len(note.candidates) == 1:
-                print(f"{where}found {note.candidates[0]!r} but cannot "
-                      f"write it bare (needs <> or escapes)")
-            else:
-                # Ambiguity is reported, never resolved — issue #14.
-                shown = ", ".join(repr(c) for c in note.candidates)
-                n = len(note.candidates)
-                noun = "candidate" if n == 1 else "candidates"
-                print(f"{where}{n} {noun}, not repaired: {shown}")
-        if any(s.confident for s in suggestions):
-            # Flush stdout so this stderr hint cannot overtake findings.
-            sys.stdout.flush()
-            scope = " ".join(str(p) for p in files)
-            print(f"\nSee what would change:\n"
-                  f"  mdlinks --diff {scope}\n"
-                  f"Then repair the confident ones:\n"
-                  f"  mdlinks --fix {scope}", file=sys.stderr)
+        _print_report(findings, suggestions, files)
 
     return _exit_code(findings, args.warnings)
 

@@ -37,17 +37,19 @@ TABLE_FORMS = ("pipe", "simple", "grid", "multiline")
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    common = argparse.ArgumentParser(add_help=False)
+    add_common(common)
     parser = argparse.ArgumentParser(
         prog="mdquery",
         description="Structural queries and extraction for Markdown.",
         epilog="Spans are byte offsets into the file on disk. "
                "See docs/mdquery.md and docs/ir-schema.md.",
     )
+    add_common(parser)
     parser.add_argument(
         "--json", action="store_true",
         help="emit JSONL (one object per result) instead of human output",
     )
-    add_common(parser)
     parser.add_argument(
         "-q", "--quiet", action="store_true",
         help="suppress the under-reporting warning for nested containers",
@@ -55,14 +57,16 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_outline = sub.add_parser("outline", help="heading tree with spans")
+    p_outline = sub.add_parser("outline", parents=[common],
+                               help="heading tree with spans")
     p_outline.add_argument("files", nargs="+", type=Path)
     p_outline.add_argument(
         "--max-level", type=int, default=6, metavar="N",
         help="omit headings deeper than N (default: 6)",
     )
 
-    p_blocks = sub.add_parser("blocks", help="every block, filterable")
+    p_blocks = sub.add_parser("blocks", parents=[common],
+                              help="every block, filterable")
     p_blocks.add_argument("files", nargs="+", type=Path)
     p_blocks.add_argument(
         "--kind", action="append", choices=KINDS, metavar="KIND",
@@ -87,12 +91,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     p_section = sub.add_parser(
-        "section", help="print the source text of one section")
+        "section", parents=[common],
+        help="print the source text of one section")
     p_section.add_argument("file", type=Path)
     p_section.add_argument("--id", required=True, metavar="SLUG",
                            help="heading identifier, as `outline` reports it")
 
-    p_stats = sub.add_parser("stats", help="block counts by kind")
+    p_stats = sub.add_parser("stats", parents=[common],
+                             help="block counts by kind")
     p_stats.add_argument("files", nargs="+", type=Path)
 
     return parser
@@ -231,7 +237,22 @@ COMMANDS = {
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    args = _build_parser().parse_args(argv)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # Flags before the subcommand: `mdquery --config PATH stats file.md`.
+    pre = argparse.ArgumentParser(add_help=False)
+    add_common(pre)
+    pre.add_argument("--json", action="store_true")
+    pre.add_argument("-q", "--quiet", action="store_true")
+    pre_args, rest = pre.parse_known_args(argv)
+    args = _build_parser().parse_args(rest)
+    if pre_args.config is not None:
+        args.config = pre_args.config
+    if pre_args.mdfix is not None:
+        args.mdfix = pre_args.mdfix
+    if pre_args.json:
+        args.json = True
+    if pre_args.quiet:
+        args.quiet = True
     paths = [args.file] if args.command == "section" else args.files
 
     missing = [p for p in paths if not p.is_file()]

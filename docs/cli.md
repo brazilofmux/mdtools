@@ -71,9 +71,10 @@ that one was never fixable; the file was still repaired everywhere else.
 
 ## Configuration
 
-Every tool takes `--config PATH`. Without it, `mdtools.toml` is discovered by
-walking up from the first input file, stopping at the first `mdtools.toml` or
-`.git`.
+Every Python tool takes `--config PATH`. Without it, `mdtools.toml` is
+discovered by walking up from the first input file, stopping at the first
+`mdtools.toml` or `.git`. `mdtools fix --config PATH` loads that file and
+applies its profile/wrap flags; mdfix itself has no `--config` flag.
 
 Precedence is the obvious one, and it runs the same way everywhere:
 

@@ -1,31 +1,13 @@
 """
-The shared CLI contract (issue #12).
-
-Every tool here answers the same three questions — *is anything wrong*, *what
-would you change*, *change it* — and before this they each answered in their
-own words. The verbs, the exit codes and the config flag live here so there is
-one implementation to be consistent with, the same reason Markdown grammar
-lives in one place.
+Shared CLI verbs and exit codes.
 
     --check   report; change nothing.  The default.
     --diff    show what would change; change nothing.
-    --fix     make the changes.
+    --fix     apply repairs via `mdfix --apply-edits` (never write directly).
 
-Exit codes are the part CI depends on, so they are narrow and the same
-everywhere:
-
-    0   clean
-    1   findings (or, with --fix, findings that could not be repaired)
-    2   the tool could not run: bad usage, missing file, unreadable config
-
-The distinction that matters is 1 versus 2. A gate that treats them alike
-turns "your glossary file has a syntax error" into "your prose is fine", and
-the build goes green on a check that never ran.
-
-`--fix` never writes a file itself. It builds an edit list and hands it to
-`mdfix --apply-edits`, which validates spans, encoding, staleness and L2
-conformance before splicing. The tool that decides what to change is never
-the tool that writes it — see docs/edit-schema.md.
+    0  clean
+    1  findings (after --fix: what is still wrong)
+    2  the tool could not run (usage, missing file, bad config, missing mdfix)
 """
 
 from __future__ import annotations
@@ -135,43 +117,20 @@ def apply_edits(path: Path, edits: Sequence[dict], *,
     """
     if not edits:
         return OK
-    binary = mdfix or find_mdfix()
-    argv = [binary, "--apply-edits"]
-    if diff:
-        argv.append("--diff")
-    else:
-        argv.append("-i")
-    if quiet:
-        argv.insert(1, "-q")
-    result = subprocess.run(argv + [str(path)],
-                            input=_edit_stream(path, edits), text=True)
-    return result.returncode
-
-
-def run_fix(targets: Sequence[Path], edits_for_path, *,
-            mdfix: Optional[str] = None,
-            diff: bool = False,
-            quiet: bool = False) -> int:
-    """
-    `--fix` / `--diff` over several files: one applier run per document.
-
-    Per document because the edit schema's `bytes` header describes one file.
-    Batching would mean inventing a multi-document envelope whose only user is
-    this loop.
-
-    Stops at the first failure rather than continuing. A refusal means the
-    edits disagreed with the file on disk, and the same reasoning probably
-    applies to the next one — pressing on would turn one clear error into a
-    scroll of them.
-    """
-    for path in targets:
-        edits = edits_for_path(path)
-        if not edits:
-            continue
-        rc = apply_edits(path, edits, mdfix=mdfix, diff=diff, quiet=quiet)
-        if rc != OK:
-            return rc if rc == USAGE else USAGE
-    return OK
+    try:
+        binary = mdfix or find_mdfix()
+        argv = [binary, "--apply-edits"]
+        if diff:
+            argv.append("--diff")
+        else:
+            argv.append("-i")
+        if quiet:
+            argv.insert(1, "-q")
+        result = subprocess.run(argv + [str(path)],
+                                input=_edit_stream(path, edits), text=True)
+        return result.returncode
+    except (OSError, IRError) as exc:
+        return fail("mdfix", str(exc))
 
 
 def fail(program: str, message: str) -> int:
@@ -198,5 +157,5 @@ def guard(program: str, fn, *args, **kwargs) -> int:
 __all__ = [
     "OK", "FINDINGS", "USAGE", "EDITS_SCHEMA",
     "add_common", "add_verbs", "apply_edits", "fail", "guard",
-    "resolve_config", "resolve_mdfix", "run_fix", "write_edits",
+    "resolve_config", "resolve_mdfix", "write_edits",
 ]
