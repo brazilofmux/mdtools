@@ -250,30 +250,18 @@ also carry `label` and `destination`). Collapsed `[text][]` emits
 
 ### Citations
 
-`+citations` is pinned by dialect-policy §3, so what counts as one is Pandoc's
-question. Every rule was measured against pandoc 3.10, and
-`tests/test_citations.py` re-measures on every run rather than trusting a
-transcription.
+`+citations` is pinned by dialect-policy §3. One record per key, with
+`keyStart`/`keyEnd` (the key without `@`) and `mode` (`normal`, `in-text`,
+`suppress-author`).
 
 ```console
 $ mdfix --emit-ir paper.md | grep citation
 {"kind":"citation","start":4,"end":14,...,"key":"smith2020","keyStart":5,"keyEnd":14,"mode":"in-text"}
 ```
 
-**One record per key, not per bracket.** `[@a; @b]` is two things a consumer
-resolves, and mdcheck wants to name the one that is missing. `mode` is
-`normal`, `in-text` or `suppress-author`, matching Pandoc's three.
-
-`keyStart` / `keyEnd` span the key without the `@`, on the same principle as
-destination spans: a consumer that wants to *rewrite* a key needs its bytes.
-
-Two corners worth knowing, because no summary would warn you:
-
-| Written | Read as |
-|---|---|
-| `@a..b`, `@a-`, `@a's` | key `a` — a key never ends on punctuation |
-| `a@b`, `email@x.com` | nothing — a word character before the `@` makes it an address |
-| `@lab. text` at a block start | **an example list**, not a citation |
+A key never ends on punctuation (`@a.` is `a`). A word character before `@`
+is an address. `@lab.` or `(@lab)` at the start of a block is an example
+list, not a citation.
 
 That last one is `+example_lists`, also pinned. Pandoc reads `@label.` at the
 start of a block as an `OrderedList` marker and emits no citation at all, so

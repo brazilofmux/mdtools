@@ -1,30 +1,8 @@
 """
-Citations in the IR (issue #88), pinned against Pandoc.
+Citations in the IR, pinned against Pandoc.
 
-`+citations` is in the profile dialect-policy §3 fixes, so what counts as a
-citation is Pandoc's question and not ours. Every rule here was **measured**
-against pandoc 3.10 rather than read off the manual, and the sweep at the
-bottom re-measures on every run: a document goes through both, and the keys
-have to match.
-
-That matters more than usual here, because the syntax has corners that no
-summary would have warned about:
-
-    @a..b   -> key `a`        punctuation does not end a key
-    @a's    -> key `a`        an apostrophe does
-    @a-     -> key `a`        nor does a trailing hyphen
-    a@b     -> nothing        a word character before the @ makes it an email
-    @lab. x -> nothing        that is an example list, not a citation
-
-The last one cost the most to find. `@lab.` at the start of a block is
-Pandoc's `+example_lists` marker and produces an `OrderedList` with no
-citation in it at all — so a scanner that did not know about example lists
-would hand mdcheck an unresolved citation for a list marker.
-
-**Under-reporting is the safe direction.** A citation mdfix misses is one
-mdcheck cannot check; a citation mdfix invents is a false unresolved-reference
-report, and one of those is how a gate loses its reader. The divergences pinned
-below are all misses.
+A citation mdfix invents is a false unresolved-reference in mdcheck; a miss
+only drops a check. The sweep re-asks Pandoc every run. Pins are all misses.
 """
 
 from __future__ import annotations
@@ -119,7 +97,8 @@ class KeyShapeTests(CitationTestCase):
 
     def test_an_email_address_is_not_a_citation(self) -> None:
         # A word character before the `@` is what separates the two.
-        for text in ("email@example.com\n", "a@b\n", "see x@y today\n"):
+        for text in ("email@example.com\n", "a@b\n", "see x@y today\n",
+                     "café@x\n", "текст@key\n", "用户@host\n"):
             with self.subTest(text=text.strip()):
                 self.assertEqual(self._keys(text), [])
 
@@ -140,9 +119,13 @@ class ExampleListTests(CitationTestCase):
 
     def test_a_marker_is_not_a_citation(self) -> None:
         for text in ("@good. First example\n", "@. Unlabelled\n",
-                     "  @indented. Still a marker\n"):
+                     "  @indented. Still a marker\n",
+                     "(@good) text\n", "(@)\n", "> @lab. text\n"):
             with self.subTest(text=text.strip()):
                 self.assertEqual(self._keys(text), [])
+
+    def test_parenthesized_mid_prose_is_a_citation(self) -> None:
+        self.assertEqual(self._keys("As (@good) illustrates.\n"), ["good"])
 
     def test_the_same_key_mid_line_is_a_citation(self) -> None:
         # The distinction is position, not spelling.
@@ -203,10 +186,26 @@ class ProtectedTests(CitationTestCase):
         self.assertEqual(self._keys("[text](@notacite)\n"), [])
 
     def test_a_footnote_body_is_scanned(self) -> None:
-        # It is prose, so its citations count. Left unscanned, mdcheck would
-        # call a bibliography entry unused because the only thing citing it
-        # was a footnote.
         self.assertEqual(self._keys("[^1]: note @a\n\nText[^1]\n"), ["a"])
+
+    def test_a_continuation_citation_parents_at_the_definition(self) -> None:
+        text = "[^1]: first\n    second @a\n\nText[^1]\n"
+        path = self.dir / "f.md"
+        path.write_text(text, encoding="utf-8")
+        result = subprocess.run([str(MDFIX), "--emit-ir", str(path)],
+                                capture_output=True, text=True, check=True)
+        recs = [json.loads(line) for line in result.stdout.splitlines()]
+        defs = [r for r in recs if r["kind"] == "footnote_def"]
+        cites = [r for r in recs if r["kind"] == "citation"]
+        self.assertEqual(len(defs), 1)
+        self.assertEqual(len(cites), 1)
+        self.assertEqual(cites[0]["parent"], defs[0]["start"])
+        self.assertEqual(cites[0]["key"], "a")
+
+    def test_a_fenced_at_in_a_footnote_is_not_a_citation(self) -> None:
+        self.assertEqual(
+            self._keys("[^1]: note\n    ```\n    @a\n    ```\n\nText[^1]\n"),
+            [])
 
     def test_a_definition_label_is_not_a_footnote_reference(self) -> None:
         # Scanning the body must not scan the label: `[^1]` on the definition
@@ -236,6 +235,9 @@ class PandocAgreementTests(CitationTestCase):
         "<div>@a</div>\n", "@a[@b]\n", "[@a]{.x}\n",
         "@good. example\n", "email@x.com\n", "Text @a.\n", "@a's work\n",
         "[see @a, p. 3; also @b]\n", "Ελληνικά @a\n",
+        "(@good) text\n", "As (@good) illustrates.\n", "> @lab. text\n",
+        "café@x\n", "[^1]: note\n    ```\n    @a\n    ```\n\nText[^1]\n",
+        "[^1]: first\n    second @a\n\nText[^1]\n",
     )
 
     def test_mdfix_agrees_with_pandoc(self) -> None:
