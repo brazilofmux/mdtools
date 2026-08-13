@@ -3793,22 +3793,9 @@ static long long nfc_first_bad(const char *s, int len, int *plen)
  * Runs after the IR early-return so emitted spans still address the file on
  * disk.
  *
- * The destination is sized with `mdfix_nfc_normalize_bound`, which is UAX
- * #15's 3x expansion bound and makes truncation impossible — NFC can grow
- * text, so the input length is not a safe capacity (U+0958 is 3 bytes in and
- * 6 out). The status is checked anyway. It cannot fire with a bound-sized
- * destination, and checking a return value that "cannot" be non-zero is how
- * the next contract change gets noticed instead of silently losing text.
- *
- * This function used to carry a workaround. libutf ended a dirty segment only
- * at a starter with NFC_QC=Yes, so a run of composition exclusions became one
- * enormous segment and was truncated at the cap without a word — 2700 copies
- * of U+0958 normalized to 64. mdfix could not patch a verbatim vendored copy,
- * so it measured segments itself and refused any document that might trip it.
- * Both defects are fixed upstream (brazilofmux/utf#1, #2), the refreshed copy
- * carries the fixes, and the workaround is gone: those documents normalize
- * correctly now, and `tests/test_nfc.py` asserts it rather than asserting the
- * refusal.
+ * NFC can expand, so the destination is sized with
+ * `mdfix_nfc_normalize_bound` (UAX #15's 3x). Any non-OK status means
+ * refuse rather than emit a prefix.
  */
 #define NFC_DST_MAX (MAX_LINE * 3 + 8)
 

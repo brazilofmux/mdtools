@@ -7,7 +7,7 @@
 /*
  * Canonical Combining Class and NFC_QC for the code point at [p, pEnd).
  *
- * *pCCC is 0..254; *pQC is 0 for Yes, 1 for Maybe, 2 for No. Returns the
+ * *pCCC is 0..254; *pQC is 0 for Yes, 1 for No, 2 for Maybe. Returns the
  * combined value libutf packs them into, which mdfix does not use.
  *
  * mdfix walks code points itself so it can report *where* a document leaves

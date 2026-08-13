@@ -30,20 +30,8 @@
  *      policy belongs — libutf keeps the Unicode data, mdtools keeps the
  *      reporting.
  *
- * Both defects the first vendoring found are fixed upstream and gone from
- * this copy:
- *
- *   brazilofmux/utf#1 — a dirty segment ended only at a starter with
- *      NFC_QC=Yes, so a composition exclusion (U+0958) never ended one and a
- *      run of them was truncated at the segment cap. Segments now end at any
- *      canonical boundary, and 2700 copies normalize to all 16200 bytes.
- *
- *   brazilofmux/utf#2 — truncation was unreportable. The normalizer returns a
- *      status now, and `mdfix_nfc_normalize_bound` gives a destination size
- *      that makes truncation impossible.
- *
- * mdfix uses the bound and checks the status anyway; see `normalize_lines_nfc`
- * in mdfix.rl.
+ * Callers must size the destination with `mdfix_nfc_normalize_bound` and
+ * check the status. See `normalize_lines_nfc` in mdfix.rl.
  */
 
 #include "utf_nfc.h"

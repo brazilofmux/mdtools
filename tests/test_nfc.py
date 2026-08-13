@@ -379,10 +379,9 @@ class LongSequenceTests(NFCTestCase):
     Which is exactly what the pin was for: the refresh could not land quietly.
     """
 
-    # 1300 x U+0958: 3900 bytes in, 7800 out. Under MAX_LINE, so the only
-    # thing that could stop it is the bug. 2700 — the count in the upstream
-    # report — now exceeds mdfix's own 8191-byte line limit and is refused for
-    # that unrelated reason, which is pinned separately below.
+    # 1300 x U+0958: 3900 bytes in, 7800 out after NFC — both under MAX_LINE.
+    # 2700 copies expand to 16200 bytes and are refused after NFC as an
+    # over-long line, pinned separately below.
     PATHOLOGICAL = "\u0958" * 1300
 
     def test_the_input_is_still_the_hard_case(self) -> None:
@@ -396,7 +395,7 @@ class LongSequenceTests(NFCTestCase):
                            len(self.PATHOLOGICAL.encode("utf-8")))
 
     def test_a_long_run_normalizes_completely(self) -> None:
-        # The bug, inverted: 8100 bytes in, 16200 out, none of it dropped.
+        # 3900 bytes in, 7800 out, none of it dropped.
         text = self.PATHOLOGICAL + "\n"
         out = self._fix(text, "--normalize-nfc")
         self.assertEqual(out, unicodedata.normalize("NFC", text))
