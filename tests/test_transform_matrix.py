@@ -104,13 +104,15 @@ CORPUS = {
 }
 
 # (document, transform) -> which invariant it breaks.
-# dialect-policy §7 gaps 5 and 6, pinned as full dicts so a kind change fails.
-KNOWN_VIOLATIONS = {
-    ("ellipsis", "--chicago-punct"): "I2.2",
-    ("ellipsis", "--chicago-punct-2"): "I2.2",
-    ("ellipsis", "--canonical"): "I2.2",
-    ("ellipsis", "--technical"): "I2.2",
-}
+#
+# Empty, and that is the point: I3.1 is now true rather than measured and
+# excused. It was four hard-break cells and four ellipsis cells; both gaps are
+# closed and dialect-policy §7 records what they were.
+#
+# Keep this dict. An empty pin set is not a dead assertion — it is the
+# strongest form of the one below, and a regression writes an entry into the
+# failure message rather than into a list someone has to notice growing.
+KNOWN_VIOLATIONS: dict = {}
 
 
 class MatrixTestCase(unittest.TestCase):
@@ -239,11 +241,14 @@ class NonInterferenceTests(MatrixTestCase):
         # make the assertion above pass while checking nothing.
         self.assertGreaterEqual(len(CORPUS) * len(TRANSFORMS), 120)
 
-    def test_most_combinations_are_clean(self) -> None:
-        # The pins are meant to be a short list, not a way of life. It got
-        # shorter when §7 gap 5 closed; it should not grow back.
-        total = len(CORPUS) * len(TRANSFORMS)
-        self.assertLess(len(KNOWN_VIOLATIONS), total * 0.05)
+    def test_nothing_is_pinned(self) -> None:
+        # The pins were always meant to be temporary. Both gaps they recorded
+        # are closed, so every optional transform now satisfies I2.1 and I2.2
+        # on every document in the corpus — which is what I3.1 claims.
+        #
+        # Adding a pin should be a deliberate act with a §7 entry beside it,
+        # not a quiet way to make this file green again.
+        self.assertEqual(KNOWN_VIOLATIONS, {})
 
 
 @unittest.skipUnless(PANDOC, "pandoc not installed")
@@ -320,27 +325,53 @@ class HardBreakTests(MatrixTestCase):
 
 @unittest.skipUnless(PANDOC, "pandoc not installed")
 class ChicagoEllipsisTests(MatrixTestCase):
-    """§7 remaining gap: Chicago emits ASCII `...` (I2.2)."""
+    """
+    §7's ellipsis gap, closed. The mark mdtools *emits* must be smart-invariant.
 
-    def test_chicago_emits_ascii_ellipsis(self) -> None:
-        # The mark mdtools emits must not be smart-dependent; U+2026 is
-        # the target.
-        out = self._fix("He paused . . . then spoke.\n", "--canonical")
-        self.assertIn("...", out)
-        self.assertNotIn("…", out)
+    ASCII `...` is not: `smart` folds it to U+2026 and a bare reader leaves
+    three periods, so emitting it makes the output depend on a flag the reader
+    controls and the author does not.
+    """
 
-    def test_chicago_punct_2_emits_ascii_ellipsis_from_spaced_run(self) -> None:
-        # --chicago-punct-2 can produce smart-dependent "..." by stripping
-        # spaces before "." without going through the ellipsis normalizer.
-        out = self._fix("He paused . . . then spoke.\n", "--chicago-punct-2")
-        self.assertIn("...", out)
-        self.assertNotIn("…", out)
+    ELLIPSIS_FLAGS = ("--chicago-punct", "--chicago-punct-2",
+                      "--canonical", "--technical")
+
+    def test_a_spaced_run_becomes_u2026(self) -> None:
+        # Including --chicago-punct-2, which used to reach `...` by stripping
+        # the spaces between the dots rather than by deciding anything.
+        for transform in self.ELLIPSIS_FLAGS:
+            with self.subTest(transform=transform):
+                out = self._fix("He paused . . . then spoke.\n", transform)
+                self.assertIn("\u2026", out)
+                self.assertNotIn("...", out)
+
+    def test_a_long_dot_run_becomes_u2026(self) -> None:
+        for transform in self.ELLIPSIS_FLAGS:
+            with self.subTest(transform=transform):
+                out = self._fix("He paused.... then spoke.\n", transform)
+                self.assertIn("\u2026", out)
+                self.assertNotIn("...", out)
 
     def test_an_already_ascii_ellipsis_is_left_alone(self) -> None:
-        # The distinction I2.2 turns on: passing the author's shorthand
-        # through is not the same as emitting it.
+        # The distinction I2.2 turns on, and why closing this gap did not mean
+        # "convert every `...`": passing the author's shorthand through is not
+        # the same as emitting it. §4 constrains our output, not their input.
         source = "He paused... then spoke.\n"
-        self.assertEqual(self._fix(source, "--canonical"), source)
+        for transform in self.ELLIPSIS_FLAGS:
+            with self.subTest(transform=transform):
+                self.assertEqual(self._fix(source, transform), source)
+
+    def test_what_we_emit_renders_the_same_under_smart(self) -> None:
+        # I2.2 stated directly, against Pandoc, on the bytes mdfix produced.
+        out = self._fix("He paused . . . then spoke.\n", "--canonical")
+        self.assertEqual(self._html(out, "markdown"),
+                         self._html(out, "markdown-smart"))
+
+    def _html(self, text: str, fmt: str) -> str:
+        return subprocess.run(
+            [PANDOC, "-f", fmt, "-t", "html"],
+            input=text, capture_output=True, text=True, check=True,
+        ).stdout
 
 
 if __name__ == "__main__":

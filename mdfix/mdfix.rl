@@ -3949,6 +3949,20 @@ struct scan_ctx {
     int    linenum;
 };
 
+/*
+ * U+2026 HORIZONTAL ELLIPSIS, the mark this profile emits.
+ *
+ * dialect-policy §4: typography mdtools *writes* must render the same with
+ * and without Pandoc's `smart`. ASCII `...` does not — `smart` folds it to
+ * U+2026 and a bare reader leaves three periods — so emitting it makes the
+ * output depend on a flag the reader controls and the author does not.
+ *
+ * This is only about what mdfix emits. An ellipsis the author already wrote
+ * as `...` is passed through untouched; §4 constrains our output, not their
+ * input.
+ */
+#define ELLIPSIS "\xE2\x80\xA6"
+
 #define EMIT_CHAR(c) do { \
     if (ctx->oi < MAX_LINE - 1) ctx->out[ctx->oi++] = (c); \
 } while (0)
@@ -4182,7 +4196,16 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 
             # ── Dot: check for spaced-ellipsis or dot-run ──
             '.' => {
-                if (!ctx->do_chicago_punct) {
+                /*
+                 * Either Chicago flag, not just the first. With only
+                 * --chicago-punct-2 the dot rule used to pass each dot
+                 * through while the space rule stripped the gaps between
+                 * them, assembling a smart-dependent `...` that no single
+                 * rule had decided to emit. Whether a run of dots becomes an
+                 * ellipsis is this rule's question, so it is answered here
+                 * for both flags.
+                 */
+                if (!ctx->do_chicago_punct && !ctx->do_chicago_punct2) {
                     EMIT_CHAR('.');
                 } else {
                     /* Look ahead for spaced-dot pattern: ". . ." */
@@ -4204,9 +4227,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
                     }
 
                     if (dots >= 3) {
-                        EMIT_CHAR('.');
-                        EMIT_CHAR('.');
-                        EMIT_CHAR('.');
+                        EMIT_STR(ELLIPSIS, 3);
                         BUMP(FIX_CHI_ELLIPSIS);
                         fexec scan;
                     } else {
@@ -4218,9 +4239,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
                             look++;
                         }
                         if (run >= 4) {
-                            EMIT_CHAR('.');
-                            EMIT_CHAR('.');
-                            EMIT_CHAR('.');
+                            EMIT_STR(ELLIPSIS, 3);
                             BUMP(FIX_CHI_ELLIPSIS);
                             fexec look;
                         } else {
