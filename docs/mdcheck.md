@@ -107,7 +107,12 @@ one_of = ["draft", "review", "final"]
 A field may declare `type`, `required` and `one_of`. Types are `string`,
 `number`, `bool`, `list`, `date` and `any`, which is the default — a field
 that declares only `one_of` accepts any kind of value from that set. `bool` is
-not a `number`, though YAML and Python both blur that.
+not a `number`, though YAML and Python both blur that. A quoted ISO date
+(`"2026-08-13"`) is still a `date`. `one_of` dates may be TOML date
+literals or ISO strings; both compare as ISO.
+
+A configured schema needs PyYAML. If it is missing, mdcheck exits 2 rather
+than emitting a suppressible finding.
 
 ```console
 $ mdcheck chapter.md

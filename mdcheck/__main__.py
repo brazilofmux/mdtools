@@ -68,6 +68,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return fail("mdcheck", str(exc))
     suppress: List[str] = list(args.suppress) + list(config.suppress)
 
+    if config.frontmatter:
+        from . import frontmatter as fm
+        if fm.yaml is None:
+            return fail("mdcheck",
+                        "PyYAML is required to validate front matter "
+                        "(pip install pyyaml)")
+
     try:
         findings = run(args.paths, resolve_mdfix(args.mdfix, config),
                        suppress, config.frontmatter)

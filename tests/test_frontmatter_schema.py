@@ -124,6 +124,11 @@ class ValidDocumentTests(SchemaTestCase):
         self._write("ok.md", '---\ntitle: "Quoted"\n---\n\nBody.\n')
         self.assertEqual(self._rules("ok.md"), [])
 
+    def test_a_quoted_iso_date_is_a_date(self) -> None:
+        self._write("ok.md",
+                    '---\ntitle: Fine\ndate: "2026-08-13"\n---\n\nBody.\n')
+        self.assertEqual(self._rules("ok.md"), [])
+
 
 class RequiredFieldTests(SchemaTestCase):
     def test_a_missing_required_field_is_an_error(self) -> None:
@@ -222,6 +227,24 @@ class UnknownFieldTests(SchemaTestCase):
         rows = self._rows("t.md")
         self.assertEqual(rows[0]["severity"], "error")
 
+    def test_mixed_constructed_keys_do_not_crash(self) -> None:
+        # yaml.safe_load keeps 2024 as int and (YAML 1.1) on as bool.
+        # Sorting those with a string extra used to TypeError.
+        self._write("t.md",
+                    "---\ntitle: Fine\n2024: recap\nauthor: me\n---\n\nB.\n")
+        rows = [r for r in self._rows("t.md")
+                if r["rule"] == "check.frontmatter-unknown"]
+        messages = " ".join(r["message"] for r in rows)
+        self.assertIn("2024", messages)
+        self.assertIn("author", messages)
+
+    def test_a_yaml_bool_key_is_looked_up_as_written(self) -> None:
+        (self.dir / "mdtools.toml").write_text(
+            '[mdtools.frontmatter.fields.on]\ntype = "bool"\nrequired = true\n',
+            encoding="utf-8")
+        self._write("ok.md", "---\non: true\n---\n\nB.\n")
+        self.assertEqual(self._rules("ok.md"), [])
+
     def test_allow_is_the_default_and_says_nothing(self) -> None:
         (self.dir / "mdtools.toml").write_text(
             '[mdtools.frontmatter.fields.title]\ntype = "string"\n',
@@ -312,6 +335,32 @@ class SuppressionAndOutputTests(SchemaTestCase):
                                 env=self._env(), cwd=str(self.dir))
         resolved = json.loads(result.stdout)
         self.assertIn("title", resolved["frontmatter"]["fields"])
+
+    def test_toml_date_literals_in_one_of_are_json_safe(self) -> None:
+        (self.dir / "mdtools.toml").write_text(
+            '[mdtools.frontmatter.fields.when]\n'
+            'type = "date"\none_of = [2026-08-13]\n',
+            encoding="utf-8")
+        result = subprocess.run([str(SCRIPTS / "mdtools"), "config"],
+                                capture_output=True, text=True,
+                                env=self._env(), cwd=str(self.dir))
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        resolved = json.loads(result.stdout)
+        self.assertEqual(
+            resolved["frontmatter"]["fields"]["when"]["one_of"],
+            ["2026-08-13"])
+        self._write("ok.md", "---\nwhen: 2026-08-13\n---\n\nB.\n")
+        self.assertEqual(self._rules("ok.md"), [])
+
+    def test_one_of_dates_match_quoted_and_unquoted(self) -> None:
+        (self.dir / "mdtools.toml").write_text(
+            '[mdtools.frontmatter.fields.when]\n'
+            'type = "date"\none_of = ["2026-08-13"]\n',
+            encoding="utf-8")
+        self._write("a.md", "---\nwhen: 2026-08-13\n---\n\nB.\n")
+        self.assertEqual(self._rules("a.md"), [])
+        self._write("b.md", '---\nwhen: "2026-08-13"\n---\n\nB.\n')
+        self.assertEqual(self._rules("b.md"), [])
 
 
 class SchemaValidationTests(SchemaTestCase):

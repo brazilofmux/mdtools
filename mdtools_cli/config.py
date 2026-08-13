@@ -17,6 +17,7 @@ for. Everything works without a config file on every supported version.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -150,12 +151,26 @@ def _read_frontmatter(path: Path, section: Any) -> Dict[str, Any]:
                 f"{path}: frontmatter field {name!r}: required must be "
                 "true or false")
         one_of = spec.get("one_of")
-        if one_of is not None and (not isinstance(one_of, list) or not one_of):
-            raise ConfigError(
-                f"{path}: frontmatter field {name!r}: one_of must be a "
-                "non-empty list")
+        if one_of is not None:
+            if not isinstance(one_of, list) or not one_of:
+                raise ConfigError(
+                    f"{path}: frontmatter field {name!r}: one_of must be a "
+                    "non-empty list")
+            normalized = []
+            for item in one_of:
+                if isinstance(item, datetime.datetime):
+                    item = item.isoformat()
+                elif isinstance(item, datetime.date):
+                    item = item.isoformat()
+                if isinstance(item, bool) or isinstance(item, (int, float, str)):
+                    normalized.append(item)
+                else:
+                    raise ConfigError(
+                        f"{path}: frontmatter field {name!r}: one_of "
+                        "values must be strings, numbers, bools, or dates")
+            one_of = normalized
         fields[str(name)] = {"type": kind, "required": required,
-                             "one_of": list(one_of) if one_of else None}
+                             "one_of": one_of}
 
     return {"unknown": unknown, "fields": fields}
 

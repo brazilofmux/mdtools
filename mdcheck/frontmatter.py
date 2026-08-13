@@ -1,27 +1,12 @@
 """
-Front-matter schema validation (issue #13).
+Front-matter schema check.
 
-The schema lives in `mdtools.toml`, not in a separate JSON Schema file. The
-needs are modest — is this key present, is it the right kind of thing, is its
-value one of these — and a second file in a second language to express them
-would be more machinery than the question deserves. It also keeps the project
-to one config format and no new dependency.
-
-Off unless configured. A project without a `[frontmatter]` table is not
-failing a check it never asked for, so with no schema this does nothing at
-all — not even "every document should have front matter".
-
-**Where the span comes from.** The IR says where the front matter is; PyYAML's
-composer says which line each key is on. Both are asked rather than guessed,
-so a finding points at the offending key and not at the block. Front matter is
-YAML, not Markdown, so reading it here is not the boundary dialect-policy §2
-draws — that one is about Markdown grammar, which still lives only in mdfix.
+The IR locates the block; PyYAML reads the YAML. No schema means no check.
 """
 
 from __future__ import annotations
 
 import datetime
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
@@ -29,15 +14,41 @@ try:
 except ImportError:                              # pragma: no cover
     yaml = None                                  # type: ignore
 
-# What each declared type accepts. `date` covers what a YAML loader hands back
-# for an unquoted `2026-08-13`, and a string that a reader would parse the
-# same way — a quoted date is still a date to a human.
+
+def _iso_date(text: str) -> Optional[datetime.date]:
+    try:
+        return datetime.date.fromisoformat(text)
+    except ValueError:
+        pass
+    try:
+        return datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _is_date(value: Any) -> bool:
+    if isinstance(value, datetime.date):
+        return True
+    return isinstance(value, str) and _iso_date(value) is not None
+
+
+def _comparable(value: Any) -> Any:
+    """one_of is stored JSON-safe; YAML dates become ISO strings."""
+    if isinstance(value, datetime.datetime):
+        return value.isoformat()
+    if isinstance(value, datetime.date):
+        return value.isoformat()
+    return value
+
+
+# What each declared type accepts. `date` covers a YAML timestamp *and* a
+# quoted ISO string — many styles quote the date to stop YAML inventing one.
 _MATCHES = {
     "string": lambda v: isinstance(v, str),
     "number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
     "bool": lambda v: isinstance(v, bool),
     "list": lambda v: isinstance(v, list),
-    "date": lambda v: isinstance(v, (datetime.date, datetime.datetime)),
+    "date": _is_date,
     "any": lambda v: True,
 }
 
@@ -52,31 +63,48 @@ def _describe(value: Any) -> str:
     return type(value).__name__
 
 
-def _key_lines(text: str, first_line: int) -> Dict[str, int]:
+def _as_written(text: str, data: Dict[Any, Any],
+                first_line: int) -> Tuple[Dict[str, Any], Dict[str, int]]:
     """
-    Line number of each top-level key, from PyYAML's own marks.
+    Keys as they appear in the YAML, not as `safe_load` constructed them.
 
-    Scanning for `^key:` would be close and occasionally wrong — a key inside
-    a nested block, or one whose name appears in a value, would both fool it.
-    The composer already knows, so ask it.
-
-    `first_line` is the IR's line for the front-matter block: the opening
-    `---`, so the YAML body starts one line later.
+    `2024: recap` loads as an int key; YAML 1.1 `on: true` loads as a bool
+    key. Schema lookup, unknown detection, and line numbers all need the
+    scalar text, or mixed extra keys crash `sorted` and miss the schema.
     """
+    named: Dict[str, Any] = {}
     lines: Dict[str, int] = {}
-    if yaml is None:
-        return lines
-    try:
-        node = yaml.compose(text)
-    except yaml.YAMLError:
-        return lines
-    if node is None or not hasattr(node, "value"):
-        return lines
-    for pair in getattr(node, "value", []):
-        if isinstance(pair, tuple) and len(pair) == 2:
-            key = pair[0]
-            lines[str(key.value)] = first_line + 1 + key.start_mark.line
-    return lines
+    pairs = []
+    if yaml is not None:
+        try:
+            node = yaml.compose(text)
+        except yaml.YAMLError:
+            node = None
+        if node is not None:
+            pairs = list(getattr(node, "value", []) or [])
+
+    remaining = dict(data)
+    for pair in pairs:
+        if not (isinstance(pair, tuple) and len(pair) == 2):
+            continue
+        key_node = pair[0]
+        name = str(getattr(key_node, "value", key_node))
+        lines[name] = first_line + 1 + key_node.start_mark.line
+        constructed: Any = name
+        try:
+            constructed = yaml.safe_load(name)
+        except yaml.YAMLError:
+            pass
+        if constructed in remaining:
+            named[name] = remaining.pop(constructed)
+        elif name in remaining:
+            named[name] = remaining.pop(name)
+
+    for key, value in remaining.items():
+        name = str(key)
+        named[name] = value
+        lines.setdefault(name, first_line)
+    return named, lines
 
 
 def validate(text: str, schema: Dict[str, Any],
@@ -90,9 +118,7 @@ def validate(text: str, schema: Dict[str, Any],
     if not schema or not schema.get("fields") and schema.get("unknown") == "allow":
         return []
     if yaml is None:
-        return [("check.frontmatter-unreadable", "error", first_line,
-                 "PyYAML is required to validate front matter "
-                 "(pip install pyyaml)")]
+        raise RuntimeError("PyYAML is required to validate front matter")
 
     try:
         data = yaml.safe_load(text)
@@ -110,7 +136,7 @@ def validate(text: str, schema: Dict[str, Any],
                  f"front matter must be a mapping, not a "
                  f"{_describe(data)}")]
 
-    lines = _key_lines(text, first_line)
+    data, lines = _as_written(text, data, first_line)
     fields: Dict[str, Any] = schema.get("fields", {})
     out: List[Tuple[str, str, int, str]] = []
 
@@ -128,7 +154,8 @@ def validate(text: str, schema: Dict[str, Any],
                         f"front matter field {name!r} should be a "
                         f"{spec['type']}, not a {_describe(value)}"))
             continue        # a wrong type makes one_of meaningless
-        if spec["one_of"] is not None and value not in spec["one_of"]:
+        if (spec["one_of"] is not None
+                and _comparable(value) not in spec["one_of"]):
             allowed = ", ".join(repr(v) for v in spec["one_of"])
             out.append(("check.frontmatter-value", "error", where,
                         f"front matter field {name!r} is {value!r}; "
