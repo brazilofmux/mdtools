@@ -2127,15 +2127,9 @@ static void emit_ir(FILE *out, const char *source)
         /* ── Indented code ──
          * Same threshold and same paragraph-interruption rule as process().
          * Interior blank lines stay inside the block (Pandoc keeps them), so
-         * the run is consumed greedily and then trimmed back. */
-        /*
-         * `prev_content_type != LT_TEXT` because indented code cannot
-         * interrupt a paragraph — an indented line after prose is a lazy
-         * continuation. A pipe table's rows are LT_TEXT to the classifier
-         * but they are not a paragraph, so the line after one *is* code, and
-         * the fuzzer caught `--wrap` reflowing a tab-indented block that
-         * followed a table and breaking it into a Para.
-         */
+         * the run is consumed greedily and then trimmed back.
+         * A pipe table's rows classify as TEXT but are not a paragraph, so
+         * the line after one is indented code. */
         if (indent_columns(line, NULL) >= list_content_col + 4
             && (had_blank || prev_content_type != LT_TEXT
                 || (i > 0 && pipe_table_line[i - 1])))
@@ -2967,18 +2961,9 @@ static int is_punct_for_spacing(unsigned char c)
 }
 
 /*
- * Is this punctuation ending a word, or starting one?
- *
- * "Space before punctuation" means `word .` -> `word.`, and the signal that
- * the mark really is sentence punctuation is what comes *after* it: a space,
- * a line end, or more punctuation. Followed by a letter or a slash it is part
- * of a token — `./path`, `1.5`, `a:b` — and the space before it is a real
- * word gap.
- *
- * The fuzzer found this as a destroyed definition list: `: ./file.md` had the
- * gap closed to `:./file.md`, which stops being a definition and becomes a
- * paragraph. dialect-policy §3 pins `+definition_lists`, so that is a
- * supported construct silently changing meaning.
+ * Space-before-punct only if the mark ends a word. A letter, digit, slash,
+ * or underscore means it is inside a token (`./path`, `1.5`, `a:b`); a
+ * closer (`) ] " '`) is still sentence punctuation (`word.)`).
  */
 static int punct_ends_a_word(const char *p, const char *pe)
 {
@@ -2988,7 +2973,9 @@ static int punct_ends_a_word(const char *p, const char *pe)
     unsigned char c = (unsigned char)*next;
     if (c == ' ' || c == '\t')
         return 1;
-    return is_punct_for_spacing(c) || c == '?' || c == '!';
+    if (c >= 0x80 || isalnum(c) || c == '/' || c == '_')
+        return 0;
+    return 1;
 }
 
 /* fix_chicago_space_before_punct — now handled by Ragel scanner */
@@ -3422,21 +3409,28 @@ static int display_columns(const char *text, int from, int to)
  * Wrap on display columns (mdfix_display_width): break only at ASCII spaces.
  * Unspaced tokens (including CJK without spaces) are not split.
  */
-/*
- * Would `text + off` at the start of a line begin a block?
- *
- * Wrapping chooses where a line ends, so it also chooses what the *next* line
- * begins with — and a break in the wrong place invents structure. Found by
- * the fuzzer: "…then spoke 2." wrapped so that `2.` started a line, mdfix's
- * own blank-before-list repair then separated it, and one `Para` became a
- * `Para` and an `OrderedList`. The transform matrix never caught it because
- * no document in its corpus ends a sentence with a number.
- *
- * `classify` is mdfix's own reader, so this asks the question in exactly the
- * terms the rest of the file answers it — no second opinion about what a list
- * marker is.
- */
+/* Break only where the next line would still be prose. */
 static enum linetype classify(const char *line);
+
+static int is_paren_ordered(const char *line)
+{
+    int i = 0;
+    while (line[i] == ' ' || line[i] == '\t')
+        i++;
+    if (!isdigit((unsigned char)line[i]))
+        return 0;
+    while (isdigit((unsigned char)line[i]))
+        i++;
+    return line[i] == ')' && line[i + 1] == ' ';
+}
+
+static int is_definition_marker(const char *line)
+{
+    int i = 0;
+    while (line[i] == ' ' || line[i] == '\t')
+        i++;
+    return line[i] == ':' && (line[i + 1] == ' ' || line[i + 1] == '\t');
+}
 
 static int starts_a_block(const char *text, int off)
 {
@@ -3448,7 +3442,12 @@ static int starts_a_block(const char *text, int off)
         probe[n++] = text[off++];
     probe[n] = '\0';
     enum linetype t = classify(probe);
-    return t != LT_TEXT && t != LT_BLANK;
+    if (t != LT_TEXT && t != LT_BLANK)
+        return 1;
+    /* classify() is six-way; these are structure it reports as TEXT. */
+    return is_blockquote_line(probe) || is_thematic_break(probe)
+        || is_setext_underline(probe) || ref_def_kind(probe)
+        || is_paren_ordered(probe) || is_definition_marker(probe);
 }
 
 static void emit_wrapped_break(FILE *out, const char *text, int width,
@@ -3480,25 +3479,36 @@ static void emit_wrapped_break(FILE *out, const char *text, int width,
 
         /*
          * Back off from a break that would put a block marker at the start of
-         * the next line. If every candidate does, take none of them and let
-         * the line run long — an over-wide line is a cosmetic fault, and
-         * inventing a list is a semantic one.
+         * the next line. If every in-budget candidate does, take none of them
+         * and let the line run long — an over-wide line is cosmetic.
          */
+        int all_invent_a_block = 0;
         while (break_at > pos && starts_a_block(text, break_at)) {
             int earlier = -1;
             for (int i = pos; i < break_at; i++)
                 if (text[i] == ' ')
                     earlier = i;
-            break_at = earlier > pos ? earlier : pos;
+            if (earlier > pos)
+                break_at = earlier;
+            else {
+                all_invent_a_block = 1;
+                break;
+            }
+        }
+
+        if (all_invent_a_block) {
+            fprintf(out, "%s%s\n", text + pos, hard ? "  " : "");
+            return;
         }
 
         if (break_at <= pos) {
             /* No break opportunity in budget: emit the whole token
-             * through the next space (do not split). */
+             * through the next space (do not split), unless that space
+             * would invent a block too. */
             break_at = pos;
             while (break_at < len && text[break_at] != ' ')
                 break_at += utf8_cp_len(text, break_at, len);
-            if (break_at >= len) {
+            if (break_at >= len || starts_a_block(text, break_at)) {
                 fprintf(out, "%s%s\n", text + pos, hard ? "  " : "");
                 return;
             }
@@ -3525,25 +3535,8 @@ static int near_width(const char *line, int wrap_width)
 }
 
 /*
- * Should the segment [from, to) be reflowed, or left as the author broke it?
- *
- * The question is asked once per segment, not once per line, and that is the
- * whole point. Per line it is not a fixed point: joining two lines makes a
- * longer line, which on the next run is near-width and joins with what
- * follows, so `--wrap` needed several passes to settle and I3.2 was false.
- * A generated corpus found it in the first two hundred documents — three
- * seeds, one cause.
- *
- * Per segment it settles immediately. If any line looks machine-wrapped the
- * whole segment is reflowed, and reflowing produces lines that are near-width
- * (except the last), so the same answer comes back next time. If none does,
- * the author broke these lines on purpose and nothing is touched — which is
- * also stable, because nothing changed.
- *
- * The cost is that a paragraph mixing one wrapped line with several short
- * ones is now reflowed whole rather than in pieces. That is the honest
- * reading: such a paragraph is a wrapped one somebody edited, and `--wrap` is
- * a request to wrap it.
+ * Decide the segment once. Per line, joining makes a longer line that then
+ * joins again, so --wrap was not a fixed point.
  */
 static int segment_is_wrapped(int from, int to, int wrap_width)
 {
@@ -4138,7 +4131,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 4142 "mdfix.c"
+#line 4135 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -4146,20 +4139,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 4150 "mdfix.c"
+#line 4143 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 4536 "mdfix.rl"
+#line 4529 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 4286 "mdfix.rl"
+#line 4279 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -4199,7 +4192,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 4162 "mdfix.rl"
+#line 4155 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial || ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -4236,19 +4229,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 4155 "mdfix.rl"
+#line 4148 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 4155 "mdfix.rl"
+#line 4148 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 4471 "mdfix.rl"
+#line 4464 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -4272,7 +4265,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 4516 "mdfix.rl"
+#line 4509 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -4293,7 +4286,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 4494 "mdfix.rl"
+#line 4487 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -4316,13 +4309,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 4536 "mdfix.rl"
+#line 4529 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 4416 "mdfix.rl"
+#line 4409 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -4345,7 +4338,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 4328 "mdfix.rl"
+#line 4321 "mdfix.rl"
 	{te = p+1;{
                 /*
                  * Either Chicago flag answers "is this run an ellipsis?"
@@ -4396,13 +4389,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 4536 "mdfix.rl"
+#line 4529 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 4378 "mdfix.rl"
+#line 4371 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -4441,7 +4434,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 4438 "mdfix.rl"
+#line 4431 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -4475,7 +4468,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 4224 "mdfix.rl"
+#line 4217 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4488,7 +4481,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 4198 "mdfix.rl"
+#line 4191 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4502,7 +4495,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 4236 "mdfix.rl"
+#line 4229 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4515,7 +4508,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 4211 "mdfix.rl"
+#line 4204 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4529,7 +4522,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 4248 "mdfix.rl"
+#line 4241 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -4568,7 +4561,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 4155 "mdfix.rl"
+#line 4148 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -4581,7 +4574,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 4585 "mdfix.c"
+#line 4578 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -4607,7 +4600,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 4611 "mdfix.c"
+#line 4604 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -4651,7 +4644,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 4655 "mdfix.c"
+#line 4648 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -4700,7 +4693,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 4704 "mdfix.c"
+#line 4697 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -4719,7 +4712,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 4723 "mdfix.c"
+#line 4716 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -4745,7 +4738,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 4749 "mdfix.c"
+#line 4742 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -4794,7 +4787,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 4798 "mdfix.c"
+#line 4791 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -4874,42 +4867,15 @@ case 13:
 
 	}
 
-#line 4543 "mdfix.rl"
+#line 4536 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';
 }
 
-/* Apply scanner to a line: returns 1 if changed, merges fix counts to globals */
-/*
- * Run the inline scanner, and undo it if it changed what the line *is*.
- *
- * The scanner does prose typography — dashes, ellipses, spacing around
- * punctuation. None of that is allowed to change the line's block type, and
- * every rule in it is written on that assumption without ever checking.
- *
- * Twice the fuzzer showed the assumption failing, both times through the
- * space-before-punctuation rule closing a gap that turned out to be
- * structural:
- *
- *   `1. . one`    -> `1.. one`     an ordered list item became a paragraph
- *   `: ./file.md` -> `:./file.md`  a definition became a paragraph
- *
- * The second is fixed at the rule (a `.` before a `/` is a path, not the end
- * of a sentence). The first is not a rule bug at all — that `.` really does
- * end a word — so patching rules one at a time was chasing instances of a
- * missing invariant.
- *
- * Stating it once is both shorter and stronger: classify before, classify
- * after, and keep the original if they differ. `classify` is mdfix's own
- * reader, so this asks the question in the same terms as the rest of the
- * file. Cost is one classification per line.
- *
- * Reverting the whole line, not the one rule, is deliberate: the scanner is a
- * single pass and its edits are not individually undoable. Losing a legitimate
- * dash fix on a line whose structure was at stake is the cheaper mistake.
- */
-static int apply_scanner_raw(char *line, int linenum);
+/* The scanner is prose typography. Undo it if it changed the line's
+ * block type — those edits are not individually reversible. */
+static int apply_scanner_raw(char *line, int hits[NUM_FIXES]);
 
 static int apply_scanner(char *line, int linenum)
 {
@@ -4917,15 +4883,27 @@ static int apply_scanner(char *line, int linenum)
     enum linetype was = classify(line);
     strcpy(before, line);
 
-    int changed = apply_scanner_raw(line, linenum);
-    if (changed && classify(line) != was) {
+    int hits[NUM_FIXES];
+    memset(hits, 0, sizeof hits);
+    int changed = apply_scanner_raw(line, hits);
+    if (!changed)
+        return 0;
+    if (classify(line) != was) {
         strcpy(line, before);
         return 0;
     }
-    return changed;
+    for (int i = 0; i < NUM_FIXES; i++) {
+        if (hits[i] > 0) {
+            fix_counts[i] += hits[i];
+            emit_diagnostic(fix_rules[i], "fix", linenum, fix_labels[i]);
+            if (opt_verbose)
+                fprintf(stderr, "  line %d: %s\n", linenum, fix_labels[i]);
+        }
+    }
+    return 1;
 }
 
-static int apply_scanner_raw(char *line, int linenum)
+static int apply_scanner_raw(char *line, int hits[NUM_FIXES])
 {
     struct scan_ctx ctx;
     memset(&ctx, 0, sizeof(ctx));
@@ -4938,23 +4916,13 @@ static int apply_scanner_raw(char *line, int linenum)
     ctx.skip_punct2       = should_skip_chicago_punct2(line);
     ctx.skip_abbrev       = should_skip_chicago_abbrev(line);
     ctx.spaced_emdash     = opt_spaced_emdash;
-    ctx.linenum           = linenum;
 
     int len = (int)strlen(line);
     run_scanner(&ctx, line, len);
 
     if (strcmp(line, ctx.out) != 0) {
         strcpy(line, ctx.out);
-        /* Merge per-invocation hits into globals */
-        for (int i = 0; i < NUM_FIXES; i++) {
-            if (ctx.fix_hits[i] > 0) {
-                fix_counts[i] += ctx.fix_hits[i];
-                emit_diagnostic(fix_rules[i], "fix", linenum, fix_labels[i]);
-                if (opt_verbose) {
-                    fprintf(stderr, "  line %d: %s\n", linenum, fix_labels[i]);
-                }
-            }
-        }
+        memcpy(hits, ctx.fix_hits, sizeof ctx.fix_hits);
         return 1;
     }
     return 0;
@@ -5239,27 +5207,10 @@ static void process(FILE *out)
         }
 
         /*
-         * Indented code block: four or more columns past the enclosing
-         * container's content column.
-         *
-         * Two rules keep this from swallowing prose. Indented code cannot
-         * interrupt a paragraph, so a line following text is a lazy
-         * continuation no matter how far it is indented. And the threshold is
-         * relative to the list item's content column, so a continuation line
-         * inside `- item` stays prose while genuinely nested code does not.
-         *
-         * Everything here is emitted verbatim: mdfix was converting arrows
-         * and reflowing long lines inside blocks that Pandoc and CommonMark
-         * both parse as code.
-         */
-        /*
-         * `prev_content_type != LT_TEXT` because indented code cannot
-         * interrupt a paragraph — an indented line after prose is a lazy
-         * continuation. A pipe table's rows are LT_TEXT to the classifier
-         * but a table is not a paragraph, so the line after one *is* code.
-         * The fuzzer caught `--wrap` reflowing a tab-indented block that
-         * followed a table, splitting it into a Para. `emit_ir` carries the
-         * same condition, and the two have to agree about what code is.
+         * Indented code: four or more columns past the enclosing content
+         * column. Cannot interrupt a paragraph (that line is a lazy
+         * continuation). A pipe table's rows classify as TEXT but are not a
+         * paragraph, so the line after one is indented code.
          */
         if (indent_columns(line, NULL) >= list_content_col + 4
             && (had_blank || prev_content_type != LT_TEXT
@@ -6732,33 +6683,10 @@ static int write_inplace(const char *input_path)
 }
 
 /*
- * Render the document until it stops changing.
- *
- * One pass is not a fixed point, so I3.2 was false for the fixer itself. The
- * fuzzer found four shapes of it, all one cause: a fixer changes what a line
- * *is*, and the repair that cares runs on a classification taken before that.
- *
- *   `2. `      -w strips the trailing space, and only then is it a list
- *              marker that wants a blank line before it
- *   `1. . one` Chicago closes the gap to `1..`, which stops being a list, so
- *              the bullet after it now needs a blank line
- *   `#*# Sub`  the ATX-space fix makes the `*` reachable by the
- *              emphasis-in-heading fix, which had already run
- *   wrapped    joining lines changes what follows a paragraph
- *
- * Each could be fixed by reordering or re-classifying, and each fix would be
- * one more thing a future pass has to remember. Converging is the general
- * answer: run until the document stops moving, which is what idempotence
- * means, and what anyone running a formatter twice already expects.
- *
- * Diagnostics and fix counts come from the **first** pass only. They describe
- * the file on disk — ID.1 spans index it — and a later pass is looking at a
- * buffer no consumer has. The counts are a report about the input, not a tally
- * of internal work.
- *
- * Bounded, and it says so if it does not settle: two fixers that undo each
- * other would otherwise spin forever. Four is generous — everything the
- * fuzzer produced settled by the second.
+ * Render until the document stops changing. A fixer can change what a line
+ * is after the repair that cares has already looked. Counts and diagnostics
+ * come from the first pass: ID.1 spans index the file on disk. Fail the run
+ * if it does not settle.
  */
 #define MAX_RENDER_PASSES 4
 
@@ -6776,6 +6704,7 @@ static char *render_converged(const char *path, size_t *out_len)
     fclose(mem);
 
     int saved_diag = opt_diagnostics, saved_verbose = opt_verbose;
+    int saved_quiet = opt_quiet;
     int saved_counts[NUM_FIXES];
     memcpy(saved_counts, fix_counts, sizeof saved_counts);
     int saved_serial = serial_comma_warnings;
@@ -6783,30 +6712,44 @@ static char *render_converged(const char *path, size_t *out_len)
     int saved_fence = unterminated_fence_warnings;
     int saved_nfc = non_nfc_warnings;
 
+    int settled = 0;
+    int io_failed = 0;
     int pass = 1;
     for (; pass < MAX_RENDER_PASSES; pass++) {
         FILE *again = fmemopen(buf, len, "r");
-        if (!again)
+        if (!again) {
+            if (len == 0) {
+                settled = 1;
+                break;
+            }
+            io_failed = 1;
             break;
+        }
         free_lines();
         opt_diagnostics = 0;
         opt_verbose = 0;
+        opt_quiet = 1;
         int rc = read_all(again);
         fclose(again);
-        if (rc != 0)
-            break;              /* cannot re-read our own output: stop here */
+        if (rc != 0) {
+            io_failed = 1;
+            break;
+        }
 
         char *next = NULL;
         size_t next_len = 0;
         FILE *sink = open_memstream(&next, &next_len);
-        if (!sink)
+        if (!sink) {
+            io_failed = 1;
             break;
+        }
         npara = 0;
         process(sink);
         fclose(sink);
 
         if (next_len == len && memcmp(next, buf, len) == 0) {
             free(next);
+            settled = 1;
             break;
         }
         free(buf);
@@ -6816,17 +6759,27 @@ static char *render_converged(const char *path, size_t *out_len)
 
     opt_diagnostics = saved_diag;
     opt_verbose = saved_verbose;
+    opt_quiet = saved_quiet;
     memcpy(fix_counts, saved_counts, sizeof saved_counts);
     serial_comma_warnings = saved_serial;
     number_style_warnings = saved_number;
     unterminated_fence_warnings = saved_fence;
     non_nfc_warnings = saved_nfc;
 
-    if (pass >= MAX_RENDER_PASSES && !opt_quiet)
+    if (io_failed) {
+        fprintf(stderr, "error: %s: cannot re-read the rendered buffer\n",
+                path);
+        free(buf);
+        return NULL;
+    }
+    if (!settled) {
         fprintf(stderr,
             "warning: %s did not settle in %d passes; two fixes may be "
             "undoing each other. Please report this input.\n",
             path, MAX_RENDER_PASSES);
+        free(buf);
+        return NULL;
+    }
 
     *out_len = len;
     return buf;

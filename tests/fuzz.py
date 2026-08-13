@@ -278,13 +278,14 @@ class Runner:
 #
 # `tests/test_fuzz_regressions.py` asserts each of these still reproduces, so
 # fixing one fails that file and forces this entry out with it.
-_LAZY_CONTINUATION = re.compile(rb"(?m)^[ ]{4,}\S")
-_ORDERED_MARKER = re.compile(rb"(?m)^\d+[.)][ \t]")
+_LAZY_CONTINUATION = re.compile(rb"[ ]{4,}\S")
+_ORDERED_MARKER = re.compile(rb"\d+[.)][ \t]")
 
 
 def _blank_before_list_after_continuation(data: bytes) -> bool:
     """
-    A paragraph, an indented lazy continuation, then an ordered marker.
+    A paragraph, an indented lazy continuation, then an ordered marker,
+    as three adjacent lines.
 
     mdfix's required blank-before-list repair fires when a list marker
     directly follows paragraph text, and does not when a lazy continuation
@@ -299,8 +300,14 @@ def _blank_before_list_after_continuation(data: bytes) -> bool:
     stated exception) but worth deciding on purpose rather than by whether a
     continuation line happened to be joined first.
     """
-    return bool(_LAZY_CONTINUATION.search(data)
-                and _ORDERED_MARKER.search(data))
+    lines = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n").split(b"\n")
+    for i in range(len(lines) - 2):
+        a, b, c = lines[i], lines[i + 1], lines[i + 2]
+        if not a or a[:1] in b" \t":
+            continue
+        if _LAZY_CONTINUATION.match(b) and _ORDERED_MARKER.match(c):
+            return True
+    return False
 
 
 KNOWN_DIVERGENCES = (
@@ -309,7 +316,20 @@ KNOWN_DIVERGENCES = (
 )
 
 
-def is_known(data: bytes) -> Optional[str]:
+def is_known(data: bytes, rule: Optional[str] = None,
+             detail: Optional[str] = None) -> Optional[str]:
+    """
+    The pinned R2/wrap I3.1 shape, and only that.
+
+    A crash, I4.1, or I5.1 on a document that happens to contain an indent
+    and an ordered marker is not this pin.
+    """
+    if rule is not None and rule != "I3.1 block structure":
+        return None
+    if detail is not None:
+        wrap_path = "--wrap" in detail or "--technical" in detail
+        if not wrap_path or "OrderedList" not in detail:
+            return None
     for name, matches in KNOWN_DIVERGENCES:
         if matches(data):
             return name
@@ -325,7 +345,8 @@ def sweep(runner: Runner, seeds: range) -> List[Tuple[int, list, bytes]]:
         if not bad:
             continue
         shrunk = runner.shrink(data, bad)
-        if is_known(shrunk):
-            continue
-        failures.append((seed, bad, shrunk))
+        leftover = [(rule, detail) for rule, detail in bad
+                    if not is_known(shrunk, rule, detail)]
+        if leftover:
+            failures.append((seed, leftover, shrunk))
     return failures

@@ -132,6 +132,24 @@ class GeneratorTests(FuzzTestCase):
                 self.assertTrue(any(lo <= p <= hi for p in points),
                                 f"no {name} in the generated corpus")
 
+    def test_known_divergence_does_not_swallow_other_failures(self) -> None:
+        pin = (b"A paragraph of prose number 1 with words.\n"
+               b"    indented continuation\n2. two 4\n")
+        wrap = "--wrap=40: ['Para', 'OrderedList'] != ['Para']"
+        self.assertIsNotNone(
+            fuzz.is_known(pin, "I3.1 block structure", wrap))
+        # Indent and a marker that are not adjacent are not the pin.
+        elsewhere = b"    indented code\n\npara\n\n1. one\n"
+        self.assertIsNone(
+            fuzz.is_known(elsewhere, "I3.1 block structure", wrap))
+        # A crash / I4.1 / I5.1 on the pin-shaped document still fails.
+        self.assertIsNone(fuzz.is_known(pin, "crash",
+                                        "--canonical: signal 11"))
+        self.assertIsNone(fuzz.is_known(pin, "I4.1 totality",
+                                        "covered 3 of 10"))
+        self.assertIsNone(fuzz.is_known(pin, "I5.1 identity",
+                                        "empty edit list changed the file"))
+
     def test_shrinking_actually_shrinks(self) -> None:
         # A shrinker that returns its input is a shrinker nobody notices is
         # broken, because the tests still pass and the reports get longer.

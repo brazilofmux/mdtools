@@ -111,11 +111,11 @@ Each has an identifier so issues and tests can cite it.
   I2.1/I2.2 oracle and not a counterexample to it.)*
 - **I3.2 Idempotence.** Applying a transform twice equals applying it once.
   *(Enforced rather than hoped for: mdfix renders until the output stops
-  changing, bounded at four passes, and says so if it does not settle. One
-  pass was not a fixed point — a fixer can change what a line *is*, and the
-  structural repair that cares had already looked. Diagnostics and counts come
-  from the first pass, because ID.1 spans index the file on disk. Found by the
-  generated sweep in `tests/test_fuzz.py`.)*
+  changing, bounded at four passes, and fails the run if it does not settle.
+  One pass was not a fixed point — a fixer can change what a line *is*, and
+  the structural repair that cares had already looked. Diagnostics and counts
+  come from the first pass, because ID.1 spans index the file on disk. Found
+  by the generated sweep in `tests/test_fuzz.py`.)*
 - **I3.3 Opt-in.** No optional transform runs unless requested. *(Issue #60:
   the five editorial passes that predated the classification — bullet style,
   emphasis in headings, bold colons, arrow asides, block quote spacing — now

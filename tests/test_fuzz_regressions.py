@@ -146,6 +146,26 @@ class WrapBoundaryTests(WrapRegressionTestCase):
         out = self._stable(source, "--wrap=40")
         self.assertNotIn(b"\n1.", out)
 
+    def test_an_overlong_token_does_not_break_into_a_marker(self) -> None:
+        # No space in budget: the fallback must not take the first space
+        # after the token if that space starts a block.
+        source = b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1. bbb\n"
+        out = self._stable(source, "--wrap=40")
+        self.assertNotIn(b"\n1.", out)
+
+    def test_wrapping_never_invents_other_block_openers(self) -> None:
+        cases = (
+            (b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa > quote\n", b"\n>"),
+            (b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1) bbb\n", b"\n1)"),
+            (b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ***\n", b"\n***"),
+            (b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa [id]: /u\n", b"\n[id]:"),
+            (b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa : def\n", b"\n:"),
+        )
+        for source, needle in cases:
+            with self.subTest(needle=needle):
+                out = self._stable(source, "--wrap=40")
+                self.assertNotIn(needle, out)
+
 
 class JoinWhitespaceTests(WrapRegressionTestCase):
     def test_a_continuation_indent_is_dropped_on_join(self) -> None:
@@ -180,6 +200,12 @@ class ConstructPreservationTests(WrapRegressionTestCase):
         # before deciding the mark ends a word.
         out = self._stable(b"He said the word , and then .\n", "--canonical")
         self.assertEqual(out, b"He said the word, and then.\n")
+
+    def test_space_before_punct_still_closes_before_a_closer(self) -> None:
+        out = self._stable(b"He said hello .)\n", "--chicago-punct-2")
+        self.assertEqual(out, b"He said hello.)\n")
+        out = self._stable(b"He said hello .\"\n", "--chicago-punct-2")
+        self.assertEqual(out, b"He said hello.\"\n")
 
     def test_a_relative_path_keeps_its_space(self) -> None:
         out = self._stable(b"See the file ./notes.md for more.\n",
@@ -226,6 +252,29 @@ class ConvergenceTests(WrapRegressionTestCase):
                 self.assertEqual(self._fix(data, "--canonical"),
                                  self._fix(self._fix(data, "--canonical"),
                                            "--canonical"))
+
+    def test_a_reverted_scanner_edit_is_not_reported(self) -> None:
+        # `1. . one` would become `1.. one` and stop being a list; the
+        # scanner undoes that. Counts/diagnostics must not claim the edit.
+        src = self.dir / "r.md"
+        src.write_bytes(b"1. . one\n")
+        result = subprocess.run(
+            [str(MDFIX), "-n", "--diagnostics", "--chicago-punct-2", str(src)],
+            capture_output=True, text=True)
+        rows = [json.loads(line) for line in result.stderr.splitlines()
+                if line.strip()]
+        self.assertNotIn("chicago.space-before-punct",
+                         [r["rule"] for r in rows])
+        self.assertEqual(self._fix(b"1. . one\n", "--chicago-punct-2"),
+                         b"1. . one\n")
+
+    def test_unterminated_fence_warning_is_printed_once(self) -> None:
+        # Extra convergence passes used to reprint !opt_quiet warnings.
+        src = self.dir / "f.md"
+        src.write_bytes(b"```\ncode\n")
+        result = subprocess.run(
+            [str(MDFIX), "-n", str(src)], capture_output=True, text=True)
+        self.assertEqual(result.stderr.count("unterminated code fence"), 1)
 
     def test_counts_describe_the_input_not_the_passes(self) -> None:
         # Diagnostics carry byte spans into the file on disk (ID.1), so a
