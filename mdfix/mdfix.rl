@@ -368,17 +368,41 @@ static int find_bullet(const char *line)
     return -1;
 }
 
-/* "1. ", "23. ", etc. with optional leading whitespace */
-static int is_ordered(const char *line)
+/*
+ * An ordered-list marker. dialect-policy §3 pins +fancy_lists, +startnum
+ * and +example_lists; this covers the decimal forms (`1. `, `1) `) only.
+ *
+ * Alpha, roman, and example-list spellings (`a.`, `iv)`, `@lab.`, `(@lab)`)
+ * are omitted: the first two collide with hard-wrapped prose, and the last
+ * two are also mid-prose citations. Telling those apart needs Pandoc's rule
+ * that a list cannot interrupt a paragraph. Until that context exists, a
+ * miss is safer than inventing a list (issue #90).
+ */
+static int ordered_marker_len(const char *line)
 {
     int i = 0;
     while (line[i] == ' ' || line[i] == '\t')
         i++;
+    int start = i;
     if (!isdigit((unsigned char)line[i]))
         return 0;
     while (isdigit((unsigned char)line[i]))
         i++;
-    return (line[i] == '.' && line[i + 1] == ' ');
+    if ((line[i] == '.' || line[i] == ')') && line[i + 1] == ' ')
+        return i + 2 - start;
+    return 0;
+}
+
+static int is_ordered(const char *line)
+{
+    return ordered_marker_len(line) > 0;
+}
+
+/* R2 follows the same decimal-only set: a blank before `1. ` / `1) ` is
+ * allowed to create a list; a blank before `a.` or `@lab.` would invent one. */
+static int blank_before_list_marker(const char *line)
+{
+    return find_bullet(line) >= 0 || is_ordered(line);
 }
 
 /* ATX heading: up to 3 leading spaces, then one or more #, then space or EOL */
@@ -708,17 +732,14 @@ static int list_content_column(const char *line)
     if (line[i] == '-' || line[i] == '*' || line[i] == '+') {
         col++;
         i++;
-    } else if (isdigit((unsigned char)line[i])) {
-        while (isdigit((unsigned char)line[i])) {
-            col++;
-            i++;
-        }
-        if (line[i] != '.' && line[i] != ')')
-            return -1;
-        col++;
-        i++;
     } else {
-        return -1;
+        /* Same helper as classify(), so `1)` items get nested prose too. */
+        int len = ordered_marker_len(line);
+        if (len <= 0)
+            return -1;
+        int marker = len - 1;            /* len counts one trailing space */
+        col += marker;
+        i += marker;
     }
 
     int spaces = 0;
@@ -1680,17 +1701,15 @@ static int list_marker_bytes(const char *line)
     int i = chars;
     if (line[i] == '-' || line[i] == '*' || line[i] == '+') {
         i++;
-    } else if (isdigit((unsigned char)line[i])) {
-        while (isdigit((unsigned char)line[i]))
-            i++;
-        if (line[i] != '.' && line[i] != ')')
+        if (line[i] != ' ' && line[i] != '\t')
             return -1;
-        i++;
     } else {
-        return -1;
+        /* Same helper as classify(), so `1)` items get nested prose too. */
+        int len = ordered_marker_len(line);
+        if (len <= 0)
+            return -1;
+        i = chars + len - 1;      /* len counts the single trailing space */
     }
-    if (line[i] != ' ' && line[i] != '\t')
-        return -1;
     while (line[i] == ' ' || line[i] == '\t')
         i++;
     return i;
@@ -5092,6 +5111,7 @@ static void process(FILE *out)
         if (opt_required
             && !had_blank
             && is_list_type(type)
+            && blank_before_list_marker(line)
             && !in_list_context
             && prev_content_type != LT_BLANK)
         {

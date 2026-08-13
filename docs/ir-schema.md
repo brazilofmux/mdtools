@@ -246,6 +246,19 @@ destination** — the consumer already has the `reference_def` records (which
 also carry `label` and `destination`). Collapsed `[text][]` emits
 `form: "reference"` with an empty `label` and the key in `text`.
 
+### Ordered-list markers
+
+`+fancy_lists`, `+startnum` and `+example_lists` are pinned, so Pandoc reads
+several marker forms as an `OrderedList`. mdfix recognizes the decimal forms
+`1. `, `23. ` and `1) `.
+
+**Alpha, roman, and example-list markers** — `a.`, `iv)`, `@lab.`, `(@lab)` —
+are deliberately not recognized, a divergence pinned in
+`tests/test_ordered_markers.py`. The first two collide with hard-wrapped
+prose; the last two are also mid-prose citations. Closing this needs Pandoc's
+rule — a list cannot interrupt a paragraph — rather than a wider predicate.
+Issue #90.
+
 ### Citations
 
 `+citations` is pinned by dialect-policy §3. One record per key, with
@@ -264,8 +277,8 @@ list, not a citation.
 That last one is `+example_lists`, also pinned. Pandoc reads `@label.` at the
 start of a block as an `OrderedList` marker and emits no citation at all, so
 mdfix does not either — otherwise mdcheck would report an unresolved citation
-for a list marker. (mdfix does not yet *classify* example lists as lists;
-that is issue #90.)
+for a list marker. (mdfix does not classify example lists as lists; that
+still needs the interruption rule on #90.)
 
 **Under-reporting is the safe direction.** Citations inside link text are
 missed, because the link scanner consumes the bracket without descending into

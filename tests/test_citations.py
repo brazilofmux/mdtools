@@ -150,6 +150,12 @@ class ExampleListTests(CitationTestCase):
         # The distinction is position, not spelling.
         self.assertEqual(self._keys("As shown in @good. Next.\n"), ["good"])
 
+    def test_a_wrapped_mid_prose_key_is_still_a_citation(self) -> None:
+        # Classifying `@lab.` / `(@lab)` as a list on every line would split
+        # these into paragraph + list and drop the key.
+        self.assertEqual(self._keys("As shown in\n@good. Next.\n"), ["good"])
+        self.assertEqual(self._keys("As\n(@good) illustrates.\n"), ["good"])
+
     def test_a_marker_without_a_following_space_is_a_citation(self) -> None:
         # `@good.text` is not a marker; Pandoc reads the whole thing as a key.
         self.assertEqual(self._keys("@good.text\n"), ["good.text"])
