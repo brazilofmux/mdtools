@@ -33,12 +33,13 @@
  * Both are worked around by the caller; see `normalize_lines_nfc` and
  * `nfc_segment_overrun` in mdfix.rl.
  *
- *   a) The normalizer silently drops output that does not fit `nDstMax` and
- *      gives the caller no way to tell truncation from a short result. mdfix
- *      sizes the destination past the UAX #15 worst case and checks the
- *      length itself.
+ *   a) brazilofmux/utf#2 — the normalizer silently drops output that does not
+ *      fit `nDstMax` and gives the caller no way to tell truncation from a
+ *      short result. mdfix sizes the destination past the UAX #15 worst case
+ *      and checks the length itself.
  *
- *   b) Worse, and not a buffer-size problem at all: a "dirty segment" ends at
+ *   b) brazilofmux/utf#1, worse and not a buffer-size problem at all: a
+ *      "dirty segment" ends at
  *      the next code point that is both a starter and NFC_QC=Yes, but a
  *      composition exclusion — U+0958 DEVANAGARI LETTER KHA WITH NUKTA, for
  *      one — is a starter with NFC_QC=No, so it never ends a segment. A run

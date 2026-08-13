@@ -3598,13 +3598,14 @@ static long long nfc_first_bad(const char *s, int len, int *plen)
  * Returns 0, or 1 if a normalized line no longer fits, which is refused for
  * the same reason an over-long input line is: mdfix does not silently
  * truncate. Note that libutf's normalizer drops what does not fit and reports
- * only a shorter length, so the destination is sized past the UAX #15
- * worst-case NFC expansion of 3x and the result is length-checked here.
+ * only a shorter length (brazilofmux/utf#2), so the destination is sized past
+ * the UAX #15 worst-case NFC expansion of 3x and the result is length-checked
+ * here.
  */
 #define NFC_DST_MAX (MAX_LINE * 3 + 8)
 
 /*
- * Refuse input that would hit an upstream truncation bug.
+ * Refuse input that would hit an upstream truncation bug — brazilofmux/utf#1.
  *
  * libutf's normalizer works a "segment" at a time and caps one at 128
  * decomposed code points, dropping the rest with no error and no short
