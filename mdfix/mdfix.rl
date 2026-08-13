@@ -3576,58 +3576,17 @@ static long long nfc_first_bad(const char *s, int len, int *plen)
 }
 
 /*
- * L3 optional transform: rewrite lines[] to NFC. --normalize-nfc, off by
- * default (I3.3).
- *
- * I3.2 (idempotence) is a property of NFC itself: normalizing normalized text
- * returns it unchanged, so a second run is a memcpy.
- *
- * I3.1 (does not break L2) holds because canonical composition changes only
- * how code points are spelled, never which Markdown constructs they form.
- * The one case worth naming is the singleton U+212A KELVIN SIGN, which
- * composes to ASCII `K` — a letter, so it cannot become a marker, a fence or
- * a delimiter. No canonical decomposition produces ASCII punctuation. The
- * transform matrix checks this against Pandoc rather than taking it on faith.
- *
- * Runs after the IR early-return in process_file, never before it: I1.3 says
- * emitted spans address the file on disk, and this changes byte lengths.
- * Diagnostics spans are unaffected for the same reason they survive every
- * other fixer — they are computed from line_off, which still describes the
- * input.
- *
- * Returns 0, or 1 if a normalized line no longer fits, which is refused for
- * the same reason an over-long input line is: mdfix does not silently
- * truncate. Note that libutf's normalizer drops what does not fit and reports
- * only a shorter length (brazilofmux/utf#2), so the destination is sized past
- * the UAX #15 worst-case NFC expansion of 3x and the result is length-checked
- * here.
+ * L3: rewrite lines[] to NFC when --normalize-nfc is set (off by default).
+ * Runs after the IR early-return so emitted spans still address the file on
+ * disk. Destination is sized past UAX #15's 3× NFC expansion; length-checked
+ * because libutf may truncate without reporting (brazilofmux/utf#2).
  */
 #define NFC_DST_MAX (MAX_LINE * 3 + 8)
 
 /*
- * Refuse input that would hit an upstream truncation bug — brazilofmux/utf#1.
- *
- * libutf's normalizer works a "segment" at a time and caps one at 128
- * decomposed code points, dropping the rest with no error and no short
- * return the caller could notice. A segment ends at the next code point that
- * is both a starter and NFC_QC=Yes — but a composition exclusion such as
- * U+0958 DEVANAGARI LETTER KHA WITH NUKTA is a starter with NFC_QC=No, so it
- * never ends one. A run of them is treated as a single enormous segment:
- * 2700 of them normalize to 64, and 2636 characters of the author's text are
- * simply gone. Reproduced against libutf itself, not only against this copy.
- *
- * mdfix cannot fix that here — vendor/utf_nfc.c is a verbatim copy, and
- * editing it would be lost on the next refresh — so it declines to call the
- * normalizer on input that could trigger it. This walk reproduces upstream's
- * segmentation exactly and measures each segment. Bounding the *input* at 31
- * code points bounds the decomposed output at 124: the longest canonical
- * decomposition in Unicode is 4 code points, Hangul LVT included.
- *
- * That threshold refuses nothing real. Every segment is bounded by the next
- * clean starter, and ASCII always ends one, so a 31-code-point segment means
- * 31 consecutive non-ASCII characters none of which is an ordinary letter —
- * not a word in any script.
- *
+ * Refuse input that would hit libutf's silent segment truncate
+ * (brazilofmux/utf#1). Bound dirty segments at 31 input code points so the
+ * decomposed form stays ≤124 of the normalizer's 128-slot segment.
  * Returns the byte offset of the first over-long segment, or -1.
  */
 #define NFC_SEGMENT_MAX 31
@@ -3801,7 +3760,7 @@ static int read_all(FILE *fp)
             emit_diagnostic_span("unicode.non-nfc", "warning", nlines + 1,
                                  at, at + bad_len,
                                  opt_normalize_nfc
-                                   ? "not NFC (rewritten by --normalize-nfc)"
+                                   ? "not NFC; will rewrite with --normalize-nfc"
                                    : "not NFC; mdfix reports but does not "
                                      "rewrite (use --normalize-nfc)");
         }
@@ -4826,8 +4785,12 @@ static void print_summary(const char *path)
     for (int i = 0; i < NUM_FIXES; i++)
         total += fix_counts[i];
 
-    if (total == 0 && serial_comma_warnings == 0 && number_style_warnings == 0
-        && unterminated_fence_warnings == 0 && non_nfc_warnings == 0) {
+    int nfc_rewrote = opt_normalize_nfc && non_nfc_warnings > 0;
+    int lint_only = serial_comma_warnings + number_style_warnings
+                    + unterminated_fence_warnings
+                    + (non_nfc_warnings > 0 && !opt_normalize_nfc ? 1 : 0);
+
+    if (total == 0 && !nfc_rewrote && lint_only == 0) {
         printf("%s: clean. Nothing to fix.\n", path);
         return;
     }
@@ -4838,10 +4801,12 @@ static void print_summary(const char *path)
             if (fix_counts[i] > 0)
                 printf("  %-40s %d\n", fix_labels[i], fix_counts[i]);
         }
+    } else if (nfc_rewrote) {
+        /* Applied rewrite, not a pure lint pass — avoid "nothing to fix". */
+        printf("\n%s: %d line%s normalized to NFC\n", path, non_nfc_warnings,
+               non_nfc_warnings == 1 ? "" : "s");
     } else {
-        /* Warnings without fixes still need to say which file they are
-         * about — the counts below are indented under a header that the
-         * `total > 0` branch would otherwise have printed. */
+        /* Warnings without fixes still need a file header for the counts. */
         printf("\n%s: nothing to fix, but:\n", path);
     }
     if (serial_comma_warnings > 0) {
@@ -4859,10 +4824,11 @@ static void print_summary(const char *path)
             "unterminated code fence",
             unterminated_fence_warnings);
     }
-    if (non_nfc_warnings > 0) {
+    if (non_nfc_warnings > 0 && opt_normalize_nfc && total > 0) {
+        printf("  %-40s %d\n", "line(s) normalized to NFC", non_nfc_warnings);
+    } else if (non_nfc_warnings > 0 && !opt_normalize_nfc) {
         printf("  %-40s %d\n",
-            opt_normalize_nfc ? "line(s) normalized to NFC"
-                              : "line(s) not NFC (--normalize-nfc fixes)",
+            "line(s) not NFC (--normalize-nfc fixes)",
             non_nfc_warnings);
     }
 }

@@ -240,6 +240,22 @@ class NormalizeTests(NFCTestCase):
         text = f"Body {LATIN} text.\n"
         self.assertEqual(self._fix(text), text)
 
+    def test_profiles_do_not_normalize(self) -> None:
+        # --normalize-nfc must stay out of --canonical / --technical: those
+        # are "safe without looking", and composing a heading moves its anchor.
+        text = f"# {LATIN}\n\nBody {LATIN} text.\n"
+        for profile in ("--canonical", "--technical"):
+            with self.subTest(profile=profile):
+                out = self._fix(text, profile)
+                self.assertIn("\u0301", out)
+                self.assertEqual(
+                    out.count(LATIN) + out.count("H\u00e9ading"),
+                    text.count(LATIN),
+                )
+                # Combining form must survive; precomposed must not appear
+                # unless it was already there.
+                self.assertNotIn("H\u00e9ading", out)
+
     def test_each_script_composes(self) -> None:
         for name, sample in (("latin", LATIN), ("greek", GREEK),
                              ("hangul", HANGUL)):
