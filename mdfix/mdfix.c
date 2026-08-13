@@ -377,80 +377,25 @@ static int find_bullet(const char *line)
 }
 
 /*
- * An ordered-list marker, in any form the pinned profile supports.
+ * An ordered-list marker. dialect-policy §3 pins +fancy_lists, +startnum
+ * and +example_lists; this covers the decimal forms (`1. `, `1) `) only.
  *
- * dialect-policy §3 pins `+fancy_lists`, `+startnum` and `+example_lists`, so
- * Pandoc reads all of these as an `OrderedList`:
- *
- *     1. x    1) x       decimal
- *     a. x    A) x       alpha        (+fancy_lists)
- *     i. x    iv) x      roman        (+fancy_lists)
- *     @lab. x (@lab) x   example      (+example_lists)
- *
- * mdfix recognized only the first, so the rest were paragraphs — and a list
- * read as a paragraph is a list the prose passes rewrite (issue #90).
- *
- * `is_ordered` answers what a line *is*, which is a different question from
- * whether a blank line should be inserted before it. That separation is
- * load-bearing here: `blank_before_list_marker` below stays narrower on
- * purpose, and the measurement in #90 is why.
+ * Alpha, roman, and example-list spellings (`a.`, `iv)`, `@lab.`, `(@lab)`)
+ * are omitted: the first two collide with hard-wrapped prose, and the last
+ * two are also mid-prose citations. Telling those apart needs Pandoc's rule
+ * that a list cannot interrupt a paragraph. Until that context exists, a
+ * miss is safer than inventing a list (issue #90).
  */
-static int ordered_marker_len(const char *line, int *digits_only)
+static int ordered_marker_len(const char *line)
 {
     int i = 0;
     while (line[i] == ' ' || line[i] == '\t')
         i++;
     int start = i;
-    if (digits_only)
-        *digits_only = 0;
-
-    /* Example list: `(@label)` or `@label.` */
-    if (line[i] == '(' && line[i + 1] == '@') {
-        i += 2;
-        while (isalnum((unsigned char)line[i]) || line[i] == '_'
-               || line[i] == '-')
-            i++;
-        if (line[i] == ')' && line[i + 1] == ' ')
-            return i + 2 - start;
+    if (!isdigit((unsigned char)line[i]))
         return 0;
-    }
-    if (line[i] == '@') {
+    while (isdigit((unsigned char)line[i]))
         i++;
-        while (isalnum((unsigned char)line[i]) || line[i] == '_'
-               || line[i] == '-')
-            i++;
-        if (line[i] == '.' && (line[i + 1] == ' ' || line[i + 1] == '\0'))
-            return i + 2 - start;
-        return 0;
-    }
-
-    if (isdigit((unsigned char)line[i])) {
-        while (isdigit((unsigned char)line[i]))
-            i++;
-        if (digits_only)
-            *digits_only = 1;
-    } else {
-        /*
-         * Alpha and roman markers (`a.`, `iv)`) are deliberately absent.
-         *
-         * They are indistinguishable from hard-wrapped prose, and #90
-         * measured how often that matters: of 56 lines matching `a. ` after
-         * a prose line in the downstream corpora, 52 are sentence
-         * continuations — "…eventually work" / "out. I want to point at
-         * something else." Recognizing them turned those into lists, and the
-         * blank-after-list repair then fired on the line following each one,
-         * which is how this was caught: `make test` failed on this
-         * repository's own documentation.
-         *
-         * Telling the two apart needs the context Pandoc uses — a list
-         * cannot interrupt a paragraph, so a marker after prose is not a
-         * marker — and that is a wider change than widening a predicate.
-         * Left to #90; the forms below have zero occurrences after prose in
-         * the same corpora, so they carry none of that risk.
-         */
-        return 0;
-    }
-
     if ((line[i] == '.' || line[i] == ')') && line[i + 1] == ' ')
         return i + 2 - start;
     return 0;
@@ -458,32 +403,14 @@ static int ordered_marker_len(const char *line, int *digits_only)
 
 static int is_ordered(const char *line)
 {
-    return ordered_marker_len(line, NULL) > 0;
+    return ordered_marker_len(line) > 0;
 }
 
-/*
- * Should a blank line be inserted before this marker (required repair R2)?
- *
- * Narrower than `is_ordered`, and measured rather than chosen. R2 *creates* a
- * list — Pandoc reads no marker as interrupting a paragraph, not even `1.` —
- * which is the I2.1 exception it is allowed. For bullets that is right: in
- * 320 downstream files, all 669 occurrences are a sentence introducing real
- * items.
- *
- * For alpha and roman it is wrong. Of 56 occurrences of `a. ` / `i. ` after a
- * prose line, 52 are hard-wrapped sentences — "…eventually work" / "out. I
- * want to point at something else." Fabricating a list there would be a 93%
- * false-positive rate, and it is exactly what Pandoc's no-interruption rule
- * protects against.
- *
- * So R2 keeps to the decimal forms, which is what it already had.
- */
+/* R2 follows the same decimal-only set: a blank before `1. ` / `1) ` is
+ * allowed to create a list; a blank before `a.` or `@lab.` would invent one. */
 static int blank_before_list_marker(const char *line)
 {
-    int digits = 0;
-    if (find_bullet(line) >= 0)
-        return 1;
-    return ordered_marker_len(line, &digits) > 0 && digits;
+    return find_bullet(line) >= 0 || is_ordered(line);
 }
 
 /* ATX heading: up to 3 leading spaces, then one or more #, then space or EOL */
@@ -814,11 +741,8 @@ static int list_content_column(const char *line)
         col++;
         i++;
     } else {
-        /* The third and last place that used to spell out the marker forms.
-         * All of them go through ordered_marker_len now, so `a.` and
-         * `@lab.` items get the same content column — and therefore the same
-         * nested-prose records — as `1.` ones. */
-        int len = ordered_marker_len(line, NULL);
+        /* Same helper as classify(), so `1)` items get nested prose too. */
+        int len = ordered_marker_len(line);
         if (len <= 0)
             return -1;
         int marker = len - 1;            /* len counts one trailing space */
@@ -1788,11 +1712,8 @@ static int list_marker_bytes(const char *line)
         if (line[i] != ' ' && line[i] != '\t')
             return -1;
     } else {
-        /* One definition of an ordered marker, shared with classify(). Before
-         * this, nested item prose was emitted for `1.` and not for `a.` or
-         * `@lab.` — the same list, two answers, because the marker rule was
-         * written twice. */
-        int len = ordered_marker_len(line, NULL);
+        /* Same helper as classify(), so `1)` items get nested prose too. */
+        int len = ordered_marker_len(line);
         if (len <= 0)
             return -1;
         i = chars + len - 1;      /* len counts the single trailing space */
@@ -4414,7 +4335,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 4418 "mdfix.c"
+#line 4339 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -4422,20 +4343,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 4426 "mdfix.c"
+#line 4347 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 4812 "mdfix.rl"
+#line 4733 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 4562 "mdfix.rl"
+#line 4483 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -4475,7 +4396,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 4438 "mdfix.rl"
+#line 4359 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial || ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -4512,19 +4433,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 4431 "mdfix.rl"
+#line 4352 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 4431 "mdfix.rl"
+#line 4352 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 4747 "mdfix.rl"
+#line 4668 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -4548,7 +4469,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 4792 "mdfix.rl"
+#line 4713 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -4569,7 +4490,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 4770 "mdfix.rl"
+#line 4691 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -4592,13 +4513,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 4812 "mdfix.rl"
+#line 4733 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 4692 "mdfix.rl"
+#line 4613 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -4621,7 +4542,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 4604 "mdfix.rl"
+#line 4525 "mdfix.rl"
 	{te = p+1;{
                 /*
                  * Either Chicago flag answers "is this run an ellipsis?"
@@ -4672,13 +4593,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 4812 "mdfix.rl"
+#line 4733 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 4654 "mdfix.rl"
+#line 4575 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -4717,7 +4638,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 4714 "mdfix.rl"
+#line 4635 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -4751,7 +4672,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 4500 "mdfix.rl"
+#line 4421 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4764,7 +4685,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 4474 "mdfix.rl"
+#line 4395 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4778,7 +4699,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 4512 "mdfix.rl"
+#line 4433 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4791,7 +4712,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 4487 "mdfix.rl"
+#line 4408 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4805,7 +4726,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 4524 "mdfix.rl"
+#line 4445 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -4844,7 +4765,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 4431 "mdfix.rl"
+#line 4352 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -4857,7 +4778,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 4861 "mdfix.c"
+#line 4782 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -4883,7 +4804,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 4887 "mdfix.c"
+#line 4808 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -4927,7 +4848,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 4931 "mdfix.c"
+#line 4852 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -4976,7 +4897,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 4980 "mdfix.c"
+#line 4901 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -4995,7 +4916,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 4999 "mdfix.c"
+#line 4920 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -5021,7 +4942,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 5025 "mdfix.c"
+#line 4946 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -5070,7 +4991,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 5074 "mdfix.c"
+#line 4995 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -5150,7 +5071,7 @@ case 13:
 
 	}
 
-#line 4819 "mdfix.rl"
+#line 4740 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';

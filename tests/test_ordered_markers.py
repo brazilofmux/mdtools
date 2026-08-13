@@ -6,17 +6,11 @@ Pandoc reads `1)`, `a.`, `i.`, `@lab.` and `(@lab)` all as `OrderedList`.
 mdfix recognized only `N. `, and a list read as a paragraph is a list the
 prose passes rewrite.
 
-**Classification and repair are separate questions, and only one of them is
-answered here.** What a line *is* governs whether prose passes may touch it
-and what the IR calls it. Whether a blank line should be inserted before it —
-required repair R2 — is a different judgement, and #90 measured that it must
-stay narrower: of 56 lines matching `a. ` after a prose line in the downstream
-corpora, 52 are hard-wrapped sentences ("…eventually work" / "out. I want to
-point at something else"). Recognizing those as markers fabricates lists.
-
-So this closes the forms with **zero** measured collisions and leaves alpha
-and roman to the context-sensitive work, where the fix is Pandoc's own rule:
-a list cannot interrupt a paragraph, so a marker after prose is not a marker.
+This closes the decimal form with zero collisions: `1)`. Alpha, roman, and
+example-list spellings stay unrecognized. The first two collide with
+hard-wrapped prose; the last two are also mid-prose citations. Closing those
+needs Pandoc's rule — a list cannot interrupt a paragraph — not a wider
+predicate.
 """
 
 from __future__ import annotations
@@ -33,10 +27,11 @@ MDFIX = ROOT / "mdfix" / "mdfix"
 PANDOC = shutil.which("pandoc")
 
 # Forms mdfix now recognizes, and what Pandoc calls each.
-RECOGNIZED = ("1. x", "23. x", "1) x", "@lab. x", "@. x", "(@lab) x", "(@) x")
+RECOGNIZED = ("1. x", "23. x", "1) x")
 
 # Recognized by Pandoc, deliberately not by mdfix. See the module docstring.
 DEFERRED = ("a. x", "A) x", "i. x", "iv) x")
+EXAMPLE = ("@lab. x", "@. x", "(@lab) x", "(@) x")
 
 
 class MarkerTestCase(unittest.TestCase):
@@ -94,10 +89,6 @@ class ClassificationTests(MarkerTestCase):
                 self.assertEqual(self._blocks(marker + "\n"), ["OrderedList"])
 
     def test_item_prose_is_reachable_in_every_form(self) -> None:
-        # The consequence that matters. Nested prose records are what let
-        # mdterms and prosevary see inside an item; before this, `1.` had them
-        # and `@lab.` did not — the same list, two answers, because the marker
-        # rule was written out three times in three places.
         for marker in RECOGNIZED:
             with self.subTest(marker=marker):
                 nested = [r for r in self._records(marker + "\n")
@@ -105,28 +96,28 @@ class ClassificationTests(MarkerTestCase):
                 self.assertEqual([r["kind"] for r in nested], ["paragraph"])
 
     def test_a_marker_needs_a_following_space(self) -> None:
-        for text in ("1.x\n", "@lab.x\n", "(@lab)x\n"):
-            with self.subTest(text=text.strip()):
-                self.assertEqual(self._top_kinds(text), ["paragraph"])
+        self.assertEqual(self._top_kinds("1.x\n"), ["paragraph"])
+        self.assertEqual(self._top_kinds("1)x\n"), ["paragraph"])
 
 
 class DeferredFormTests(MarkerTestCase):
     """
-    Alpha and roman markers, pinned as *not* recognized.
+    Alpha, roman, and example-list markers, pinned as *not* recognized.
 
     This is a divergence from Pandoc, and it is deliberate — closing it fails
     this test, which is the point. It cannot be closed by widening a predicate;
-    it needs the context rule, or hard-wrapped prose becomes lists.
+    it needs the context rule, or hard-wrapped prose (and mid-prose citations)
+    become lists.
     """
 
     @unittest.skipUnless(PANDOC, "pandoc not installed")
     def test_pandoc_reads_them_as_lists(self) -> None:
-        for marker in DEFERRED:
+        for marker in DEFERRED + EXAMPLE:
             with self.subTest(marker=marker):
                 self.assertEqual(self._blocks(marker + "\n"), ["OrderedList"])
 
     def test_mdfix_reads_them_as_prose(self) -> None:
-        for marker in DEFERRED:
+        for marker in DEFERRED + EXAMPLE:
             with self.subTest(marker=marker):
                 self.assertEqual(self._top_kinds(marker + "\n"), ["paragraph"])
 
@@ -158,10 +149,13 @@ class RepairTests(MarkerTestCase):
                 self.assertEqual(self._fix(source), source)
 
     def test_an_example_list_marker_after_prose_is_left_alone(self) -> None:
-        # Zero occurrences in the corpora either way, so the conservative
-        # answer costs nothing and cannot fabricate a list.
-        source = "para text\n@lab. x\n"
-        self.assertEqual(self._fix(source), source)
+        # Not a list to mdfix, so R2 and R3 must not invent one. Three lines
+        # so a false LT_ORDERED would fire blank-after-list on `more`.
+        for marker in EXAMPLE:
+            with self.subTest(marker=marker):
+                source = "para text\n" + marker + "\nmore\n"
+                self.assertEqual(self._fix(source), source)
+                self.assertEqual(self._top_kinds(source), ["paragraph"])
 
     def test_r2_still_stays_out_of_an_existing_list(self) -> None:
         source = ("1. First item whose text\n"
@@ -192,7 +186,7 @@ class PreservationTests(MarkerTestCase):
         # That is the same family as R2's divergence: a required repair
         # creating structure Pandoc did not read. Recorded on #90 rather than
         # fixed here, because deciding it means deciding what R3 is for.
-        for marker in ("- x", "1. x", "@lab. x"):
+        for marker in ("- x", "1. x", "1) x"):
             with self.subTest(marker=marker):
                 source = marker + "\nsecond line\n"
                 self.assertEqual(self._blocks(source), ["OrderedList"]

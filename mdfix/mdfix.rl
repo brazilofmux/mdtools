@@ -369,80 +369,25 @@ static int find_bullet(const char *line)
 }
 
 /*
- * An ordered-list marker, in any form the pinned profile supports.
+ * An ordered-list marker. dialect-policy §3 pins +fancy_lists, +startnum
+ * and +example_lists; this covers the decimal forms (`1. `, `1) `) only.
  *
- * dialect-policy §3 pins `+fancy_lists`, `+startnum` and `+example_lists`, so
- * Pandoc reads all of these as an `OrderedList`:
- *
- *     1. x    1) x       decimal
- *     a. x    A) x       alpha        (+fancy_lists)
- *     i. x    iv) x      roman        (+fancy_lists)
- *     @lab. x (@lab) x   example      (+example_lists)
- *
- * mdfix recognized only the first, so the rest were paragraphs — and a list
- * read as a paragraph is a list the prose passes rewrite (issue #90).
- *
- * `is_ordered` answers what a line *is*, which is a different question from
- * whether a blank line should be inserted before it. That separation is
- * load-bearing here: `blank_before_list_marker` below stays narrower on
- * purpose, and the measurement in #90 is why.
+ * Alpha, roman, and example-list spellings (`a.`, `iv)`, `@lab.`, `(@lab)`)
+ * are omitted: the first two collide with hard-wrapped prose, and the last
+ * two are also mid-prose citations. Telling those apart needs Pandoc's rule
+ * that a list cannot interrupt a paragraph. Until that context exists, a
+ * miss is safer than inventing a list (issue #90).
  */
-static int ordered_marker_len(const char *line, int *digits_only)
+static int ordered_marker_len(const char *line)
 {
     int i = 0;
     while (line[i] == ' ' || line[i] == '\t')
         i++;
     int start = i;
-    if (digits_only)
-        *digits_only = 0;
-
-    /* Example list: `(@label)` or `@label.` */
-    if (line[i] == '(' && line[i + 1] == '@') {
-        i += 2;
-        while (isalnum((unsigned char)line[i]) || line[i] == '_'
-               || line[i] == '-')
-            i++;
-        if (line[i] == ')' && line[i + 1] == ' ')
-            return i + 2 - start;
+    if (!isdigit((unsigned char)line[i]))
         return 0;
-    }
-    if (line[i] == '@') {
+    while (isdigit((unsigned char)line[i]))
         i++;
-        while (isalnum((unsigned char)line[i]) || line[i] == '_'
-               || line[i] == '-')
-            i++;
-        if (line[i] == '.' && (line[i + 1] == ' ' || line[i + 1] == '\0'))
-            return i + 2 - start;
-        return 0;
-    }
-
-    if (isdigit((unsigned char)line[i])) {
-        while (isdigit((unsigned char)line[i]))
-            i++;
-        if (digits_only)
-            *digits_only = 1;
-    } else {
-        /*
-         * Alpha and roman markers (`a.`, `iv)`) are deliberately absent.
-         *
-         * They are indistinguishable from hard-wrapped prose, and #90
-         * measured how often that matters: of 56 lines matching `a. ` after
-         * a prose line in the downstream corpora, 52 are sentence
-         * continuations — "…eventually work" / "out. I want to point at
-         * something else." Recognizing them turned those into lists, and the
-         * blank-after-list repair then fired on the line following each one,
-         * which is how this was caught: `make test` failed on this
-         * repository's own documentation.
-         *
-         * Telling the two apart needs the context Pandoc uses — a list
-         * cannot interrupt a paragraph, so a marker after prose is not a
-         * marker — and that is a wider change than widening a predicate.
-         * Left to #90; the forms below have zero occurrences after prose in
-         * the same corpora, so they carry none of that risk.
-         */
-        return 0;
-    }
-
     if ((line[i] == '.' || line[i] == ')') && line[i + 1] == ' ')
         return i + 2 - start;
     return 0;
@@ -450,32 +395,14 @@ static int ordered_marker_len(const char *line, int *digits_only)
 
 static int is_ordered(const char *line)
 {
-    return ordered_marker_len(line, NULL) > 0;
+    return ordered_marker_len(line) > 0;
 }
 
-/*
- * Should a blank line be inserted before this marker (required repair R2)?
- *
- * Narrower than `is_ordered`, and measured rather than chosen. R2 *creates* a
- * list — Pandoc reads no marker as interrupting a paragraph, not even `1.` —
- * which is the I2.1 exception it is allowed. For bullets that is right: in
- * 320 downstream files, all 669 occurrences are a sentence introducing real
- * items.
- *
- * For alpha and roman it is wrong. Of 56 occurrences of `a. ` / `i. ` after a
- * prose line, 52 are hard-wrapped sentences — "…eventually work" / "out. I
- * want to point at something else." Fabricating a list there would be a 93%
- * false-positive rate, and it is exactly what Pandoc's no-interruption rule
- * protects against.
- *
- * So R2 keeps to the decimal forms, which is what it already had.
- */
+/* R2 follows the same decimal-only set: a blank before `1. ` / `1) ` is
+ * allowed to create a list; a blank before `a.` or `@lab.` would invent one. */
 static int blank_before_list_marker(const char *line)
 {
-    int digits = 0;
-    if (find_bullet(line) >= 0)
-        return 1;
-    return ordered_marker_len(line, &digits) > 0 && digits;
+    return find_bullet(line) >= 0 || is_ordered(line);
 }
 
 /* ATX heading: up to 3 leading spaces, then one or more #, then space or EOL */
@@ -806,11 +733,8 @@ static int list_content_column(const char *line)
         col++;
         i++;
     } else {
-        /* The third and last place that used to spell out the marker forms.
-         * All of them go through ordered_marker_len now, so `a.` and
-         * `@lab.` items get the same content column — and therefore the same
-         * nested-prose records — as `1.` ones. */
-        int len = ordered_marker_len(line, NULL);
+        /* Same helper as classify(), so `1)` items get nested prose too. */
+        int len = ordered_marker_len(line);
         if (len <= 0)
             return -1;
         int marker = len - 1;            /* len counts one trailing space */
@@ -1780,11 +1704,8 @@ static int list_marker_bytes(const char *line)
         if (line[i] != ' ' && line[i] != '\t')
             return -1;
     } else {
-        /* One definition of an ordered marker, shared with classify(). Before
-         * this, nested item prose was emitted for `1.` and not for `a.` or
-         * `@lab.` — the same list, two answers, because the marker rule was
-         * written twice. */
-        int len = ordered_marker_len(line, NULL);
+        /* Same helper as classify(), so `1)` items get nested prose too. */
+        int len = ordered_marker_len(line);
         if (len <= 0)
             return -1;
         i = chars + len - 1;      /* len counts the single trailing space */
