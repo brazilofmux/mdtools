@@ -377,16 +377,13 @@ static int find_bullet(const char *line)
 }
 
 /*
- * An ordered-list marker. dialect-policy §3 pins +fancy_lists, +startnum
- * and +example_lists; this covers the decimal forms (`1. `, `1) `) only.
+ * A decimal ordered-list marker: `1. ` or `1) `.
  *
- * Alpha, roman, and example-list spellings (`a.`, `iv)`, `@lab.`, `(@lab)`)
- * are omitted: the first two collide with hard-wrapped prose, and the last
- * two are also mid-prose citations. Telling those apart needs Pandoc's rule
- * that a list cannot interrupt a paragraph. Until that context exists, a
- * miss is safer than inventing a list (issue #90).
+ * Context-free, because Pandoc reads a decimal marker as a list wherever a
+ * list may begin. The fancy spellings are in fancy_marker_len(), which needs
+ * to know whether a paragraph is open.
  */
-static int ordered_marker_len(const char *line)
+static int decimal_marker_len(const char *line)
 {
     int i = 0;
     while (line[i] == ' ' || line[i] == '\t')
@@ -399,18 +396,6 @@ static int ordered_marker_len(const char *line)
     if ((line[i] == '.' || line[i] == ')') && line[i + 1] == ' ')
         return i + 2 - start;
     return 0;
-}
-
-static int is_ordered(const char *line)
-{
-    return ordered_marker_len(line) > 0;
-}
-
-/* R2 follows the same decimal-only set: a blank before `1. ` / `1) ` is
- * allowed to create a list; a blank before `a.` or `@lab.` would invent one. */
-static int blank_before_list_marker(const char *line)
-{
-    return find_bullet(line) >= 0 || is_ordered(line);
 }
 
 /* ATX heading: up to 3 leading spaces, then one or more #, then space or EOL */
@@ -475,6 +460,191 @@ static int indent_columns(const char *line, int *out_chars)
     if (out_chars)
         *out_chars = i;
     return col;
+}
+
+/*
+ * Columns of whitespace at `s`, which starts at column `col`.
+ *
+ * Marker separators are measured in columns, not bytes, because Pandoc
+ * expands tabs before parsing: `A.` then a tab reaches column 4, which is the
+ * two columns the initials rule below wants.
+ */
+static int space_columns(const char *s, int col)
+{
+    int width = 0;
+    for (int i = 0; s[i] == ' ' || s[i] == '\t'; i++) {
+        int w = (s[i] == '\t') ? (MD_TAB_STOP - (col % MD_TAB_STOP)) : 1;
+        col += w;
+        width += w;
+    }
+    return width;
+}
+
+/*
+ * A roman numeral as Pandoc parses one, not as Rome wrote them.
+ *
+ * Each place is an independent optional piece taken in a fixed order, so the
+ * ones place is a run and `iiii` parses, `ivi` parses as 4 + 1, and `did` and
+ * `ll` do not parse at all. Both halves matter: `mix. ` opening a block is an
+ * ordered list to Pandoc and `did. ` is a paragraph, and no strict-roman
+ * predicate separates that pair.
+ *
+ * Returns bytes consumed and, in *value, the number — which the caller needs
+ * because the initials rule keys on the value, not the spelling.
+ *
+ * Verified against pandoc over every 1–4 letter string in each case, both
+ * delimiters, one and two spaces: 22,608 spellings, zero disagreements.
+ */
+static int roman_numeral(const char *s, int upper, int *value)
+{
+    const char *d = upper ? "IVXLCDM" : "ivxlcdm";
+    const char one = d[0], five = d[1], ten = d[2], fifty = d[3];
+    const char hundred = d[4], fivehundred = d[5], thousand = d[6];
+    int i = 0, v = 0;
+
+    if (s[0] == '\0' || strchr(d, s[0]) == NULL)
+        return 0;
+
+    while (s[i] == thousand)                       { i += 1; v += 1000; }
+    if (s[i] == hundred && s[i + 1] == thousand)   { i += 2; v += 900; }
+    if (s[i] == fivehundred)                       { i += 1; v += 500; }
+    if (s[i] == hundred && s[i + 1] == fivehundred){ i += 2; v += 400; }
+    while (s[i] == hundred)                        { i += 1; v += 100; }
+    if (s[i] == ten && s[i + 1] == hundred)        { i += 2; v += 90; }
+    if (s[i] == fifty)                             { i += 1; v += 50; }
+    if (s[i] == ten && s[i + 1] == fifty)          { i += 2; v += 40; }
+    while (s[i] == ten)                            { i += 1; v += 10; }
+    if (s[i] == one && s[i + 1] == ten)            { i += 2; v += 9; }
+    if (s[i] == five)                              { i += 1; v += 5; }
+    if (s[i] == one && s[i + 1] == five)           { i += 2; v += 4; }
+    while (s[i] == one)                            { i += 1; v += 1; }
+
+    if (value)
+        *value = v;
+    return i;
+}
+
+/* The values a single roman letter spells, and so the ones that could be an
+ * initial: I, V, X, L, C, D, M. */
+static int roman_is_one_letter_value(int value)
+{
+    return value == 1 || value == 5 || value == 10 || value == 50
+        || value == 100 || value == 500 || value == 1000;
+}
+
+static int utf8_seq_len(unsigned char c)
+{
+    if (c < 0x80) return 1;
+    if ((c & 0xE0) == 0xC0) return 2;
+    if ((c & 0xF0) == 0xE0) return 3;
+    if ((c & 0xF8) == 0xF0) return 4;
+    return 1;
+}
+
+/*
+ * An example-list marker — `@lab.`, `@lab)`, `(@lab)` — returning the bytes
+ * through the delimiter.
+ *
+ * The label is Unicode: Pandoc reads `@café.` and `@ЛАБ.` as example lists, so
+ * mdfix_is_word answers this rather than isalnum. `_` and `-` are named
+ * separately because neither is a word character (`_` is Pc; see
+ * mdfix_is_word_connector) and both are in the label alphabet.
+ */
+static int example_marker_len(const char *s)
+{
+    int i = 0;
+    int paren = (s[0] == '(');
+
+    if (paren)
+        i++;
+    if (s[i] != '@')
+        return 0;
+    i++;
+    while (s[i]) {
+        if (s[i] == '_' || s[i] == '-') {
+            i++;
+            continue;
+        }
+        int n = utf8_seq_len((unsigned char)s[i]);
+        if (!mdfix_is_word((const unsigned char *)s + i,
+                           (const unsigned char *)s + i + n))
+            break;
+        i += n;
+    }
+    if (paren)
+        return (s[i] == ')') ? i + 1 : 0;
+    return (s[i] == '.' || s[i] == ')') ? i + 1 : 0;
+}
+
+/*
+ * The ordered-list markers Pandoc reads only where no paragraph is open:
+ * alpha (`a. `), roman (`iv) `), and example lists (`@lab. `, `(@lab) `).
+ * dialect-policy §3 pins +fancy_lists and +example_lists, so all of these are
+ * lists — but `lists_without_preceding_blankline` is *off*, and that is what
+ * keeps a hard-wrapped `C. They built a real toolchain.` prose.
+ *
+ * Returns marker bytes plus one separator, the same convention as
+ * decimal_marker_len, so list_content_column() can subtract the one and
+ * measure the rest itself.
+ */
+static int fancy_marker_len(const char *line)
+{
+    int chars = 0;
+    int col = indent_columns(line, &chars);
+    int i = chars;
+    int need = 1;
+
+    int example = example_marker_len(line + i);
+    if (example > 0) {
+        i += example;
+    } else {
+        int j = i;
+        while (isalpha((unsigned char)line[j]))
+            j++;
+        int len = j - i;
+        if (len == 0 || (line[j] != '.' && line[j] != ')'))
+            return 0;
+
+        int upper = isupper((unsigned char)line[i]);
+        int value = 0;
+        int roman = (roman_numeral(line + i, upper, &value) == len);
+        if (len != 1 && !roman)
+            return 0;
+
+        /*
+         * Pandoc wants two columns after an uppercase marker ending in a
+         * period, because one column is how a name is abbreviated: without
+         * the rule, "B. Russell wrote" opens a list. It applies to a single
+         * letter and to the roman numerals a single letter spells, so `IV. `
+         * is a list and `I. ` is not.
+         */
+        if (line[j] == '.' && upper
+            && (len == 1 || roman_is_one_letter_value(value)))
+            need = 2;
+        i = j + 1;
+    }
+
+    col += i - chars;
+    if (space_columns(line + i, col) < need)
+        return 0;
+    return i - chars + 1;
+}
+
+/*
+ * How long is the ordered marker on a line already known to open a list?
+ *
+ * Context-free on purpose: by the time a caller is measuring an item's
+ * content column, the classification that needed the context has happened.
+ */
+static int ordered_marker_len(const char *line)
+{
+    int len = decimal_marker_len(line);
+    return len > 0 ? len : fancy_marker_len(line);
+}
+
+static int is_ordered(const char *line)
+{
+    return ordered_marker_len(line) > 0;
 }
 
 static int fence_prefix(
@@ -601,15 +771,41 @@ static int frontmatter_close_line(void)
     return -1;
 }
 
+/*
+ * Classify a line, knowing whether a paragraph is open above it.
+ *
+ * Pandoc pins `lists_without_preceding_blankline` off, so *no* list
+ * interrupts a paragraph — not `- x`, not `1. x`, not `a. x`. The decimal and
+ * bullet forms are still classified as lists there, because R2's whole job is
+ * to make the list the author meant; see dialect-policy §7.
+ *
+ * The fancy spellings are not, and that is the difference this parameter
+ * exists for. `C. They built a real toolchain.` is the third line of a
+ * hard-wrapped paragraph in slow32-book, and reading it as a list marker
+ * would cut the sentence in half.
+ */
+static enum linetype classify_ctx(const char *line, int paragraph_open)
+{
+    if (is_blank(line))              return LT_BLANK;
+    if (is_fmatter_delim(line))      return LT_FMATTER;
+    if (is_code_fence(line))         return LT_CODEFENCE;
+    if (is_heading(line))            return LT_HEADING;
+    if (find_bullet(line) >= 0)      return LT_BULLET;
+    if (decimal_marker_len(line) > 0) return LT_ORDERED;
+    if (!paragraph_open && fancy_marker_len(line) > 0)
+        return LT_ORDERED;
+    return LT_TEXT;
+}
+
+/*
+ * The context-free reading, for the lookahead call sites: "is the next line a
+ * heading", "does this line end the paragraph". Assuming a paragraph is open
+ * keeps those answers exactly what they were before the fancy forms existed,
+ * which is the conservative direction — a missed marker leaves prose alone.
+ */
 static enum linetype classify(const char *line)
 {
-    if (is_blank(line))         return LT_BLANK;
-    if (is_fmatter_delim(line)) return LT_FMATTER;
-    if (is_code_fence(line))    return LT_CODEFENCE;
-    if (is_heading(line))       return LT_HEADING;
-    if (find_bullet(line) >= 0) return LT_BULLET;
-    if (is_ordered(line))       return LT_ORDERED;
-    return LT_TEXT;
+    return classify_ctx(line, 1);
 }
 
 /*
@@ -705,6 +901,19 @@ static int raw_html_line_has_end(const char *s, enum raw_html_kind kind)
     case RAW_HTML_TYPE1:   return has_type1_end_tag(s);
     default:              return 0;
     }
+}
+
+/*
+ * Is a paragraph open on the line above?
+ *
+ * Only after paragraph text with no blank between. Not after a heading, a
+ * fence, a table, a reference definition — and not after a list marker
+ * either, which the oracle settles: `- item` then `a. x` is two lists to
+ * Pandoc, not one item with a lazy continuation.
+ */
+static int paragraph_is_open(int had_blank, enum linetype prev_content_type)
+{
+    return !had_blank && prev_content_type == LT_TEXT;
 }
 
 static int is_list_type(enum linetype t)
@@ -2288,7 +2497,8 @@ static void emit_ir(FILE *out, const char *source)
 
     for (; i < nlines; i++) {
         const char *line = lines[i];
-        enum linetype type = classify(line);
+        enum linetype type = classify_ctx(line, paragraph_is_open(had_blank,
+                                                                 prev_content_type));
 
         /* ── Code fence ── */
         if (parse_fence_opener(line, &fence)) {
@@ -4335,7 +4545,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 4339 "mdfix.c"
+#line 4549 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -4343,20 +4553,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 4347 "mdfix.c"
+#line 4557 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 4733 "mdfix.rl"
+#line 4943 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 4483 "mdfix.rl"
+#line 4693 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -4396,7 +4606,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 4359 "mdfix.rl"
+#line 4569 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial || ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -4433,19 +4643,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 4352 "mdfix.rl"
+#line 4562 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 4352 "mdfix.rl"
+#line 4562 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 4668 "mdfix.rl"
+#line 4878 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -4469,7 +4679,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 4713 "mdfix.rl"
+#line 4923 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -4490,7 +4700,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 4691 "mdfix.rl"
+#line 4901 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -4513,13 +4723,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 4733 "mdfix.rl"
+#line 4943 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 4613 "mdfix.rl"
+#line 4823 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -4542,7 +4752,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 4525 "mdfix.rl"
+#line 4735 "mdfix.rl"
 	{te = p+1;{
                 /*
                  * Either Chicago flag answers "is this run an ellipsis?"
@@ -4593,13 +4803,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 4733 "mdfix.rl"
+#line 4943 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 4575 "mdfix.rl"
+#line 4785 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -4638,7 +4848,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 4635 "mdfix.rl"
+#line 4845 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -4672,7 +4882,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 4421 "mdfix.rl"
+#line 4631 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4685,7 +4895,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 4395 "mdfix.rl"
+#line 4605 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4699,7 +4909,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 4433 "mdfix.rl"
+#line 4643 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4712,7 +4922,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 4408 "mdfix.rl"
+#line 4618 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4726,7 +4936,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 4445 "mdfix.rl"
+#line 4655 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -4765,7 +4975,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 4352 "mdfix.rl"
+#line 4562 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -4778,7 +4988,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 4782 "mdfix.c"
+#line 4992 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -4804,7 +5014,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 4808 "mdfix.c"
+#line 5018 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -4848,7 +5058,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 4852 "mdfix.c"
+#line 5062 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -4897,7 +5107,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 4901 "mdfix.c"
+#line 5111 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -4916,7 +5126,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 4920 "mdfix.c"
+#line 5130 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -4942,7 +5152,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 4946 "mdfix.c"
+#line 5156 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -4991,7 +5201,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 4995 "mdfix.c"
+#line 5205 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -5071,20 +5281,30 @@ case 13:
 
 	}
 
-#line 4740 "mdfix.rl"
+#line 4950 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';
 }
 
-/* The scanner is prose typography. Undo it if it changed the line's
- * block type — those edits are not individually reversible. */
+/*
+ * The scanner is prose typography. Undo it if it changed the line's block
+ * type — those edits are not individually reversible.
+ *
+ * The comparison takes the *widest* reading, the one where no paragraph is
+ * open, because the question here is "could this edit have changed the
+ * structure anywhere", not "did it change it here". `A.  x` is an ordered
+ * list; the Chicago sentence-space rule collapses the two spaces after what
+ * it sees as a sentence-ending period, and one space is a name being
+ * abbreviated. Asking the narrow reading missed that, because a fancy marker
+ * is prose to it both before and after.
+ */
 static int apply_scanner_raw(char *line, int hits[NUM_FIXES]);
 
 static int apply_scanner(char *line, int linenum)
 {
     char before[MAX_LINE];
-    enum linetype was = classify(line);
+    enum linetype was = classify_ctx(line, 0);
     strcpy(before, line);
 
     int hits[NUM_FIXES];
@@ -5092,7 +5312,7 @@ static int apply_scanner(char *line, int linenum)
     int changed = apply_scanner_raw(line, hits);
     if (!changed)
         return 0;
-    if (classify(line) != was) {
+    if (classify_ctx(line, 0) != was) {
         strcpy(line, before);
         return 0;
     }
@@ -5168,7 +5388,9 @@ static void process(FILE *out)
 
     for (int i = 0; i < nlines; i++) {
         char *line = lines[i];
-        enum linetype type = classify(line);
+        enum linetype type = classify_ctx(line,
+                                          paragraph_is_open(had_blank,
+                                                            prev_content_type));
 
         /* YAML frontmatter: open only at line 0 when a closer exists.
          * Close at the precomputed line (--- or ...), not by LT_FMATTER —
@@ -5442,11 +5664,15 @@ static void process(FILE *out)
          * If we're entering a list from non-list content with no
          * intervening blank line, pandoc will choke — especially
          * when the preceding line ends with a colon.
+         *
+         * The marker set R2 acts on is now exactly what classify_ctx() calls
+         * a list, and the separate narrower predicate is gone with it: a
+         * fancy marker in the one place R2 could fire on it — mid-paragraph —
+         * is no longer classified as a list at all.
          */
         if (opt_required
             && !had_blank
             && is_list_type(type)
-            && blank_before_list_marker(line)
             && !in_list_context
             && prev_content_type != LT_BLANK)
         {

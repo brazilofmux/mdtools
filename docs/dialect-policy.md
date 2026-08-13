@@ -284,6 +284,37 @@ reproduced byte for byte; "prose" means eligible for rewriting.
 | **Hard break (two trailing spaces)** | `LineBreak` | preserved; a longer run normalized to two | n/a | ok |
 | **Ellipsis under Chicago** | text | emits U+2026 `…` | n/a | ok |
 
+### Required repairs may create structure
+
+Three pinned divergences turned out to be one question, and it is now decided.
+
+R2 inserts a blank line before a list that follows prose. R3 separates a lazy
+continuation from the item above it. The fuzzer's `KNOWN_DIVERGENCES` entry is
+R2 again, seen through `--wrap`. In every case mdfix emits a document whose
+block structure differs from what Pandoc read out of the input: Pandoc reads
+one `Para`, and mdfix produces the `OrderedList` the author was plainly
+writing.
+
+**That is the point, not a defect.** It is why mdfix exists. Generated
+Markdown routinely writes a list directly under a sentence; Pandoc silently
+folds the whole thing into one paragraph and reports nothing, and the author
+finds out from the rendered book. I2.1's exception for the required set covers
+this, and the required set is where a repair like it belongs.
+
+The corpora settle the direction rather than taste: 669 bullets and 160
+decimal markers follow prose across the manuscripts, and every one of them is
+a list the author meant.
+
+Two consequences follow, and both are load-bearing:
+
+- **Where mdfix cannot tell, it must not guess.** The fancy marker forms below
+  are recognized only where Pandoc recognizes them, which is where no
+  paragraph is open. Mid-paragraph, `C. They built a real toolchain.` is the
+  third line of a hard-wrapped sentence, and no repair fires on it.
+- **Where it cannot tell and the stakes are structural, it should say so.**
+  A diagnostic is the right answer to an ambiguity mdfix must not resolve
+  silently — issue #97.
+
 ### Known gaps
 
 Each was found by running the tools against Pandoc while pinning this profile
@@ -328,6 +359,22 @@ emits. A line whose trailing whitespace contains a **tab** is left byte for
 byte: Pandoc expands it to the next tab stop, so whether it is a break depends
 on the line’s width and on `--tab-stop`, and mdfix will not encode a reader
 flag (§4).
+
+**Fancy and example-list markers** (#90). `a. `, `A) `, `iv) `, `IV. `,
+`@lab. ` and `(@lab) ` are `OrderedList` to Pandoc and were paragraphs to
+mdfix, which meant the prose passes rewrote inside a list. They are now
+classified wherever Pandoc classifies them — which is wherever no paragraph is
+open, `lists_without_preceding_blankline` being off — together with Pandoc's
+two-column rule for uppercase markers ending in a period and its loose roman
+parser. Swept against Pandoc over 22,608 marker spellings, zero
+disagreements; see [ir-schema.md](ir-schema.md).
+
+Closing it also closed a **silent structure loss** that had nothing to do with
+classification. `A.  First.` is a list; the Chicago sentence-space rule saw a
+period followed by two spaces, collapsed them, and `A. First.` is a name being
+abbreviated. `apply_scanner()` already refused prose edits that change a
+line's block type — it was asking the narrow reading, to which a fancy marker
+is prose both before and after. It now asks the widest one.
 
 **Chicago ellipsis.** A spaced run (`. . .`) or a run of four or more dots now
 becomes U+2026 `…` rather than ASCII `...`, under every flag that rewrites
