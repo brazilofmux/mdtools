@@ -30,6 +30,24 @@ ROOT = Path(__file__).resolve().parents[1]
 MDFIX = ROOT / "mdfix" / "mdfix"
 SCRIPTS = ROOT / "scripts"
 
+try:                       # tomllib is stdlib from 3.11
+    import tomllib
+    HAS_TOML = True
+except ImportError:
+    HAS_TOML = False
+
+# On 3.10 a config file cannot be *read*, and mdtools refuses rather than
+# ignoring it — quietly proceeding is how a tool ends up doing something the
+# project did not ask for. That is the documented behaviour, so tests which
+# need a config to take effect are skipped there rather than weakened here.
+#
+# The exit-code tests below are unaffected, because they assert 2 either way.
+# Worth naming: on 3.10 they cannot tell "refused because malformed" from
+# "refused because tomllib is missing". Both are 2, which is the contract, but
+# only 3.11+ exercises the reason.
+needs_toml = unittest.skipUnless(
+    HAS_TOML, "reading mdtools.toml needs tomllib (Python 3.11+)")
+
 # Every Python tool, with an invocation that should succeed on a clean file.
 # prosevary is absent on purpose: it holds a model and a corpus, so it is not
 # a check-shaped tool and the verbs would not mean the same thing.
@@ -169,6 +187,7 @@ class ConfigTests(ContractTestCase):
                 self.assertIn("--config", help_text)
                 self.assertIn("--mdfix", help_text)
 
+    @needs_toml
     def test_a_named_config_is_read(self) -> None:
         # mdcheck's `suppress` is the observable one: with the setting in
         # force the finding disappears.
@@ -178,6 +197,7 @@ class ConfigTests(ContractTestCase):
         result = self._run("mdcheck", "--config", "ci.toml", "a.md")
         self.assertEqual(result.returncode, 0, msg=result.stdout)
 
+    @needs_toml
     def test_the_config_glossary_is_used(self) -> None:
         # mdterms would otherwise walk up and find the default glossary; the
         # setting has to beat discovery or it is decoration.
@@ -190,6 +210,7 @@ class ConfigTests(ContractTestCase):
                     f'[mdtools]\nglossary = "{other.relative_to(self.dir)}"\n')
         self.assertEqual(self._run("mdterms", "a.md").returncode, 1)
 
+    @needs_toml
     def test_an_explicit_flag_beats_the_config(self) -> None:
         self._write("mdtools.toml", '[mdtools]\nglossary = "absent.yaml"\n')
         self._write("a.md", "# T\n\nWe use pandoc here.\n")
@@ -268,6 +289,7 @@ class DispatcherTests(ContractTestCase):
                               capture_output=True, text=True, env=self._env(),
                               cwd=str(self.dir))
 
+    @needs_toml
     def test_a_named_config_reaches_the_tool(self) -> None:
         # The dispatcher used to inject its own discovered settings as
         # explicit flags, which beat --config in the tool's precedence order.
@@ -284,6 +306,7 @@ class DispatcherTests(ContractTestCase):
         result = self._mdtools("terms", "--config", "ci.toml", "a.md")
         self.assertEqual(result.returncode, 1, msg=result.stdout + result.stderr)
 
+    @needs_toml
     def test_config_can_inspect_a_named_file(self) -> None:
         self._write("ci.toml", '[mdtools]\nprofile = "canonical"\n')
         result = self._mdtools("config", "--config", "ci.toml")

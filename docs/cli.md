@@ -85,7 +85,13 @@ A `--config` naming a file that does not exist is an error rather than a
 fall back to discovery. A caller who names a config file and silently gets a
 different one has no way to notice.
 
-`mdtools config` prints what was resolved and from where.
+`mdtools config` prints what was resolved and from where, and takes
+`--config PATH` itself so you can check what a CI config resolves to.
+
+On Python 3.10 there is no `tomllib`, so a config file that is *present*
+cannot be read — and mdtools refuses rather than ignoring it. Quietly
+proceeding is how a tool ends up doing something the project did not ask for.
+Everything works without a config file on every supported version.
 
 ## Machine-readable output
 
