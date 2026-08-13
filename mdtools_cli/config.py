@@ -102,12 +102,30 @@ def _resolve_mdfix(root: Path, value: str) -> str:
 
 
 def load(start: Optional[Path] = None) -> Config:
+    """The config discovered by walking up from `start`."""
     root = find_root(start)
     path = find_config(start)
-    config = Config(root=root, path=path)
     if path is None:
-        return config
+        return Config(root=root, path=None)
+    return _read(path, root)
 
+
+def load_file(path: Path) -> Config:
+    """
+    A config file named outright, wherever it lives.
+
+    The project root is still discovered from the file's directory rather than
+    taken to *be* it, because `glossary` and `state_dir` are root-relative and
+    a config kept in `ci/` should not silently reroot them there.
+    """
+    path = Path(path)
+    if not path.is_file():
+        raise ConfigError(f"{path}: not a file")
+    return _read(path, find_root(path))
+
+
+def _read(path: Path, root: Path) -> Config:
+    config = Config(root=root, path=path)
     if tomllib is None:
         raise ConfigError(
             f"{path} needs Python 3.11 or newer to read (tomllib). "

@@ -14,14 +14,13 @@ from pathlib import Path
 from typing import List, Optional, Sequence
 
 from mdquery.ir import IRError
+from mdtools_cli.config import ConfigError
+from mdtools_cli.contract import (
+    FINDINGS, OK, USAGE, add_common, add_verbs, fail, resolve_config,
+    resolve_mdfix,
+)
 
 from .checks import Finding, run
-
-try:
-    from mdtools_cli.config import ConfigError, load as load_config
-except ImportError:  # pragma: no cover
-    ConfigError = RuntimeError  # type: ignore
-    load_config = None  # type: ignore
 
 
 def _sarif(findings: Sequence[Finding]) -> dict:
@@ -60,7 +59,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("paths", nargs="+", type=Path,
                         help="files, or directories to walk for *.md")
-    parser.add_argument("--mdfix", metavar="PATH")
+    add_common(parser)
+    # No --fix or --diff: mdcheck reports things a tool cannot decide how to
+    # repair (a missing asset, an anchor two files disagree about). --check is
+    # still accepted so a script can pass the verb without knowing which tool
+    # it is driving.
+    add_verbs(parser, fixable=False)
     parser.add_argument("--suppress", action="append", default=[],
                         metavar="RULE",
                         help="rule id to ignore; a trailing * matches a "
@@ -82,23 +86,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     for path in missing:
         print(f"mdcheck: {path}: does not exist", file=sys.stderr)
     if missing:
-        return 2
-
-    suppress: List[str] = list(args.suppress)
-    if load_config is not None:
-        try:
-            config = load_config(args.paths[0])
-            suppress.extend(config.suppress)
-        except ConfigError as exc:
-            # A present but unusable project policy must not look like success.
-            print(f"mdcheck: {exc}", file=sys.stderr)
-            return 2
+        return USAGE
 
     try:
-        findings = run(args.paths, args.mdfix, suppress)
+        # A present but unusable project policy must not look like success.
+        config = resolve_config(args.config, args.paths[0])
+    except ConfigError as exc:
+        return fail("mdcheck", str(exc))
+    suppress: List[str] = list(args.suppress) + list(config.suppress)
+
+    try:
+        findings = run(args.paths, resolve_mdfix(args.mdfix, config), suppress)
     except IRError as exc:
-        print(f"mdcheck: {exc}", file=sys.stderr)
-        return 2
+        return fail("mdcheck", str(exc))
 
     if args.sarif:
         print(json.dumps(_sarif(findings), indent=2))
@@ -116,8 +116,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                   file=sys.stderr)
 
     if any(f.severity == "error" for f in findings):
-        return 1
-    return 1 if (args.warnings and findings) else 0
+        return FINDINGS
+    return FINDINGS if (args.warnings and findings) else OK
 
 
 if __name__ == "__main__":

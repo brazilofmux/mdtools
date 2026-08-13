@@ -31,6 +31,8 @@ rule that Markdown grammar lives in exactly one implementation.
 consumer never has to re-derive the grammar. [docs/mdquery.md](docs/mdquery.md) is the first
 tool built on it; [docs/mdterms.md](docs/mdterms.md) and
 [docs/mdlinks.md](docs/mdlinks.md) followed.
+[docs/cli.md](docs/cli.md) is the surface they all share: verbs, exit codes
+and configuration.
 
 ## Canonical history (mdfix)
 
@@ -64,6 +66,18 @@ mdlinks --help
 mdcheck --help
 prosevary --help
 ```
+
+Every tool answers the same three questions, and `--check` is the default:
+
+```bash
+mdlinks --check docs/*.md    # report
+mdlinks --diff  docs/*.md    # what would change
+mdlinks --fix   docs/*.md    # change it
+```
+
+Exit codes are the same everywhere: `0` clean, `1` findings, `2` the tool
+could not run. The full contract, including `--config` and which tool has
+which verb, is [docs/cli.md](docs/cli.md).
 
 Or work from a clone without installing:
 

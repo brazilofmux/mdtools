@@ -14,6 +14,11 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Sequence
 
+from mdtools_cli.config import ConfigError
+from mdtools_cli.contract import (
+    FINDINGS, OK, USAGE, add_common, fail, resolve_config, resolve_mdfix,
+)
+
 from .ir import IRError, load
 from .query import (
     annotate,
@@ -32,19 +37,18 @@ TABLE_FORMS = ("pipe", "simple", "grid", "multiline")
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    common = argparse.ArgumentParser(add_help=False)
+    add_common(common)
     parser = argparse.ArgumentParser(
         prog="mdquery",
         description="Structural queries and extraction for Markdown.",
         epilog="Spans are byte offsets into the file on disk. "
                "See docs/mdquery.md and docs/ir-schema.md.",
     )
+    add_common(parser)
     parser.add_argument(
         "--json", action="store_true",
         help="emit JSONL (one object per result) instead of human output",
-    )
-    parser.add_argument(
-        "--mdfix", metavar="PATH",
-        help="mdfix binary to use (default: $MDFIX, sibling build, then PATH)",
     )
     parser.add_argument(
         "-q", "--quiet", action="store_true",
@@ -53,14 +57,16 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_outline = sub.add_parser("outline", help="heading tree with spans")
+    p_outline = sub.add_parser("outline", parents=[common],
+                               help="heading tree with spans")
     p_outline.add_argument("files", nargs="+", type=Path)
     p_outline.add_argument(
         "--max-level", type=int, default=6, metavar="N",
         help="omit headings deeper than N (default: 6)",
     )
 
-    p_blocks = sub.add_parser("blocks", help="every block, filterable")
+    p_blocks = sub.add_parser("blocks", parents=[common],
+                              help="every block, filterable")
     p_blocks.add_argument("files", nargs="+", type=Path)
     p_blocks.add_argument(
         "--kind", action="append", choices=KINDS, metavar="KIND",
@@ -85,12 +91,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     p_section = sub.add_parser(
-        "section", help="print the source text of one section")
+        "section", parents=[common],
+        help="print the source text of one section")
     p_section.add_argument("file", type=Path)
     p_section.add_argument("--id", required=True, metavar="SLUG",
                            help="heading identifier, as `outline` reports it")
 
-    p_stats = sub.add_parser("stats", help="block counts by kind")
+    p_stats = sub.add_parser("stats", parents=[common],
+                             help="block counts by kind")
     p_stats.add_argument("files", nargs="+", type=Path)
 
     return parser
@@ -139,7 +147,7 @@ def cmd_outline(args, documents) -> int:
                   f"{'#' * (block.level or 1)} {block.text}  [{block.slug}]")
 
     _emit([b.to_dict() for b in rows], args.json, human)
-    return 0
+    return OK
 
 
 def cmd_blocks(args, documents) -> int:
@@ -169,7 +177,7 @@ def cmd_blocks(args, documents) -> int:
                   f"[{block.start}:{block.end}] under {where}")
 
     _emit([b.to_dict() for b in rows], args.json, human)
-    return 0
+    return OK
 
 
 def cmd_section(args, documents) -> int:
@@ -179,7 +187,7 @@ def cmd_section(args, documents) -> int:
         available = ", ".join(b.slug or "" for b in outline(document)) or "none"
         print(f"mdquery: no heading with id {args.id!r} in {document.path}\n"
               f"available: {available}", file=sys.stderr)
-        return 1
+        return FINDINGS
     start, end = span
     data = document.path.read_bytes()
     if args.json:
@@ -192,7 +200,7 @@ def cmd_section(args, documents) -> int:
         }, ensure_ascii=False))
     else:
         sys.stdout.write(data[start:end].decode("utf-8", errors="replace"))
-    return 0
+    return OK
 
 
 def cmd_stats(args, documents) -> int:
@@ -217,7 +225,7 @@ def cmd_stats(args, documents) -> int:
                 print(f"  {n:5d}  {kind}")
 
     _emit(rows, args.json, human)
-    return 0
+    return OK
 
 
 COMMANDS = {
@@ -229,23 +237,43 @@ COMMANDS = {
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    args = _build_parser().parse_args(argv)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # Flags before the subcommand: `mdquery --config PATH stats file.md`.
+    pre = argparse.ArgumentParser(add_help=False)
+    add_common(pre)
+    pre.add_argument("--json", action="store_true")
+    pre.add_argument("-q", "--quiet", action="store_true")
+    pre_args, rest = pre.parse_known_args(argv)
+    args = _build_parser().parse_args(rest)
+    if pre_args.config is not None:
+        args.config = pre_args.config
+    if pre_args.mdfix is not None:
+        args.mdfix = pre_args.mdfix
+    if pre_args.json:
+        args.json = True
+    if pre_args.quiet:
+        args.quiet = True
     paths = [args.file] if args.command == "section" else args.files
 
     missing = [p for p in paths if not p.is_file()]
     if missing:
         for path in missing:
             print(f"mdquery: {path}: not a file", file=sys.stderr)
-        return 2
+        return USAGE
 
     try:
-        documents = [annotate(d) for d in load(paths, args.mdfix)]
+        config = resolve_config(args.config, paths[0] if paths else None)
+    except ConfigError as exc:
+        return fail("mdquery", str(exc))
+
+    try:
+        documents = [annotate(d)
+                     for d in load(paths, resolve_mdfix(args.mdfix, config))]
     except IRError as exc:
-        print(f"mdquery: {exc}", file=sys.stderr)
-        return 2
+        return fail("mdquery", str(exc))
 
     if not documents:
-        return 0
+        return OK
 
     _warn_hidden(documents, args.quiet)
     return COMMANDS[args.command](args, documents)

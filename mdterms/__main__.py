@@ -15,6 +15,11 @@ from pathlib import Path
 from typing import List, Optional, Sequence
 
 from mdquery.ir import IRError
+from mdtools_cli.contract import (
+    FINDINGS, OK, USAGE, add_common, add_verbs, apply_edits, fail,
+    resolve_config, resolve_mdfix, write_edits,
+)
+from mdtools_cli.config import ConfigError
 
 from .check import edits_for, scan
 from .glossary import GlossaryError, find, freeze_set, load
@@ -30,12 +35,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("files", nargs="*", type=Path)
     parser.add_argument(
         "--glossary", type=Path, metavar="PATH",
-        help="glossary_terms.yaml (default: walk up from the first input)",
+        help="glossary_terms.yaml (default: mdtools.toml, then walk up "
+             "from the first input)",
     )
-    parser.add_argument(
-        "--mdfix", metavar="PATH",
-        help="mdfix binary (default: $MDFIX, sibling build, then PATH)",
-    )
+    add_common(parser)
+    add_verbs(parser)
     out = parser.add_mutually_exclusive_group()
     out.add_argument(
         "--diagnostics", action="store_true",
@@ -56,73 +60,101 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parser().parse_args(argv)
 
     start = args.files[0] if args.files else None
-    glossary_path = find(args.glossary, start)
+    try:
+        config = resolve_config(args.config, start)
+    except ConfigError as exc:
+        return fail("mdterms", str(exc))
+    mdfix = resolve_mdfix(args.mdfix, config)
+
+    # --glossary beats mdtools.toml beats discovery. Explicit always wins:
+    # a caller who names a glossary and silently gets another one has no way
+    # to notice the check ran against the wrong vocabulary.
+    glossary_path = find(args.glossary or config.glossary, start)
     if glossary_path is None:
-        print("mdterms: no glossary_terms.yaml found; pass --glossary",
-              file=sys.stderr)
-        return 2
+        return fail("mdterms", "no glossary_terms.yaml found; pass --glossary")
     try:
         terms = load(glossary_path)
     except GlossaryError as exc:
-        print(f"mdterms: {exc}", file=sys.stderr)
-        return 2
+        return fail("mdterms", str(exc))
 
     if args.freeze:
         for spelling in freeze_set(terms):
             print(spelling)
-        return 0
+        return OK
 
     if not args.files:
-        print("mdterms: no input files", file=sys.stderr)
-        return 2
+        return fail("mdterms", "no input files")
     # One file at a time for --edits: the applier reads a single document and
     # its `bytes` header is that document's size. Refuse before scanning so
     # clean files and unfixable-only results are not a silent multi-file path.
     if args.edits and len(args.files) != 1:
-        print("mdterms: --edits takes one file at a time, because "
-              "`mdfix --apply-edits` applies to one document",
-              file=sys.stderr)
-        return 2
+        return fail("mdterms",
+                    "--edits takes one file at a time, because "
+                    "`mdfix --apply-edits` applies to one document. "
+                    "Use --fix to repair several.")
     missing = [p for p in args.files if not p.is_file()]
     for path in missing:
         print(f"mdterms: {path}: not a file", file=sys.stderr)
     if missing:
-        return 2
+        return USAGE
 
     findings = []
     try:
         for path in args.files:
-            findings.extend(scan(path, terms, args.mdfix))
+            findings.extend(scan(path, terms, mdfix))
     except IRError as exc:
-        print(f"mdterms: {exc}", file=sys.stderr)
-        return 2
+        return fail("mdterms", str(exc))
 
     if args.edits:
-        edits = edits_for(findings)
-        if edits:
-            path = Path(args.files[0])
-            print(json.dumps({"kind": "edits", "schema": "mdtools-edits-1",
-                              "source": str(path),
-                              "bytes": path.stat().st_size}))
-            for edit in edits:
-                print(json.dumps(edit, ensure_ascii=False))
-        return 1 if findings else 0
+        write_edits(sys.stdout, Path(args.files[0]), edits_for(findings))
+        return FINDINGS if findings else OK
+
+    if args.fix or args.diff:
+        # Never write the file here — build the edits and let mdfix apply
+        # them, so the validation in docs/edit-schema.md is not something a
+        # second write path can skip.
+        for path in args.files:
+            edits = edits_for([f for f in findings if f.path == str(path)])
+            if not edits:
+                continue
+            rc = apply_edits(path, edits, mdfix=mdfix, diff=args.diff,
+                             quiet=True)
+            if rc != OK:
+                return USAGE
+        if args.diff:
+            return FINDINGS if findings else OK
+        # Re-scan: overlapping fixable clusters are dropped from the edit
+        # list without being applied, and still-wrong prose is still a finding.
+        remaining = []
+        try:
+            for path in args.files:
+                remaining.extend(scan(path, terms, mdfix))
+        except IRError as exc:
+            return fail("mdterms", str(exc))
+        for finding in remaining:
+            print(f"{finding.path}:{finding.line}: {finding.message}")
+        return FINDINGS if remaining else OK
 
     if args.diagnostics:
         for finding in findings:
             print(json.dumps(finding.to_diagnostic(), ensure_ascii=False))
-        return 1 if findings else 0
+        return FINDINGS if findings else OK
 
     for finding in findings:
         print(f"{finding.path}:{finding.line}: {finding.message}")
-    if findings:
-        fixable = sum(1 for f in findings if f.fixable)
-        print(f"\n{len(findings)} finding(s), {fixable} fixable. "
-              f"Apply with:\n"
-              f"  mdterms --edits {findings[0].path} | "
-              f"mdfix --apply-edits -i {findings[0].path}",
+    fixable = sum(1 for f in findings if f.fixable)
+    if fixable:
+        # Only when there is something --fix would actually do. Offering it
+        # against a file whose remaining findings are all inside protected
+        # spans sends the reader to a command that changes nothing.
+        #
+        # The report is on stdout and this is on stderr; flush first, or the
+        # hint overtakes the findings it refers to whenever stdout is a pipe.
+        sys.stdout.flush()
+        print(f"\n{len(findings)} finding(s), {fixable} fixable. Apply with:\n"
+              f"  mdterms --fix {' '.join(str(p) for p in args.files)}",
               file=sys.stderr)
-    return 1 if findings else 0
+    return FINDINGS if findings else OK
 
 
 if __name__ == "__main__":
