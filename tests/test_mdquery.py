@@ -466,7 +466,7 @@ class CliTests(MdqueryTestCase):
 
     def test_missing_file_fails_cleanly(self) -> None:
         rc, _, err = self._run("outline", str(self.dir / "nope.md"))
-        self.assertEqual(rc, 1)
+        self.assertEqual(rc, 2)
         self.assertIn("not a file", err)
 
     def test_several_files_at_once(self) -> None:

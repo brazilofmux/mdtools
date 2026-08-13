@@ -126,7 +126,7 @@ mdfix/           # Ragel source, generated C, Makefile
 mdquery/          # Python package (python -m mdquery)
 mdterms/          # Python package (python -m mdterms)
 mdlinks/          # Python package (python -m mdlinks)
-mdtools_cli/      # Python package behind the  dispatcher
+mdtools_cli/      # Python package behind the mdtools dispatcher
 prosevary/        # Python package (python -m prosevary)
 docs/             # architecture decisions (start with architecture.md)
 scripts/          # install helpers

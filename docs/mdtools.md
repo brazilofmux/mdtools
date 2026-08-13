@@ -31,22 +31,31 @@ a document defect.
 
 ## `mdtools.toml`
 
-Optional. Discovered by walking up from the **input file**, so running against
-another repository picks up that repository's settings rather than the
-caller's.
+Optional. Discovered by walking up from the **input file** (not the working
+directory), so running against another repository picks up that repository's
+settings rather than the caller's. For `query`, the start path is the file
+argument after the subcommand (`outline` / `blocks` / …), not the subcommand
+name.
+
+With no config file, defaults match bare tools: `profile = "none"`, wrap off.
+Set a profile only when the project wants one.
 
 ```toml
 [mdtools]
 profile   = "technical"     # none | canonical | technical
 wrap      = 78              # 0 disables
 editorial = false           # only meaningful with profile = "none"
-glossary  = "terms/glossary_terms.yaml"
-state_dir = ".mdtools"
-mdfix     = "/usr/local/bin/mdfix"
+glossary  = "terms/glossary_terms.yaml"   # terms and vary
+state_dir = ".mdtools"                    # prosevary --db lives here
+mdfix     = "bin/mdfix"                 # absolute, root-relative, or PATH name
 ```
 
 Paths resolve against the **project root**, never against the installed
-package — no mutable state is written into the package tree.
+package — no mutable state is written into the package tree. `mdfix` that
+looks like a path is root-relative; a bare name is looked up on `PATH`.
+`glossary` is passed to both `terms` and `vary`. `state_dir` sets prosevary's
+database to `<state_dir>/prosevary.sqlite`. Configured `mdfix` is used by
+`fix`, `query`, `links`, and `terms`.
 
 An unknown setting or a bad value is an **error**, not a warning. Silently
 ignoring one is how a project comes to believe a setting applies when it does
@@ -57,9 +66,11 @@ acceptance criterion and also the fastest way to answer why it did what it did.
 
 ### Flags win
 
-If you pass any `--flag` to `mdtools fix`, the configured profile is not
-added. A flag on the command line is a deliberate override, and merging the
-two would make the result hard to predict.
+If you pass any long `--flag` to `mdtools fix`, the configured profile is not
+added. Short options (`-q`, `-i`, `-n`) still take the project profile — that
+is the common install path. A long flag on the command line is a deliberate
+override, and merging it with the profile would make the result hard to
+predict.
 
 ### Python 3.11
 

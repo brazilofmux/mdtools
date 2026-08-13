@@ -34,9 +34,7 @@ mdquery-check: mdfix
 	./scripts/mdquery stats README.md >/dev/null
 	@echo "mdquery CLI ok"
 
-# Python packages and their launchers. Listed once: the install rule used to
-# repeat five near-identical stanzas, and editing it broke twice by landing a
-# path in the wrong one.
+# Single package/launcher lists so install and uninstall stay in sync.
 PACKAGES = prosevary mdquery mdterms mdlinks mdtools_cli
 LAUNCHERS = prosevary mdquery mdterms mdlinks mdtools
 

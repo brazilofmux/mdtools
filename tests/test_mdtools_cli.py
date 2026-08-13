@@ -18,6 +18,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 from mdtools_cli import __main__ as cli
 from mdtools_cli.config import ConfigError, fix_flags, find_root, load
@@ -104,6 +105,13 @@ class DispatchTests(CliTestCase):
         self.assertEqual(rc, 2)
         self.assertIn("issue #13", err)
 
+    def test_missing_mdfix_is_exit_two(self) -> None:
+        src = self._doc("Body.\n")
+        with mock.patch.object(cli, "_find_mdfix", return_value="/no/such/mdfix"):
+            rc, _, err = self._run("fix", "-q", str(src), str(self.dir / "out.md"))
+        self.assertEqual(rc, 2)
+        self.assertIn("not found", err)
+
 
 class ExitCodeTests(CliTestCase):
     """0 clean, 1 findings, 2 usage or environment."""
@@ -116,8 +124,12 @@ class ExitCodeTests(CliTestCase):
         path = self._doc("# T\n\nSee [x](#nope).\n")
         self.assertEqual(self._run("links", str(path))[0], 1)
 
-    def test_missing_file_is_two(self) -> None:
+    def test_missing_file_is_two_for_links(self) -> None:
         self.assertEqual(self._run("links", str(self.dir / "nope.md"))[0], 2)
+
+    def test_missing_file_is_two_for_query(self) -> None:
+        self.assertEqual(
+            self._run("query", "outline", str(self.dir / "nope.md"))[0], 2)
 
 
 class ConfigTests(CliTestCase):
@@ -136,7 +148,20 @@ class ConfigTests(CliTestCase):
     def test_no_config_file_still_works(self) -> None:
         rc, out, _ = self._run("config")
         self.assertEqual(rc, 0)
-        self.assertIsNone(json.loads(out)["config"])
+        data = json.loads(out)
+        self.assertIsNone(data["config"])
+        self.assertEqual(data["profile"], "none")
+
+    def test_no_config_fix_does_not_inject_canonical(self) -> None:
+        # Parity with bare mdfix: no project file means no profile flags.
+        src = self._doc("Body.\n")
+        out_path = self.dir / "out.md"
+        with mock.patch("subprocess.run") as run:
+            run.return_value = mock.Mock(returncode=0)
+            self._run("fix", "-q", str(src), str(out_path))
+            argv = run.call_args[0][0]
+        self.assertNotIn("--canonical", argv)
+        self.assertNotIn("--technical", argv)
 
     @unittest.skipUnless(HAS_TOML, "tomllib needs Python 3.11")
     def test_settings_are_read(self) -> None:
@@ -156,8 +181,19 @@ class ConfigTests(CliTestCase):
             self.assertLessEqual(len(line), 40)
 
     @unittest.skipUnless(HAS_TOML, "tomllib needs Python 3.11")
+    def test_short_flags_still_take_the_profile(self) -> None:
+        self._config('[mdtools]\nprofile = "technical"\nwrap = 40\n')
+        src = self._doc("Some prose that is definitely longer than forty "
+                        "columns wide for certain.\n")
+        out_path = self.dir / "out.md"
+        # Only -q: project wrap/profile must still apply.
+        self._run("fix", "-q", str(src), str(out_path))
+        for line in out_path.read_text(encoding="utf-8").splitlines():
+            self.assertLessEqual(len(line), 40)
+
+    @unittest.skipUnless(HAS_TOML, "tomllib needs Python 3.11")
     def test_explicit_flags_win_over_config(self) -> None:
-        # A flag on the command line is a deliberate override; silently
+        # A long flag on the command line is a deliberate override; silently
         # merging it with the profile would make the result hard to predict.
         self._config('[mdtools]\nprofile = "technical"\nwrap = 40\n')
         src = self._doc("word " * 40 + "\n")
@@ -182,14 +218,24 @@ class ConfigTests(CliTestCase):
         self._config('[mdtools]\nwrap = -3\n')
         with self.assertRaises(ConfigError):
             load(self.dir)
+        self._config('[mdtools]\nwrap = true\n')
+        with self.assertRaises(ConfigError):
+            load(self.dir)
 
     @unittest.skipUnless(HAS_TOML, "tomllib needs Python 3.11")
     def test_paths_resolve_against_the_project_root(self) -> None:
         # Never against the installed package: that is the acceptance
         # criterion about not writing mutable state into the package tree.
-        self._config('[mdtools]\nglossary = "terms/g.yaml"\n')
+        self._config(
+            '[mdtools]\n'
+            'glossary = "terms/g.yaml"\n'
+            'mdfix = "bin/mdfix"\n'
+            'state_dir = ".state"\n'
+        )
         config = load(self.dir)
         self.assertEqual(config.glossary, (self.dir / "terms/g.yaml").resolve())
+        self.assertEqual(config.mdfix, str((self.dir / "bin/mdfix").resolve()))
+        self.assertEqual(config.state_dir, (self.dir / ".state").resolve())
         self.assertNotIn("site-packages", str(config.glossary))
 
     @unittest.skipUnless(HAS_TOML, "tomllib needs Python 3.11")
@@ -200,6 +246,54 @@ class ConfigTests(CliTestCase):
         doc = nested / "one.md"
         doc.write_text("Text.\n", encoding="utf-8")
         self.assertEqual(load(doc).wrap, 40)
+
+    @unittest.skipUnless(HAS_TOML, "tomllib needs Python 3.11")
+    def test_query_discovers_config_from_the_file_not_the_subcommand(self) -> None:
+        # cwd in a different tree must not win over the file's project.
+        other = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(other, True))
+        (other / ".git").mkdir()
+        (other / "mdtools.toml").write_text(
+            '[mdtools]\nprofile = "technical"\nwrap = 40\n', encoding="utf-8")
+        doc = other / "chapter.md"
+        doc.write_text("# Title\n\nBody.\n", encoding="utf-8")
+        # Run from self.dir (has its own .git, no toml) against other's file.
+        with mock.patch.object(Path, "cwd", return_value=self.dir):
+            rc, out, _ = self._run("query", "outline", str(doc))
+        self.assertEqual(rc, 0)
+        self.assertIn("[title]", out)
+        # Config start for that invocation must be the other project's wrap.
+        self.assertEqual(load(doc).wrap, 40)
+        self.assertEqual(load(self.dir).wrap, 0)
+
+    @unittest.skipUnless(HAS_TOML, "tomllib needs Python 3.11")
+    def test_configured_mdfix_is_passed_to_query(self) -> None:
+        self._config(f'[mdtools]\nmdfix = "{MDFIX}"\n')
+        path = self._doc("# Title\n\nBody.\n")
+        with mock.patch("mdquery.__main__.main", return_value=0) as main:
+            rc, _, _ = self._run("query", "outline", str(path))
+        self.assertEqual(rc, 0)
+        argv = main.call_args[0][0]
+        self.assertIn("--mdfix", argv)
+        self.assertEqual(argv[argv.index("--mdfix") + 1], str(MDFIX.resolve()))
+
+    @unittest.skipUnless(HAS_TOML, "tomllib needs Python 3.11")
+    def test_glossary_is_passed_to_vary(self) -> None:
+        gloss = self.dir / "g.yaml"
+        gloss.write_text("terms: []\n", encoding="utf-8")
+        self._config('[mdtools]\nglossary = "g.yaml"\nstate_dir = ".state"\n')
+        path = self._doc("Body.\n")
+        with mock.patch("prosevary.__main__.main", return_value=0) as main:
+            rc, _, _ = self._run("vary", str(path), "--dry-run")
+        self.assertEqual(rc, 0)
+        argv = main.call_args[0][0]
+        self.assertIn("--glossary", argv)
+        self.assertEqual(argv[argv.index("--glossary") + 1], str(gloss.resolve()))
+        self.assertIn("--db", argv)
+        self.assertEqual(
+            argv[argv.index("--db") + 1],
+            str((self.dir / ".state" / "prosevary.sqlite").resolve()),
+        )
 
 
 class LauncherTests(unittest.TestCase):

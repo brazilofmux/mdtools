@@ -30,6 +30,9 @@ from .config import ConfigError, Config, fix_flags, load
 
 VERBS = ("fix", "query", "terms", "links", "vary", "config", "check")
 
+# mdquery subcommands — not path starts for config discovery.
+_QUERY_COMMANDS = frozenset({"outline", "blocks", "section", "stats"})
+
 USAGE = """\
 usage: mdtools <command> [args...]
 
@@ -58,6 +61,40 @@ def _find_mdfix(config: Config) -> str:
     return "mdfix"
 
 
+def _config_start(verb: str, rest: Sequence[str]) -> Optional[Path]:
+    """
+    Walk start for mdtools.toml: the input file, not a subcommand name.
+
+    Prefer an existing path among positionals so `query outline chapter.md`
+    uses the file. Otherwise take the first path-like token (slash, backslash,
+    or a suffix), skipping known query subcommands.
+    """
+    positionals = [a for a in rest if not a.startswith("-")]
+    for a in positionals:
+        try:
+            p = Path(a)
+            if p.exists():
+                return p
+        except OSError:
+            continue
+    for a in positionals:
+        if verb == "query" and a in _QUERY_COMMANDS:
+            continue
+        if "/" in a or "\\" in a or "." in Path(a).name:
+            return Path(a)
+    return None
+
+
+def _has_long_flag(rest: Sequence[str], name: str) -> bool:
+    return any(a == name or a.startswith(name + "=") for a in rest)
+
+
+def _with_mdfix(config: Config, rest: Sequence[str]) -> List[str]:
+    if config.mdfix and not _has_long_flag(rest, "--mdfix"):
+        return ["--mdfix", config.mdfix, *rest]
+    return list(rest)
+
+
 def _run_module(module: str, argv: Sequence[str]) -> int:
     """Dispatch in-process, so a traceback points at the real code."""
     import importlib
@@ -77,9 +114,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         sys.stderr.write(USAGE)
         return 2
 
-    # Configuration is discovered from the first path-looking argument, so a
-    # run against another repository picks up that repository's settings.
-    start = next((Path(a) for a in rest if not a.startswith("-")), None)
+    # Discovered from the input file so another repository's settings apply.
+    start = _config_start(verb, rest)
     try:
         config = load(start)
     except ConfigError as exc:
@@ -97,21 +133,36 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
 
     if verb == "fix":
+        # Only long options suppress the profile; short flags like -q/-i still
+        # take project wrap/profile (common: `mdtools fix -i file.md`).
         flags = [] if any(a.startswith("--") for a in rest) else fix_flags(config)
-        result = subprocess.run([_find_mdfix(config), *flags, *rest])
+        try:
+            result = subprocess.run([_find_mdfix(config), *flags, *rest])
+        except FileNotFoundError:
+            print(f"mdtools: mdfix not found ({_find_mdfix(config)})",
+                  file=sys.stderr)
+            return 2
+        except OSError as exc:
+            print(f"mdtools: {exc}", file=sys.stderr)
+            return 2
         return result.returncode
 
     if verb == "query":
-        return _run_module("mdquery", rest)
+        return _run_module("mdquery", _with_mdfix(config, rest))
     if verb == "links":
-        return _run_module("mdlinks", rest)
+        return _run_module("mdlinks", _with_mdfix(config, rest))
     if verb == "terms":
         extra: List[str] = []
-        if config.glossary and not any(a == "--glossary" for a in rest):
-            extra = ["--glossary", str(config.glossary)]
-        return _run_module("mdterms", [*extra, *rest])
+        if config.glossary and not _has_long_flag(rest, "--glossary"):
+            extra.extend(["--glossary", str(config.glossary)])
+        return _run_module("mdterms", [*extra, *_with_mdfix(config, rest)])
     if verb == "vary":
-        return _run_module("prosevary", rest)
+        extra = []
+        if config.glossary and not _has_long_flag(rest, "--glossary"):
+            extra.extend(["--glossary", str(config.glossary)])
+        if config.state_dir and not _has_long_flag(rest, "--db"):
+            extra.extend(["--db", str(config.state_dir / "prosevary.sqlite")])
+        return _run_module("prosevary", [*extra, *rest])
     return 2
 
 

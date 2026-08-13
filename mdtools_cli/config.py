@@ -1,9 +1,9 @@
 """
 Project configuration: `mdtools.toml`.
 
-Discovery walks up from the input file, then the working directory, stopping
-at the first `mdtools.toml`. That is the same rule mdterms uses for the
-glossary, so a repository behaves the same way whichever tool is invoked.
+Discovery walks up from one start path (the input file, or cwd), stopping at
+the first `mdtools.toml` or `.git`. If neither is found, the start directory
+is the project root.
 
 No mutable state is written into the installed package tree — resolved paths
 are always relative to the project root, never to the package.
@@ -39,7 +39,9 @@ class ConfigError(RuntimeError):
 class Config:
     root: Path
     path: Optional[Path] = None          # the mdtools.toml itself, if any
-    profile: str = "canonical"           # mdfix profile for `mdtools fix`
+    # "none" when no config: parity with bare mdfix. Set in mdtools.toml to
+    # opt into a profile.
+    profile: str = "none"
     wrap: int = 0                        # 0 = no wrapping
     editorial: bool = False
     glossary: Optional[Path] = None
@@ -84,6 +86,17 @@ def find_config(start: Optional[Path] = None) -> Optional[Path]:
 _ALLOWED = {"profile", "wrap", "editorial", "glossary", "state_dir", "mdfix"}
 
 
+def _resolve_mdfix(root: Path, value: str) -> str:
+    """Absolute path, root-relative path, or bare command name on PATH."""
+    path = Path(value)
+    if path.is_absolute():
+        return str(path)
+    # Path-like relative values are project-root relative.
+    if "/" in value or "\\" in value:
+        return str((root / value).resolve())
+    return value
+
+
 def load(start: Optional[Path] = None) -> Config:
     root = find_root(start)
     path = find_config(start)
@@ -120,9 +133,11 @@ def load(start: Optional[Path] = None) -> Config:
                 f"{path}: profile must be none, canonical or technical")
         config.profile = value
     if "wrap" in section:
-        if not isinstance(section["wrap"], int) or section["wrap"] < 0:
+        value = section["wrap"]
+        # bool is a subclass of int; reject true/false as wrap widths.
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise ConfigError(f"{path}: wrap must be a non-negative integer")
-        config.wrap = section["wrap"]
+        config.wrap = value
     if "editorial" in section:
         if not isinstance(section["editorial"], bool):
             raise ConfigError(f"{path}: editorial must be true or false")
@@ -131,7 +146,7 @@ def load(start: Optional[Path] = None) -> Config:
         if key in section:
             setattr(config, key, (root / str(section[key])).resolve())
     if "mdfix" in section:
-        config.mdfix = str(section["mdfix"])
+        config.mdfix = _resolve_mdfix(root, str(section["mdfix"]))
     return config
 
 
