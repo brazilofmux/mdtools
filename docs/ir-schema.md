@@ -217,6 +217,7 @@ $ mdfix --emit-ir chapter.md | grep '"kind":"link"'
 | `image` | as `link` |
 | `code_span` | `text`; **protected** |
 | `footnote_ref` | `label` |
+| `citation` | `key`, `mode`, `keyStart`, `keyEnd` |
 | `raw_inline` | — ; **protected** |
 
 `destination` is the bare URL: optional surrounding `<>` and a trailing title
@@ -246,6 +247,45 @@ Reference and shortcut links carry their **label rather than a resolved
 destination** — the consumer already has the `reference_def` records (which
 also carry `label` and `destination`). Collapsed `[text][]` emits
 `form: "reference"` with an empty `label` and the key in `text`.
+
+### Citations
+
+`+citations` is pinned by dialect-policy §3, so what counts as one is Pandoc's
+question. Every rule was measured against pandoc 3.10, and
+`tests/test_citations.py` re-measures on every run rather than trusting a
+transcription.
+
+```console
+$ mdfix --emit-ir paper.md | grep citation
+{"kind":"citation","start":4,"end":14,...,"key":"smith2020","keyStart":5,"keyEnd":14,"mode":"in-text"}
+```
+
+**One record per key, not per bracket.** `[@a; @b]` is two things a consumer
+resolves, and mdcheck wants to name the one that is missing. `mode` is
+`normal`, `in-text` or `suppress-author`, matching Pandoc's three.
+
+`keyStart` / `keyEnd` span the key without the `@`, on the same principle as
+destination spans: a consumer that wants to *rewrite* a key needs its bytes.
+
+Two corners worth knowing, because no summary would warn you:
+
+| Written | Read as |
+|---|---|
+| `@a..b`, `@a-`, `@a's` | key `a` — a key never ends on punctuation |
+| `a@b`, `email@x.com` | nothing — a word character before the `@` makes it an address |
+| `@lab. text` at a block start | **an example list**, not a citation |
+
+That last one is `+example_lists`, also pinned. Pandoc reads `@label.` at the
+start of a block as an `OrderedList` marker and emits no citation at all, so
+mdfix does not either — otherwise mdcheck would report an unresolved citation
+for a list marker. (mdfix does not yet *classify* example lists as lists;
+that is issue #90.)
+
+**Under-reporting is the safe direction.** Citations inside link text are
+missed, because the link scanner consumes the bracket without descending into
+it — the recursive inline tree below. A citation mdfix misses is one mdcheck
+cannot check; one it invents is a false report. The misses are pinned in
+`tests/test_citations.py`.
 
 These are **purely additive** — new kinds at `depth > 0`, which the nesting rule
 above already excludes from totality. No existing consumer changed and the
@@ -297,7 +337,7 @@ name, which the header record makes detectable.
 
 - **Remaining inline structure.** Links, images, code spans, footnote
   references and raw inline HTML are emitted (see [Inline records](#inline-records)).
-  Still missing: emphasis/strong, citations, a full recursive inline tree
+  Still missing: emphasis/strong, a full recursive inline tree
   (nested markup inside link text), cell-level table structure, and a separate
   title field on destinations (titles are stripped, not retained). Inline
   `endLine` is the construct's start line; multi-line code spans are not
