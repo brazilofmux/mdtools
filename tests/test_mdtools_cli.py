@@ -99,11 +99,12 @@ class DispatchTests(CliTestCase):
         self.assertEqual(rc, 0)
         self.assertTrue(out_path.read_text(encoding="utf-8").startswith("# Title"))
 
-    def test_check_says_it_is_not_implemented(self) -> None:
-        # Better than a confusing failure: the verb is reserved and says so.
-        rc, _, err = self._run("check", "x.md")
-        self.assertEqual(rc, 2)
-        self.assertIn("issue #13", err)
+    def test_check_reaches_mdcheck(self) -> None:
+        # Dispatcher must surface link findings with exit 1 via mdcheck.
+        path = self._doc("# T\n\nSee [x](#nope).\n")
+        rc, out, _ = self._run("check", str(path))
+        self.assertEqual(rc, 1)
+        self.assertIn("links.broken-anchor", out)
 
     def test_missing_mdfix_is_exit_two(self) -> None:
         src = self._doc("Body.\n")

@@ -48,6 +48,7 @@ editorial = false           # only meaningful with profile = "none"
 glossary  = "terms/glossary_terms.yaml"   # terms and vary
 state_dir = ".mdtools"                    # prosevary --db lives here
 mdfix     = "bin/mdfix"                 # absolute, root-relative, or PATH name
+suppress  = ["check.image-alt"]           # mdcheck rule ids / prefix*
 ```
 
 Paths resolve against the **project root**, never against the installed
@@ -55,7 +56,8 @@ package — no mutable state is written into the package tree. `mdfix` that
 looks like a path is root-relative; a bare name is looked up on `PATH`.
 `glossary` is passed to both `terms` and `vary`. `state_dir` sets prosevary's
 database to `<state_dir>/prosevary.sqlite`. Configured `mdfix` is used by
-`fix`, `query`, `links`, and `terms`.
+`fix`, `query`, `links`, `terms`, and `check`. `suppress` is applied by
+[mdcheck](mdcheck.md) (and `mdtools check`) in addition to CLI `--suppress`.
 
 An unknown setting or a bad value is an **error**, not a warning. Silently
 ignoring one is how a project comes to believe a setting applies when it does
@@ -88,8 +90,6 @@ file on every supported version.
 | `links` | [mdlinks](mdlinks.md) |
 | `vary` | prosevary |
 | `config` | the resolved configuration |
-| `check` | reserved; not implemented (issue #13) |
+| `check` | [mdcheck](mdcheck.md) |
 
-`check` exits 2 and says so rather than failing confusingly — the verb is
-reserved so a script written against it today will keep working when mdcheck
-lands.
+

@@ -18,7 +18,8 @@ mdterms-check: mdfix
 mdtools-check: mdfix
 	./scripts/mdtools --help >/dev/null
 	./scripts/mdtools config >/dev/null
-	@echo "mdtools CLI ok"
+	./scripts/mdcheck README.md docs/
+	@echo "mdtools + mdcheck CLI ok"
 
 mdlinks-check: mdfix
 	./scripts/mdlinks --help >/dev/null
@@ -35,8 +36,8 @@ mdquery-check: mdfix
 	@echo "mdquery CLI ok"
 
 # Single package/launcher lists so install and uninstall stay in sync.
-PACKAGES = prosevary mdquery mdterms mdlinks mdtools_cli
-LAUNCHERS = prosevary mdquery mdterms mdlinks mdtools
+PACKAGES = prosevary mdquery mdterms mdlinks mdcheck mdtools_cli
+LAUNCHERS = prosevary mdquery mdterms mdlinks mdcheck mdtools
 
 install: mdfix
 	install -d "$(BINDIR)" "$(LIBDIR)"

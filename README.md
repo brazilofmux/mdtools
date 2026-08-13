@@ -9,6 +9,7 @@ Private toolkit for markdown structure and controlled prose variation.
 | **mdquery** | Python 3 | Structural queries and extraction, via mdfix's IR |
 | **mdterms** | Python 3 | Glossary and terminology enforcement; emits edits for mdfix |
 | **mdlinks** | Python 3 | Link graph: broken anchors, undefined references, dead files |
+| **mdcheck** | Python 3 | Repository-aware validation; JSONL or SARIF |
 | **prosevary** | Python 3 | Generate-then-gate lexical variation (freeze terms, embeddings, local LLM) |
 
 These used to be copy-pasted across `slow32-book`, `mush`, `religions`, and others.
@@ -60,6 +61,7 @@ mdtools --help
 mdquery --help
 mdterms --help
 mdlinks --help
+mdcheck --help
 prosevary --help
 ```
 
@@ -126,6 +128,7 @@ mdfix/           # Ragel source, generated C, Makefile
 mdquery/          # Python package (python -m mdquery)
 mdterms/          # Python package (python -m mdterms)
 mdlinks/          # Python package (python -m mdlinks)
+mdcheck/          # Python package (python -m mdcheck)
 mdtools_cli/      # Python package behind the mdtools dispatcher
 prosevary/        # Python package (python -m prosevary)
 docs/             # architecture decisions (start with architecture.md)
