@@ -118,17 +118,6 @@ class FrontMatterSourceTests(BibliographyTestCase):
         self.assertEqual(len(rows), 1)
         self.assertIn("@missing", rows[0]["message"])
 
-    def test_front_matter_beats_the_project_default(self) -> None:
-        # The document is saying what it cites against; the config is only a
-        # default for documents that do not.
-        self._write("mdtools.toml", '[mdtools]\nbibliography = "refs.bib"\n')
-        self._write("own.bib", "@misc{onlyhere, title = {X}}\n")
-        self._write("a.md", "---\nbibliography: own.bib\n---\n\n"
-                            "[@onlyhere] and [@smith2020].\n")
-        rows = self._rows("a.md")
-        self.assertEqual(len(rows), 1)
-        self.assertIn("@smith2020", rows[0]["message"])
-
     def test_a_path_is_relative_to_the_document(self) -> None:
         self._write("sub/a.md", "---\nbibliography: ../refs.bib\n---\n\n"
                                 "[@smith2020].\n")
@@ -143,6 +132,22 @@ class ProjectSourceTests(BibliographyTestCase):
         rows = self._rows("a.md")
         self.assertEqual(len(rows), 1)
         self.assertIn("@absent", rows[0]["message"])
+
+    def test_front_matter_beats_the_project_default(self) -> None:
+        # The document is saying what it cites against; the config is only a
+        # default for documents that do not.
+        #
+        # Lives here rather than with the other front-matter sources because
+        # it needs the config to be *readable*: on 3.10 there is no tomllib,
+        # mdcheck refuses a config it cannot read, and the run exits 2 before
+        # any citation is looked at.
+        self._write("mdtools.toml", '[mdtools]\nbibliography = "refs.bib"\n')
+        self._write("own.bib", "@misc{onlyhere, title = {X}}\n")
+        self._write("a.md", "---\nbibliography: own.bib\n---\n\n"
+                            "[@onlyhere] and [@smith2020].\n")
+        rows = self._rows("a.md")
+        self.assertEqual(len(rows), 1)
+        self.assertIn("@smith2020", rows[0]["message"])
 
     def test_a_bad_setting_is_a_usage_error(self) -> None:
         self._write("mdtools.toml", "[mdtools]\nbibliography = 3\n")
