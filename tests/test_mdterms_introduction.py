@@ -94,6 +94,27 @@ class AcronymTests(IntroductionTestCase):
                             "Then IR.\n")
         self.assertEqual(self._rules("a.md"), [])
 
+    def test_a_term_inside_its_expansion_still_introduces(self) -> None:
+        # Shape 1 when the expansion contains the term as a word.
+        self._write("mine.yaml",
+                    "terms:\n  - term: YAML\n"
+                    "    expansion: YAML Ain't Markup Language\n")
+        self._write("a.md", "# Doc\n\n"
+                            "YAML Ain't Markup Language (YAML) is a "
+                            "serialization format.\n")
+        self.assertEqual(
+            self._run("--glossary", "mine.yaml", "--diagnostics", "a.md")
+            .stdout, "")
+
+    def test_a_suffix_of_the_preceding_word_is_not_an_introduction(self) -> None:
+        self._write("mine.yaml",
+                    "terms:\n  - term: IR\n    expansion: representation\n")
+        self._write("a.md", "# Doc\n\nmisrepresentation (IR) here.\n")
+        rows = [json.loads(line) for line in
+                self._run("--glossary", "mine.yaml", "--diagnostics", "a.md")
+                .stdout.splitlines()]
+        self.assertEqual([r["rule"] for r in rows], ["terms.undefined-acronym"])
+
     def test_the_expansion_may_be_capitalized_differently(self) -> None:
         # It may start a sentence. The term's own casing still follows
         # case_sensitive; only the expansion is compared loosely.
@@ -188,6 +209,18 @@ class ExemptionTests(IntroductionTestCase):
         self.assertEqual([r["rule"] for r in self._rules("docs/current/new.md")],
                          ["terms.undefined-acronym"])
 
+    def test_a_name_star_does_not_cross_directories(self) -> None:
+        self._write("mine.yaml",
+                    "terms:\n  - term: SARIF\n"
+                    "    expansion: Static Analysis Results Interchange Format\n"
+                    '    exempt: ["draft*"]\n')
+        self._write("draft/notes.md", "# Notes\n\nSARIF output.\n")
+        result = self._run("--glossary", "mine.yaml", "--diagnostics",
+                           "draft/notes.md")
+        self.assertEqual([json.loads(line)["rule"]
+                          for line in result.stdout.splitlines()],
+                         ["terms.undefined-acronym"])
+
     def test_exemption_covers_forbidden_spellings_too(self) -> None:
         # An exemption is about the term, not about one rule: a changelog
         # quoting an old release note should not be corrected either.
@@ -218,12 +251,24 @@ class ReportTests(IntroductionTestCase):
         self._write("a.md", "# A\n\nThe IR is a stream.\n")
         self.assertEqual(self._run("--report", "a.md").returncode, 0)
 
+    def test_later_introduction_is_not_introduced_in(self) -> None:
+        # Same first-use rule as scan(): a later expansion (TERM) does not
+        # make the file look introduced in the report.
+        self._write("a.md", "# A\n\nThe IR is a stream.\n\n"
+                            "The intermediate representation (IR) again.\n")
+        rows = [json.loads(line) for line in
+                self._run("--report", "--diagnostics", "a.md")
+                .stdout.splitlines()]
+        ir = next(r for r in rows if r["term"] == "IR")
+        self.assertEqual(ir["used_in"], ["a.md"])
+        self.assertEqual(ir["introduced_in"], [])
+
     def test_it_refuses_to_be_combined_with_a_write_verb(self) -> None:
         # Checked before any output branch: further down, whichever came
         # first in the source would silently win and the other flag would
         # look accepted.
         self._write("a.md", "# A\n\nThe IR is a stream.\n")
-        for other in ("--edits", "--fix", "--freeze", "--sarif"):
+        for other in ("--edits", "--fix", "--freeze", "--sarif", "--diff"):
             with self.subTest(flag=other):
                 self.assertEqual(
                     self._run("--report", other, "a.md").returncode, 2)
@@ -267,12 +312,17 @@ class SarifTests(IntroductionTestCase):
 
 class GlossaryValidationTests(IntroductionTestCase):
     def test_a_self_expanding_term_is_refused(self) -> None:
-        # No introduction could ever satisfy it, so it would report forever.
         self._write("mine.yaml", "terms:\n  - term: IR\n    expansion: IR\n")
         self._write("a.md", "# A\n\nThe IR.\n")
         result = self._run("--glossary", "mine.yaml", "a.md")
         self.assertEqual(result.returncode, 2)
         self.assertIn("expands to itself", result.stderr)
+
+    def test_a_self_expansion_is_refused_case_insensitively(self) -> None:
+        self._write("mine.yaml", "terms:\n  - term: IR\n    expansion: ir\n")
+        self._write("a.md", "# A\n\nThe IR.\n")
+        self.assertEqual(
+            self._run("--glossary", "mine.yaml", "a.md").returncode, 2)
 
     def test_an_empty_exempt_pattern_is_refused(self) -> None:
         self._write("mine.yaml",

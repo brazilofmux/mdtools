@@ -111,6 +111,9 @@ it, and two copies would drift on exactly the fields a CI system reads.
 on purpose. `--diagnostics` is *findings*, one schema shared by every tool.
 `--json` is *answers* — mdquery's outline is not a complaint about anything.
 
+Exception: `mdterms --report --diagnostics` is JSONL of the consistency table
+(`kind: "term-usage"`), not findings. See [mdterms.md](mdterms.md).
+
 ## Streams
 
 Results go to **stdout**. Progress, summaries and hints go to **stderr**, so a

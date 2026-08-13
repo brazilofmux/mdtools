@@ -119,6 +119,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if missing:
         return USAGE
 
+    if args.report:
+        # Describe the corpus; do not scan for findings first (that would
+        # walk the IR twice) and do not gate.
+        try:
+            rows = usage(args.files, terms, mdfix)
+        except IRError as exc:
+            return fail("mdterms", str(exc))
+        if args.diagnostics:
+            for row in rows:
+                print(json.dumps(row, ensure_ascii=False))
+        else:
+            for row in rows:
+                where = ", ".join(row["used_in"]) or "nowhere"
+                print(f"{row['term']}: used in {where}")
+                if row["expansion"]:
+                    intro = ", ".join(row["introduced_in"]) or "nowhere"
+                    print(f"  introduced in {intro}")
+        return OK
+
     findings = []
     try:
         for path in args.files:
@@ -155,22 +174,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         for finding in remaining:
             print(f"{finding.path}:{finding.line}: {finding.message}")
         return FINDINGS if remaining else OK
-
-    if args.report:
-        # A report, not a gate: it describes the corpus rather than judging
-        # it, so it exits 0 even when the picture is untidy.
-        rows = usage(args.files, terms, mdfix)
-        if args.diagnostics:
-            for row in rows:
-                print(json.dumps(row, ensure_ascii=False))
-        else:
-            for row in rows:
-                where = ", ".join(row["used_in"]) or "nowhere"
-                print(f"{row['term']}: used in {where}")
-                if row["expansion"]:
-                    intro = ", ".join(row["introduced_in"]) or "nowhere"
-                    print(f"  introduced in {intro}")
-        return OK
 
     if args.sarif:
         print(json.dumps(sarif("mdterms", findings), indent=2))

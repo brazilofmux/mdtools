@@ -135,15 +135,8 @@ def apply_edits(path: Path, edits: Sequence[dict], *,
 
 def sarif(tool: str, findings: Sequence) -> dict:
     """
-    SARIF 2.1.0 for any tool's findings — the shape CI systems already ingest.
-
-    Duck-typed on `path`, `rule`, `severity`, `line` and `message`, which is
-    every finding class here: they were written to the diagnostics contract
-    (ID.1–ID.2) before this existed, so there was nothing to unify.
-
-    Lives with the CLI contract rather than in one tool because the second
-    tool to want SARIF should not have to copy it, and two copies would drift
-    on exactly the fields a CI system reads.
+    SARIF 2.1.0. Duck-typed on path/rule/severity/line/message so CI fields
+    cannot drift between tools.
     """
     rules = sorted({f.rule for f in findings})
     index = {rule: n for n, rule in enumerate(rules)}

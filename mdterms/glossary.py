@@ -16,11 +16,8 @@ An alias is a spelling you tolerate — prosevary freezes it so a paraphrase
 cannot touch it. A forbidden variant is one you want gone, and mdterms will
 rewrite it.
 
-`expansion` is issue #16's first-use definition and acronym introduction,
-which are the same rule seen twice: the first time a document uses the term,
-the words it stands for must be next to it. `exempt` is #16's domain-specific
-exceptions — a changelog quoting old release notes should not be told to
-introduce an acronym it is only citing.
+`expansion` requires the words next to the term at first prose use.
+`exempt` skips a term's rules on matching paths (e.g. a changelog).
 """
 
 from __future__ import annotations
@@ -54,20 +51,23 @@ class Term:
 
     def applies_to(self, path) -> bool:
         """
-        False where the term is exempt (#16's domain-specific exceptions).
+        False where the term is exempt.
 
-        Matched against the path as written on the command line, and also
-        against its name, so `exempt: ["CHANGELOG.md"]` works whether the file
-        was named as `CHANGELOG.md` or `docs/CHANGELOG.md`. A pattern with a
-        separator in it is matched only against the whole path, because that
-        is someone being specific about where.
+        A pattern with no `/` matches the file name only (`CHANGELOG.md`
+        wherever it lives). A pattern with `/` matches a normalized POSIX
+        path (`./` stripped; also as a suffix of a longer path).
         """
         import fnmatch
-        text = str(path)
+        posix = Path(path).as_posix()
+        if posix.startswith("./"):
+            posix = posix[2:]
+        name = Path(path).name
         for pattern in self.exempt:
-            if fnmatch.fnmatch(text, pattern):
-                return False
-            if "/" not in pattern and fnmatch.fnmatch(Path(text).name, pattern):
+            if "/" in pattern:
+                p = pattern[2:] if pattern.startswith("./") else pattern
+                if fnmatch.fnmatch(posix, p) or fnmatch.fnmatch(posix, "*/" + p):
+                    return False
+            elif fnmatch.fnmatch(name, pattern):
                 return False
         return True
 
@@ -134,10 +134,9 @@ def load(path: Path) -> List[Term]:
             expansion=expansion,
             exempt=exempt,
         )
-        if expansion and expansion == name:
+        if expansion and expansion.casefold() == name.casefold():
             raise GlossaryError(
-                f"{path}: `{name}` expands to itself, so no introduction "
-                "could ever satisfy it")
+                f"{path}: `{name}` expands to itself, which is meaningless")
         # A spelling cannot be both tolerated and forbidden; that would make
         # the fix non-deterministic, and mdterms only applies unambiguous ones.
         #

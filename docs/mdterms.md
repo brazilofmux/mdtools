@@ -65,8 +65,8 @@ cannot touch it. A forbidden variant is one you want gone.
 
 Refused at load, because each would make a fix non-deterministic: a spelling
 listed as both alias and forbidden, a term that forbids its own preferred
-spelling, the same term defined twice, and a term that expands to itself —
-that last one could never be satisfied, so it would report forever.
+spelling, the same term defined twice, and a term that expands to itself
+(a tautology, including after case-folding).
 
 ## First use: `expansion`
 
@@ -110,10 +110,11 @@ Glob patterns where a term's rules — all of them, not just the introduction �
 do not apply. A changelog quoting old release notes should not be told to
 introduce an acronym it is only citing.
 
-A pattern with no `/` is a **name** and matches wherever the file lives, so
-`CHANGELOG.md` keeps working the day someone passes `docs/CHANGELOG.md`. A
-pattern containing `/` is matched against the whole path, because that is
-someone being specific about where.
+A pattern with no `/` is a **name** and matches only the file name, so
+`CHANGELOG.md` keeps working the day someone passes `docs/CHANGELOG.md`
+(`draft*` does not exempt `draft/notes.md`). A pattern containing `/` is
+matched against a normalized POSIX path (`./` stripped; also as a suffix of a
+longer path).
 
 ## Repository consistency
 
@@ -127,8 +128,12 @@ The question a per-file report cannot answer: a term introduced in one chapter
 and assumed in the next reads fine in isolation and badly in order.
 
 It **reports rather than judges** — exit 0 even on an untidy corpus, because a
-gate that fires on every report is one nobody runs. Add `--diagnostics` for
-JSONL.
+gate that fires on every report is one nobody runs. A file is listed under
+`introduced in` only when its *first* prose use is an introduction — the same
+rule `scan()` uses.
+
+`--report --diagnostics` emits `kind: "term-usage"` rows (term, used_in,
+introduced_in). That is **not** the findings schema in [diagnostics.md](diagnostics.md).
 
 ## Commands
 
