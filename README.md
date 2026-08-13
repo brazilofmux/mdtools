@@ -32,7 +32,8 @@ consumer never has to re-derive the grammar. [docs/mdquery.md](docs/mdquery.md) 
 tool built on it; [docs/mdterms.md](docs/mdterms.md) and
 [docs/mdlinks.md](docs/mdlinks.md) followed.
 [docs/cli.md](docs/cli.md) is the surface they all share: verbs, exit codes
-and configuration.
+and configuration. [docs/vendoring.md](docs/vendoring.md) covers the Unicode
+tables mdfix carries and how a refresh is verified.
 
 ## Canonical history (mdfix)
 

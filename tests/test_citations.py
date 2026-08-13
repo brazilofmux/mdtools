@@ -96,11 +96,30 @@ class KeyShapeTests(CitationTestCase):
                 self.assertEqual(self._keys(text), expected)
 
     def test_an_email_address_is_not_a_citation(self) -> None:
-        # A word character before the `@` is what separates the two.
+        # A word character before the `@` is what separates the two, and
+        # "word character" is Unicode's answer via libutf, not a byte test.
         for text in ("email@example.com\n", "a@b\n", "see x@y today\n",
                      "café@x\n", "текст@key\n", "用户@host\n"):
             with self.subTest(text=text.strip()):
                 self.assertEqual(self._keys(text), [])
+
+    def test_punctuation_before_the_at_is_still_a_citation(self) -> None:
+        # What the old `byte >= 0x80` approximation got wrong. A full-width
+        # stop is not a letter, so `。@key` is a citation — and the byte test
+        # could not tell the two apart.
+        for text, key in (("。@key\n", "key"), ("、@key\n", "key"),
+                          ("—@key\n", "key"), ("…@key\n", "key"),
+                          ("”@key\n", "key"), (")@key\n", "key")):
+            with self.subTest(text=text.strip()):
+                self.assertEqual(self._keys(text), [key])
+
+    def test_an_underscore_is_not_a_word_character_here(self) -> None:
+        # Pandoc reads `_@key` and `a_@key` as citations, so Pc must not count
+        # as part of the word. libutf keeps it out of `utf_is_word` and
+        # exposes it separately for exactly this reason.
+        for text in ("_@key\n", "a_@key\n"):
+            with self.subTest(text=text.strip()):
+                self.assertEqual(self._keys(text), ["key"])
 
     def test_a_bare_at_is_not_a_citation(self) -> None:
         for text in ("text @ alone\n", "@\n", "@ @\n", "@-\n"):
@@ -226,6 +245,7 @@ class PandocAgreementTests(CitationTestCase):
     """
 
     CORPUS = (
+        "。@key\n", "—@key\n", "_@key\n", "café@x\n", "用户@host\n",
         "[@a]\n", "@a\n", "See [@a; @b] here.\n", "*emph @a*\n",
         "**bold @a**\n", "# Heading @a\n", "> quote @a\n", "- item @a\n",
         "| c @a | d |\n|---|---|\n| x | y |\n",
