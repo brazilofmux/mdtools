@@ -59,10 +59,25 @@ without the transform, so applying one is an editorial choice.
 | `--scrivener-repair` | Rejoin emphasis split across blocks | A repair, but of an authoring accident, not of a dialect misread |
 | `--spaced-emdash` | Preserve `word — word` | Typographic preference |
 | `-w` | Remove trailing whitespace, keeping hard breaks | Whitespace hygiene; a two-space hard break is normalized, not collapsed |
-| `--wrap[=N]` | Hard-wrap paragraphs | Presentation; a two-space break is kept on the last emitted line |
+| `--wrap[=N]` | Hard-wrap paragraphs | Presentation; a two-space break is kept on the last emitted line, and a break is never placed where the next line would start a block |
 | `--canonical` | Profile: editorial + chicago + structural canonicalizers + `-w` (not wrap) | Convenience bundle |
 | `--technical` | Profile: `--canonical` + spaced em-dash + wrap 78 | Convenience bundle |
 | `--normalize-nfc` | Compose text to Unicode NFC | Pandoc reads both spellings; changes byte offsets and heading anchors, so it is not in either profile — architecture **I1.2** |
+
+### What `--wrap` reflows
+
+A paragraph is reflowed **whole** if any of its lines looks machine-wrapped —
+near the target width — and left exactly as written if none does. The decision
+is per paragraph, not per line, because per line it is not a fixed point:
+joining two lines makes a longer one, which next time is wide enough to join
+with what follows, so wrapping walked one line further on every run.
+
+The cost is that a paragraph mixing one wrapped line with several short ones
+is reflowed entire. That is the honest reading — such a paragraph is a wrapped
+one somebody edited, and `--wrap` is a request to wrap it.
+
+Segments end at a hard break, and at a line whose trailing whitespace holds a
+tab (left byte for byte; see dialect-policy §7).
 
 `tests/test_transform_matrix.py` asserts **I3.1** across this table: every
 optional transform, alone and in each profile, must still satisfy I2.1 and

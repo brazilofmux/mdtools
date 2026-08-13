@@ -2127,9 +2127,12 @@ static void emit_ir(FILE *out, const char *source)
         /* ── Indented code ──
          * Same threshold and same paragraph-interruption rule as process().
          * Interior blank lines stay inside the block (Pandoc keeps them), so
-         * the run is consumed greedily and then trimmed back. */
+         * the run is consumed greedily and then trimmed back.
+         * A pipe table's rows classify as TEXT but are not a paragraph, so
+         * the line after one is indented code. */
         if (indent_columns(line, NULL) >= list_content_col + 4
-            && (had_blank || prev_content_type != LT_TEXT))
+            && (had_blank || prev_content_type != LT_TEXT
+                || (i > 0 && pipe_table_line[i - 1])))
         {
             int j = i;
             int last = i;
@@ -2957,6 +2960,24 @@ static int is_punct_for_spacing(unsigned char c)
     return c == ',' || c == ';' || c == ':' || c == '.';
 }
 
+/*
+ * Space-before-punct only if the mark ends a word. A letter, digit, slash,
+ * or underscore means it is inside a token (`./path`, `1.5`, `a:b`); a
+ * closer (`) ] " '`) is still sentence punctuation (`word.)`).
+ */
+static int punct_ends_a_word(const char *p, const char *pe)
+{
+    const char *next = p + 1;
+    if (next >= pe)
+        return 1;                       /* end of line */
+    unsigned char c = (unsigned char)*next;
+    if (c == ' ' || c == '\t')
+        return 1;
+    if (c >= 0x80 || isalnum(c) || c == '/' || c == '_')
+        return 0;
+    return 1;
+}
+
 /* fix_chicago_space_before_punct — now handled by Ragel scanner */
 
 static int should_insert_space_after_punct(unsigned char punct, unsigned char next)
@@ -3388,6 +3409,47 @@ static int display_columns(const char *text, int from, int to)
  * Wrap on display columns (mdfix_display_width): break only at ASCII spaces.
  * Unspaced tokens (including CJK without spaces) are not split.
  */
+/* Break only where the next line would still be prose. */
+static enum linetype classify(const char *line);
+
+static int is_paren_ordered(const char *line)
+{
+    int i = 0;
+    while (line[i] == ' ' || line[i] == '\t')
+        i++;
+    if (!isdigit((unsigned char)line[i]))
+        return 0;
+    while (isdigit((unsigned char)line[i]))
+        i++;
+    return line[i] == ')' && line[i + 1] == ' ';
+}
+
+static int is_definition_marker(const char *line)
+{
+    int i = 0;
+    while (line[i] == ' ' || line[i] == '\t')
+        i++;
+    return line[i] == ':' && (line[i + 1] == ' ' || line[i + 1] == '\t');
+}
+
+static int starts_a_block(const char *text, int off)
+{
+    char probe[MAX_LINE];
+    int n = 0;
+    while (text[off] == ' ')
+        off++;
+    while (text[off] && text[off] != '\n' && n < MAX_LINE - 1)
+        probe[n++] = text[off++];
+    probe[n] = '\0';
+    enum linetype t = classify(probe);
+    if (t != LT_TEXT && t != LT_BLANK)
+        return 1;
+    /* classify() is six-way; these are structure it reports as TEXT. */
+    return is_blockquote_line(probe) || is_thematic_break(probe)
+        || is_setext_underline(probe) || ref_def_kind(probe)
+        || is_paren_ordered(probe) || is_definition_marker(probe);
+}
+
 static void emit_wrapped_break(FILE *out, const char *text, int width,
                                int hard)
 {
@@ -3415,19 +3477,47 @@ static void emit_wrapped_break(FILE *out, const char *text, int width,
             i += utf8_cp_len(text, i, len);
         }
 
+        /*
+         * Back off from a break that would put a block marker at the start of
+         * the next line. If every in-budget candidate does, take none of them
+         * and let the line run long — an over-wide line is cosmetic.
+         */
+        int all_invent_a_block = 0;
+        while (break_at > pos && starts_a_block(text, break_at)) {
+            int earlier = -1;
+            for (int i = pos; i < break_at; i++)
+                if (text[i] == ' ')
+                    earlier = i;
+            if (earlier > pos)
+                break_at = earlier;
+            else {
+                all_invent_a_block = 1;
+                break;
+            }
+        }
+
+        if (all_invent_a_block) {
+            fprintf(out, "%s%s\n", text + pos, hard ? "  " : "");
+            return;
+        }
+
         if (break_at <= pos) {
             /* No break opportunity in budget: emit the whole token
-             * through the next space (do not split). */
+             * through the next space (do not split), unless that space
+             * would invent a block too. */
             break_at = pos;
             while (break_at < len && text[break_at] != ' ')
                 break_at += utf8_cp_len(text, break_at, len);
-            if (break_at >= len) {
+            if (break_at >= len || starts_a_block(text, break_at)) {
                 fprintf(out, "%s%s\n", text + pos, hard ? "  " : "");
                 return;
             }
         }
 
-        fwrite(text + pos, 1, (size_t)(break_at - pos), out);
+        int stop = break_at;
+        while (stop > pos && (text[stop - 1] == ' ' || text[stop - 1] == '\t'))
+            stop--;
+        fwrite(text + pos, 1, (size_t)(stop - pos), out);
         fputc('\n', out);
         pos = break_at;
         while (pos < len && text[pos] == ' ')
@@ -3435,16 +3525,25 @@ static void emit_wrapped_break(FILE *out, const char *text, int width,
     }
 }
 
-/*
- * Join only if the current line looks hard-wrapped (near the target width
- * in display columns). Short lines are intentional breaks.
- */
-static int should_join(const char *line, int wrap_width)
+/* Is this line near the target width — i.e. does it look machine-wrapped? */
+static int near_width(const char *line, int wrap_width)
 {
     int len = (int)strlen(line);
     while (len > 0 && (line[len - 1] == ' ' || line[len - 1] == '\t'))
         len--;
     return display_columns(line, 0, len) >= (wrap_width * 3 / 5);
+}
+
+/*
+ * Decide the segment once. Per line, joining makes a longer line that then
+ * joins again, so --wrap was not a fixed point.
+ */
+static int segment_is_wrapped(int from, int to, int wrap_width)
+{
+    for (int i = from; i < to; i++)
+        if (near_width(para_lines_buf[i], wrap_width))
+            return 1;
+    return 0;
 }
 
 static void flush_paragraph(FILE *out)
@@ -3459,52 +3558,76 @@ static void flush_paragraph(FILE *out)
         return;
     }
 
-    /* Build joined paragraphs, breaking where lines are intentionally short */
+    /*
+     * Split the paragraph into segments, then decide each segment whole.
+     *
+     * A segment ends at a hard break (which must stay a break) or before a
+     * line whose trailing whitespace holds a tab (which is emitted byte for
+     * byte). Everything between is one reflow decision.
+     */
     char joined[MAX_PARA];
-    int pos = 0;
+    int i = 0;
 
-    for (int i = 0; i < npara; i++) {
-        const char *s = para_lines_buf[i];
-        int slen = (int)strlen(s);
-
-        /* Trailing tab: emit verbatim so its column (and tab-stop) stay. */
-        if (trailing_has_tab(s)) {
-            if (pos > 0) {
-                joined[pos] = '\0';
-                emit_wrapped_break(out, joined, opt_wrap_width, 0);
-                pos = 0;
-            }
-            fprintf(out, "%s\n", s);
+    while (i < npara) {
+        if (trailing_has_tab(para_lines_buf[i])) {
+            fprintf(out, "%s\n", para_lines_buf[i]);
+            i++;
             continue;
         }
 
-        /* Hard break ends the wrap unit. index unknown → conservative. */
-        int hard = (i < npara - 1) && is_hard_break(s, -1);
+        int end = i;
+        int hard = 0;
+        while (end < npara && !trailing_has_tab(para_lines_buf[end])) {
+            if (end < npara - 1 && is_hard_break(para_lines_buf[end], -1)) {
+                hard = 1;
+                end++;
+                break;
+            }
+            end++;
+        }
 
-        while (slen > 0 && (s[slen - 1] == ' ' || s[slen - 1] == '\t'))
-            slen--;
-        /* Keep one space after `\` when this fragment is emitted as a line
-         * end; a join space already protects a mid-paragraph `\`. */
-        int will_flush = (i == npara - 1 || hard
-                          || !should_join(s, opt_wrap_width));
-        if (!hard && will_flush && ends_with_unescaped_backslash(s, slen)
-            && slen < (int)strlen(s) && s[slen] == ' ')
-            slen++;
+        if (!segment_is_wrapped(i, end, opt_wrap_width)) {
+            /* Deliberately short lines: left exactly as written. */
+            for (int k = i; k < end; k++)
+                fprintf(out, "%s\n", para_lines_buf[k]);
+            i = end;
+            continue;
+        }
 
-        if (pos + slen >= MAX_PARA)
-            slen = MAX_PARA - pos - 1;
-        memcpy(joined + pos, s, slen);
-        pos += slen;
+        int pos = 0;
+        for (int k = i; k < end; k++) {
+            const char *s = para_lines_buf[k];
+            /*
+             * Drop a continuation line's leading indent. It is Markdown's
+             * lazy continuation, not content, and carrying it into the join
+             * produced a run of spaces mid-sentence that a later pass then
+             * collapsed — so `--wrap` needed two runs to settle. The first
+             * line keeps its indent: that one is the block's own, and a list
+             * item's text depends on it.
+             */
+            if (k > i)
+                while (*s == ' ' || *s == '\t')
+                    s++;
+            int slen = (int)strlen(s);
+            while (slen > 0 && (s[slen - 1] == ' ' || s[slen - 1] == '\t'))
+                slen--;
+            /* Keep one space after `\` when this fragment ends the segment;
+             * a join space already protects a mid-paragraph `\`. */
+            if (k == end - 1 && !hard
+                && ends_with_unescaped_backslash(s, slen)
+                && slen < (int)strlen(s) && s[slen] == ' ')
+                slen++;
 
-        if (will_flush) {
-            joined[pos] = '\0';
-            emit_wrapped_break(out, joined, opt_wrap_width, hard);
-            pos = 0;
-        } else {
-            /* Join with next line via space */
-            if (pos < MAX_PARA - 1)
+            if (pos + slen >= MAX_PARA)
+                slen = MAX_PARA - pos - 1;
+            memcpy(joined + pos, s, slen);
+            pos += slen;
+            if (k < end - 1 && pos < MAX_PARA - 1)
                 joined[pos++] = ' ';
         }
+        joined[pos] = '\0';
+        emit_wrapped_break(out, joined, opt_wrap_width, hard);
+        i = end;
     }
 
     npara = 0;
@@ -4008,7 +4131,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 4012 "mdfix.c"
+#line 4135 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -4016,20 +4139,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 4020 "mdfix.c"
+#line 4143 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 4405 "mdfix.rl"
+#line 4529 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 4156 "mdfix.rl"
+#line 4279 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -4069,7 +4192,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 4032 "mdfix.rl"
+#line 4155 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial || ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -4106,19 +4229,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 4025 "mdfix.rl"
+#line 4148 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 4025 "mdfix.rl"
+#line 4148 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 4340 "mdfix.rl"
+#line 4464 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -4142,7 +4265,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 4385 "mdfix.rl"
+#line 4509 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -4163,7 +4286,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 4363 "mdfix.rl"
+#line 4487 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -4186,13 +4309,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 4405 "mdfix.rl"
+#line 4529 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 4285 "mdfix.rl"
+#line 4409 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -4215,7 +4338,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 4198 "mdfix.rl"
+#line 4321 "mdfix.rl"
 	{te = p+1;{
                 /*
                  * Either Chicago flag answers "is this run an ellipsis?"
@@ -4266,13 +4389,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 4405 "mdfix.rl"
+#line 4529 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 4248 "mdfix.rl"
+#line 4371 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -4300,6 +4423,7 @@ tr32:
                 } else if (!ctx->skip_punct2 && ctx->do_chicago_punct2
                            && te < pe
                            && is_punct_for_spacing((unsigned char)*te)
+                           && punct_ends_a_word(te, pe)
                            && ctx->oi > 0
                            && !isspace((unsigned char)ctx->out[ctx->oi - 1])) {
                     /* Space before punctuation — drop the spaces */
@@ -4310,7 +4434,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 4307 "mdfix.rl"
+#line 4431 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -4344,7 +4468,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 4094 "mdfix.rl"
+#line 4217 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4357,7 +4481,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 4068 "mdfix.rl"
+#line 4191 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4371,7 +4495,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 4106 "mdfix.rl"
+#line 4229 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4384,7 +4508,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 4081 "mdfix.rl"
+#line 4204 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4398,7 +4522,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 4118 "mdfix.rl"
+#line 4241 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -4437,7 +4561,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 4025 "mdfix.rl"
+#line 4148 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -4450,7 +4574,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 4454 "mdfix.c"
+#line 4578 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -4476,7 +4600,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 4480 "mdfix.c"
+#line 4604 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -4520,7 +4644,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 4524 "mdfix.c"
+#line 4648 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -4569,7 +4693,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 4573 "mdfix.c"
+#line 4697 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -4588,7 +4712,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 4592 "mdfix.c"
+#line 4716 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -4614,7 +4738,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 4618 "mdfix.c"
+#line 4742 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -4663,7 +4787,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 4667 "mdfix.c"
+#line 4791 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -4743,14 +4867,43 @@ case 13:
 
 	}
 
-#line 4412 "mdfix.rl"
+#line 4536 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';
 }
 
-/* Apply scanner to a line: returns 1 if changed, merges fix counts to globals */
+/* The scanner is prose typography. Undo it if it changed the line's
+ * block type — those edits are not individually reversible. */
+static int apply_scanner_raw(char *line, int hits[NUM_FIXES]);
+
 static int apply_scanner(char *line, int linenum)
+{
+    char before[MAX_LINE];
+    enum linetype was = classify(line);
+    strcpy(before, line);
+
+    int hits[NUM_FIXES];
+    memset(hits, 0, sizeof hits);
+    int changed = apply_scanner_raw(line, hits);
+    if (!changed)
+        return 0;
+    if (classify(line) != was) {
+        strcpy(line, before);
+        return 0;
+    }
+    for (int i = 0; i < NUM_FIXES; i++) {
+        if (hits[i] > 0) {
+            fix_counts[i] += hits[i];
+            emit_diagnostic(fix_rules[i], "fix", linenum, fix_labels[i]);
+            if (opt_verbose)
+                fprintf(stderr, "  line %d: %s\n", linenum, fix_labels[i]);
+        }
+    }
+    return 1;
+}
+
+static int apply_scanner_raw(char *line, int hits[NUM_FIXES])
 {
     struct scan_ctx ctx;
     memset(&ctx, 0, sizeof(ctx));
@@ -4763,23 +4916,13 @@ static int apply_scanner(char *line, int linenum)
     ctx.skip_punct2       = should_skip_chicago_punct2(line);
     ctx.skip_abbrev       = should_skip_chicago_abbrev(line);
     ctx.spaced_emdash     = opt_spaced_emdash;
-    ctx.linenum           = linenum;
 
     int len = (int)strlen(line);
     run_scanner(&ctx, line, len);
 
     if (strcmp(line, ctx.out) != 0) {
         strcpy(line, ctx.out);
-        /* Merge per-invocation hits into globals */
-        for (int i = 0; i < NUM_FIXES; i++) {
-            if (ctx.fix_hits[i] > 0) {
-                fix_counts[i] += ctx.fix_hits[i];
-                emit_diagnostic(fix_rules[i], "fix", linenum, fix_labels[i]);
-                if (opt_verbose) {
-                    fprintf(stderr, "  line %d: %s\n", linenum, fix_labels[i]);
-                }
-            }
-        }
+        memcpy(hits, ctx.fix_hits, sizeof ctx.fix_hits);
         return 1;
     }
     return 0;
@@ -5064,21 +5207,14 @@ static void process(FILE *out)
         }
 
         /*
-         * Indented code block: four or more columns past the enclosing
-         * container's content column.
-         *
-         * Two rules keep this from swallowing prose. Indented code cannot
-         * interrupt a paragraph, so a line following text is a lazy
-         * continuation no matter how far it is indented. And the threshold is
-         * relative to the list item's content column, so a continuation line
-         * inside `- item` stays prose while genuinely nested code does not.
-         *
-         * Everything here is emitted verbatim: mdfix was converting arrows
-         * and reflowing long lines inside blocks that Pandoc and CommonMark
-         * both parse as code.
+         * Indented code: four or more columns past the enclosing content
+         * column. Cannot interrupt a paragraph (that line is a lazy
+         * continuation). A pipe table's rows classify as TEXT but are not a
+         * paragraph, so the line after one is indented code.
          */
         if (indent_columns(line, NULL) >= list_content_col + 4
-            && (had_blank || prev_content_type != LT_TEXT))
+            && (had_blank || prev_content_type != LT_TEXT
+                || (i > 0 && pipe_table_line[i - 1])))
         {
             type = LT_INDENTCODE;
             flush_paragraph(out);
@@ -6546,6 +6682,109 @@ static int write_inplace(const char *input_path)
     return write_inplace_buf(input_path, NULL, 0);
 }
 
+/*
+ * Render until the document stops changing. A fixer can change what a line
+ * is after the repair that cares has already looked. Counts and diagnostics
+ * come from the first pass: ID.1 spans index the file on disk. Fail the run
+ * if it does not settle.
+ */
+#define MAX_RENDER_PASSES 4
+
+static char *render_converged(const char *path, size_t *out_len)
+{
+    char *buf = NULL;
+    size_t len = 0;
+    FILE *mem = open_memstream(&buf, &len);
+    if (!mem) {
+        fprintf(stderr, "error: cannot buffer the result\n");
+        return NULL;
+    }
+    npara = 0;
+    process(mem);
+    fclose(mem);
+
+    int saved_diag = opt_diagnostics, saved_verbose = opt_verbose;
+    int saved_quiet = opt_quiet;
+    int saved_counts[NUM_FIXES];
+    memcpy(saved_counts, fix_counts, sizeof saved_counts);
+    int saved_serial = serial_comma_warnings;
+    int saved_number = number_style_warnings;
+    int saved_fence = unterminated_fence_warnings;
+    int saved_nfc = non_nfc_warnings;
+
+    int settled = 0;
+    int io_failed = 0;
+    int pass = 1;
+    for (; pass < MAX_RENDER_PASSES; pass++) {
+        FILE *again = fmemopen(buf, len, "r");
+        if (!again) {
+            if (len == 0) {
+                settled = 1;
+                break;
+            }
+            io_failed = 1;
+            break;
+        }
+        free_lines();
+        opt_diagnostics = 0;
+        opt_verbose = 0;
+        opt_quiet = 1;
+        int rc = read_all(again);
+        fclose(again);
+        if (rc != 0) {
+            io_failed = 1;
+            break;
+        }
+
+        char *next = NULL;
+        size_t next_len = 0;
+        FILE *sink = open_memstream(&next, &next_len);
+        if (!sink) {
+            io_failed = 1;
+            break;
+        }
+        npara = 0;
+        process(sink);
+        fclose(sink);
+
+        if (next_len == len && memcmp(next, buf, len) == 0) {
+            free(next);
+            settled = 1;
+            break;
+        }
+        free(buf);
+        buf = next;
+        len = next_len;
+    }
+
+    opt_diagnostics = saved_diag;
+    opt_verbose = saved_verbose;
+    opt_quiet = saved_quiet;
+    memcpy(fix_counts, saved_counts, sizeof saved_counts);
+    serial_comma_warnings = saved_serial;
+    number_style_warnings = saved_number;
+    unterminated_fence_warnings = saved_fence;
+    non_nfc_warnings = saved_nfc;
+
+    if (io_failed) {
+        fprintf(stderr, "error: %s: cannot re-read the rendered buffer\n",
+                path);
+        free(buf);
+        return NULL;
+    }
+    if (!settled) {
+        fprintf(stderr,
+            "warning: %s did not settle in %d passes; two fixes may be "
+            "undoing each other. Please report this input.\n",
+            path, MAX_RENDER_PASSES);
+        free(buf);
+        return NULL;
+    }
+
+    *out_len = len;
+    return buf;
+}
+
 static int process_file(const char *input_path, const char *output_path)
 {
     /* Reset per-file state */
@@ -6620,19 +6859,21 @@ static int process_file(const char *input_path, const char *output_path)
         return write_rc;
     }
 
+    /* One converged rendering, then one write. The three paths below used to
+     * call process() each, which is also how they could have disagreed. */
+    size_t rendered_len = 0;
+    char *rendered = render_converged(input_path, &rendered_len);
+    if (!rendered) {
+        free_lines();
+        return 1;
+    }
+
     if (opt_dryrun) {
-        FILE *out = fopen("/dev/null", "w");
-        if (!out) {
-            fprintf(stderr, "Can't open /dev/null: ");
-            perror(NULL);
-            free_lines();
-            return 1;
-        }
-        process(out);
-        fclose(out);
+        /* Nothing to write; the counts above are the whole point. */
     } else if (opt_inplace) {
-        write_rc = write_inplace(input_path);
+        write_rc = write_inplace_buf(input_path, rendered, rendered_len);
         if (write_rc != 0) {
+            free(rendered);
             free_lines();
             return write_rc;
         }
@@ -6641,10 +6882,11 @@ static int process_file(const char *input_path, const char *output_path)
         if (!out) {
             fprintf(stderr, "Can't open output '%s': ", output_path);
             perror(NULL);
+            free(rendered);
             free_lines();
             return 1;
         }
-        process(out);
+        fwrite(rendered, 1, rendered_len, out);
         /*
          * Pass the output path so a flush/fsync/close failure removes the
          * partial file. Leaving it behind was doubly bad: main refuses to
@@ -6652,10 +6894,12 @@ static int process_file(const char *input_path, const char *output_path)
          * was stuck with a silently truncated file until deleting it by hand.
          */
         if (finalize_output(&out, output_path) != 0) {
+            free(rendered);
             free_lines();
             return 1;
         }
     }
+    free(rendered);
 
     /* ── Report ── */
     if (!opt_quiet)

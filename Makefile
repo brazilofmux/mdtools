@@ -4,7 +4,7 @@ BINDIR  ?= $(PREFIX)/bin
 LIBDIR  ?= $(PREFIX)/lib/mdtools
 PYTHON  ?= python3
 
-.PHONY: all mdfix prosevary-check mdquery-check mdterms-check mdlinks-check mdtools-check install uninstall clean test check-sync asan check
+.PHONY: all mdfix prosevary-check mdquery-check mdterms-check mdlinks-check mdtools-check install uninstall clean test check-sync asan fuzz check
 
 all: mdfix
 
@@ -82,6 +82,28 @@ check-sync:
 # test suite cannot see: a few bytes written past a heap allocation.
 asan:
 	$(MAKE) -C mdfix asan
+
+# Deep generative sweep (issue #10). `make test` runs a bounded slice of the
+# same properties; this is the one that goes wide, and it runs against the
+# sanitizer build so a memory bug on a generated document is caught here
+# rather than on someone's manuscript.
+#
+# Not part of `check`: it takes minutes, and a gate people skip is not a gate.
+# Run it after touching mdfix's line handling, and before a release.
+FUZZ_SEEDS ?= 2000
+
+fuzz: mdfix
+	$(MAKE) -C mdfix asan
+	@echo "fuzzing $(FUZZ_SEEDS) generated documents under ASan/UBSan..."
+	@cd tests && MDFIX=../mdfix/mdfix-asan $(PYTHON) -c "\
+import os, sys, tempfile; from pathlib import Path; import fuzz; \
+d = tempfile.mkdtemp(); \
+r = fuzz.Runner(Path(os.environ['MDFIX']), Path(d)); \
+f = fuzz.sweep(r, range($(FUZZ_SEEDS))); \
+[print('seed', s, sorted({k for k, _ in v}), '\n' + x.decode('utf-8', 'replace')) for s, v, x in f]; \
+print(len(f), 'failing of $(FUZZ_SEEDS)'); \
+sys.exit(1 if f else 0)"
+	@echo "fuzz: $(FUZZ_SEEDS) documents, no violations"
 
 # Everything CI runs. Use this before opening a PR.
 check: test check-sync asan

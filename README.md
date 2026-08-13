@@ -98,6 +98,7 @@ make test         # offline suite for mdfix + mdquery + prosevary (no network)
 make check-sync   # committed mdfix.c is ragel's output for mdfix.rl
 make asan         # address + UB sanitizers over the repo's own markdown
 make check        # all three — what CI runs
+make fuzz         # deep generative sweep under the sanitizers (minutes)
 ```
 
 `make test` deliberately does **not** require ragel, so the committed

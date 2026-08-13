@@ -110,6 +110,12 @@ Each has an identifier so issues and tests can cite it.
   `--wrap` non-ASCII width — is a wrap-quality bug outside this matrix’s
   I2.1/I2.2 oracle and not a counterexample to it.)*
 - **I3.2 Idempotence.** Applying a transform twice equals applying it once.
+  *(Enforced rather than hoped for: mdfix renders until the output stops
+  changing, bounded at four passes, and fails the run if it does not settle.
+  One pass was not a fixed point — a fixer can change what a line *is*, and
+  the structural repair that cares had already looked. Diagnostics and counts
+  come from the first pass, because ID.1 spans index the file on disk. Found
+  by the generated sweep in `tests/test_fuzz.py`.)*
 - **I3.3 Opt-in.** No optional transform runs unless requested. *(Issue #60:
   the five editorial passes that predated the classification — bullet style,
   emphasis in headings, bold colons, arrow asides, block quote spacing — now
@@ -266,7 +272,13 @@ the schema; designing it in is cheap now and a retrofit later.
 
 **Recommend: a property test over transforms, not a review habit.**
 
-Shipped as `tests/test_transform_matrix.py`: for each optional transform alone,
+Shipped twice over. `tests/test_transform_matrix.py` sweeps a curated corpus;
+`tests/test_fuzz.py` sweeps a generated one. The second exists because the
+first is a corpus somebody chose, and it will not contain the document nobody
+thought of — `--wrap` invented an `OrderedList` out of a sentence ending in a
+number, and no document in the matrix ends a sentence that way.
+
+For each optional transform alone,
 and for each shipped profile, assert I2.1 and I2.2 over a corpus, with known
 §7 violations pinned exactly. That matrix is what widened the hard-break and
 Chicago-ellipsis gap lists, and then what forced them closed — a fixed cell
