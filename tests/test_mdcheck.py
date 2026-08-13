@@ -68,6 +68,10 @@ class OwnChecksTests(CheckTestCase):
         self._doc("# T\n\n![alt](http://example.com/x.png)\n")
         self.assertNotIn("check.missing-asset", self._rules())
 
+    def test_protocol_relative_image_is_not_a_local_asset(self) -> None:
+        self._doc("# T\n\n![alt](//cdn.example/x.png)\n")
+        self.assertNotIn("check.missing-asset", self._rules())
+
     def test_fence_without_a_language(self) -> None:
         self._doc("# T\n\n```\ncode\n```\n")
         self.assertIn("check.fence-language", self._rules())
@@ -80,8 +84,19 @@ class OwnChecksTests(CheckTestCase):
         self._doc("# T\n\n```python\ncode\n")
         self.assertIn("check.unterminated-fence", self._rules())
 
+    def test_unterminated_fence_is_reported_once(self) -> None:
+        self._doc("# T\n\n```python\ncode\n")
+        rules = [f.rule for f in run([self.dir])]
+        self.assertEqual(rules.count("check.unterminated-fence"), 1)
+        self.assertNotIn("dialect.fence.unterminated", rules)
+
     def test_duplicate_reference_definition(self) -> None:
         self._doc("# T\n\nSee [x][id].\n\n[id]: http://a\n[id]: http://b\n")
+        self.assertIn("check.duplicate-definition", self._rules())
+
+    def test_duplicate_definition_normalizes_whitespace(self) -> None:
+        self._doc("# T\n\nSee [x][foo bar].\n\n[foo  bar]: http://a\n"
+                  "[foo bar]: http://b\n")
         self.assertIn("check.duplicate-definition", self._rules())
 
     def test_lossy_constructs_are_warnings(self) -> None:
@@ -94,13 +109,28 @@ class CompositionTests(CheckTestCase):
         self._doc("#Title\n\nBody.\n")
         self.assertIn("dialect.heading.atx-space", self._rules())
 
+    def test_dialect_required_repairs_are_errors(self) -> None:
+        self._doc("#Title\n\nBody.\n")
+        finding = next(f for f in run([self.dir])
+                       if f.rule == "dialect.heading.atx-space")
+        self.assertEqual(finding.severity, "error")
+
+    def test_dialect_warnings_stay_warnings(self) -> None:
+        # fence.unterminated is warning in mdfix; we drop its dialect twin when
+        # check.unterminated-fence is present, so use a bare dialect path via
+        # suppression of the check rule to observe mapped severity.
+        self._doc("# T\n\n```python\ncode\n")
+        findings = run([self.dir], suppress=["check.unterminated-fence"])
+        dialect = [f for f in findings if f.rule == "dialect.fence.unterminated"]
+        self.assertEqual(len(dialect), 1)
+        self.assertEqual(dialect[0].severity, "warning")
+
     def test_link_findings_are_included(self) -> None:
         self._doc("# T\n\nSee [x](#nope).\n")
         self.assertIn("links.broken-anchor", self._rules())
 
     def test_a_missing_image_is_reported_once(self) -> None:
-        # mdlinks sees an image as a link with a destination, so both tools
-        # find it. Two diagnostics for one problem is how a gate loses trust.
+        # Prefer check.missing-asset over links.missing-file at the same span.
         self._doc("# T\n\n![alt](nope.png)\n")
         rules = [f.rule for f in run([self.dir])]
         self.assertEqual(rules.count("check.missing-asset"), 1)
@@ -150,6 +180,30 @@ class SuppressionTests(CheckTestCase):
         self._doc("# T\n\nSee [x](#nope) and [y](./nope.md).\n")
         rules = [f.rule for f in run([self.dir], suppress=["links.*"])]
         self.assertFalse([r for r in rules if r.startswith("links.")])
+
+    def test_suppress_from_mdtools_toml(self) -> None:
+        import sys
+        if sys.version_info < (3, 11):
+            self.skipTest("tomllib needs Python 3.11")
+        (self.dir / ".git").mkdir()
+        (self.dir / "mdtools.toml").write_text(
+            '[mdtools]\nsuppress = ["links.*"]\n', encoding="utf-8")
+        self._doc("# T\n\nSee [x](#nope).\n")
+        rc, out, err = self._run(str(self.dir / "a.md"))
+        self.assertEqual(rc, 0, msg=err + out)
+        self.assertNotIn("links.broken-anchor", out)
+
+    def test_bad_config_exits_two(self) -> None:
+        import sys
+        if sys.version_info < (3, 11):
+            self.skipTest("tomllib needs Python 3.11")
+        (self.dir / ".git").mkdir()
+        (self.dir / "mdtools.toml").write_text(
+            '[mdtools]\nfrobnicate = true\n', encoding="utf-8")
+        self._doc("# T\n")
+        rc, _, err = self._run(str(self.dir / "a.md"))
+        self.assertEqual(rc, 2)
+        self.assertIn("frobnicate", err)
 
 
 class CliTests(CheckTestCase):

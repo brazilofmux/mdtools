@@ -37,12 +37,14 @@ trust.
 | `check.duplicate-definition` | error | a link label defined twice |
 | `check.anchor-collision` | warning | two files claiming one anchor |
 | `check.lossy-math`, `check.lossy-latex` | warning | constructs the IR treats as prose |
-| `dialect.*` | error | mdfix's required repairs — the document is not canonical |
+| `dialect.*` | mixed | mdfix diagnostics: `fix` → error (required repairs), warnings stay warnings |
 | `links.*` | mixed | everything [mdlinks](mdlinks.md) reports |
 
 `check.anchor-collision` is the one that only makes sense repository-wide.
-Within a single file Pandoc disambiguates with `-1` and `-2` suffixes, so a
-collision matters only when two *files* claim the same anchor.
+Within a single file Pandoc disambiguates with `-1` and `-2` suffixes; every
+cross-file slug collision is reported (whether or not something links to it).
+Unterminated fences use `check.unterminated-fence` only — the matching
+`dialect.fence.unterminated` row is dropped so the gate does not double-count.
 
 ## Suppression
 
@@ -51,7 +53,12 @@ $ mdcheck --suppress check.image-alt --suppress 'links.*' docs/
 ```
 
 A trailing `*` matches a prefix. `mdtools.toml` may carry a `suppress` list
-under `[mdtools]`, which is added to whatever the command line gives.
+under `[mdtools]`, which is added to whatever the command line gives:
+
+```toml
+[mdtools]
+suppress = ["check.image-alt", "links.unused-*"]
+```
 
 ## Output
 

@@ -47,6 +47,7 @@ class Config:
     glossary: Optional[Path] = None
     state_dir: Optional[Path] = None
     mdfix: Optional[str] = None
+    suppress: List[str] = field(default_factory=list)  # mdcheck rule ids / prefixes
     raw: Dict[str, Any] = field(default_factory=dict)
 
     def resolved(self) -> Dict[str, Any]:
@@ -60,6 +61,7 @@ class Config:
             "glossary": str(self.glossary) if self.glossary else None,
             "state_dir": str(self.state_dir) if self.state_dir else None,
             "mdfix": self.mdfix,
+            "suppress": list(self.suppress),
         }
 
 
@@ -83,7 +85,9 @@ def find_config(start: Optional[Path] = None) -> Optional[Path]:
     return candidate if candidate.is_file() else None
 
 
-_ALLOWED = {"profile", "wrap", "editorial", "glossary", "state_dir", "mdfix"}
+_ALLOWED = {
+    "profile", "wrap", "editorial", "glossary", "state_dir", "mdfix", "suppress",
+}
 
 
 def _resolve_mdfix(root: Path, value: str) -> str:
@@ -147,6 +151,12 @@ def load(start: Optional[Path] = None) -> Config:
             setattr(config, key, (root / str(section[key])).resolve())
     if "mdfix" in section:
         config.mdfix = _resolve_mdfix(root, str(section["mdfix"]))
+    if "suppress" in section:
+        value = section["suppress"]
+        if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
+            raise ConfigError(
+                f"{path}: suppress must be a list of rule id strings")
+        config.suppress = list(value)
     return config
 
 

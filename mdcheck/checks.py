@@ -1,9 +1,8 @@
 """
 Repository-aware validation.
 
-Most of what #13 asks for already exists: mdlinks knows the link graph, mdfix
-knows the dialect. mdcheck composes those and adds the checks nothing else
-does, then applies one policy over the result.
+mdlinks knows the link graph; mdfix knows the dialect. mdcheck composes those
+and adds the checks nothing else does, then applies one policy.
 
 Everything here reads. Nothing writes, and no check needs a network or a
 model — a validator that cannot run offline is not a gate.
@@ -13,14 +12,18 @@ from __future__ import annotations
 
 import json
 import subprocess
-import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
 
 from mdquery.ir import find_mdfix, raw_records
 from mdquery.slug import assign_slugs
-from mdlinks.graph import check as link_check, read as link_read
+from mdlinks.graph import (
+    _is_external,
+    _normalize_label,
+    check as link_check,
+    read as link_read,
+)
 
 # Constructs the IR reports as `paragraph` although Pandoc sees more. Writing
 # them is not an error — they simply are not protected from prose passes, and
@@ -92,7 +95,7 @@ def check_document(path: Path, mdfix: Optional[str] = None) -> List[Finding]:
             if not record.get("text"):
                 add("check.image-alt", "warning", record,
                     "image has no alt text")
-            if destination and not urllib.parse.urlparse(destination).scheme:
+            if destination and not _is_external(destination):
                 target = destination.split("#", 1)[0]
                 if target and not (path.parent / target).exists():
                     add("check.missing-asset", "error", record,
@@ -110,7 +113,7 @@ def check_document(path: Path, mdfix: Optional[str] = None) -> List[Finding]:
                     "code fence is never closed")
 
         elif kind == "reference_def":
-            label = record.get("label", "").lower()
+            label = _normalize_label(record.get("label", "") or "")
             if label in labels:
                 add("check.duplicate-definition", "error", record,
                     f"[{label}] is already defined on line {labels[label]}")
@@ -132,10 +135,9 @@ def check_repository(paths: Sequence[Path],
     """
     Cross-file checks.
 
-    Duplicate anchors are the one that only makes sense here: within a file
-    Pandoc disambiguates with -1 and -2 suffixes, so a collision is only a
-    problem when two *files* claim the same anchor and something links to it
-    by name across them.
+    Duplicate anchors only make sense repository-wide: within one file Pandoc
+    disambiguates with -1/-2 suffixes. Every cross-file slug collision is
+    reported (not only when something links to it).
     """
     findings: List[Finding] = []
     anchors: Dict[str, List[str]] = {}
@@ -157,7 +159,12 @@ def check_repository(paths: Sequence[Path],
 
 
 def dialect_findings(path: Path, mdfix: Optional[str] = None) -> List[Finding]:
-    """mdfix's own diagnostics, at default settings — the required repairs."""
+    """
+    mdfix diagnostics at default settings.
+
+    mdfix severity `fix` means a required repair would change the file
+    (not canonical) → error. Lint-only rows stay warnings.
+    """
     binary = mdfix or find_mdfix()
     result = subprocess.run(
         [binary, "-n", "--diagnostics", str(path)],
@@ -168,11 +175,16 @@ def dialect_findings(path: Path, mdfix: Optional[str] = None) -> List[Finding]:
             row = json.loads(line)
         except json.JSONDecodeError:
             continue
+        mdfix_sev = row.get("severity", "warning")
+        severity = "error" if mdfix_sev == "fix" else "warning"
+        message = row.get("message", "")
+        if severity == "error":
+            message = f"not canonical: {message}"
         out.append(Finding(
             path=row.get("path", str(path)), rule=f"dialect.{row['rule']}",
-            severity="error", line=row.get("line", 0),
+            severity=severity, line=row.get("line", 0),
             start=row.get("start", 0), end=row.get("end", 0),
-            message=f"not canonical: {row.get('message', '')}"))
+            message=message))
     return out
 
 
@@ -193,20 +205,29 @@ def run(paths: Sequence[Path], mdfix: Optional[str] = None,
             start=link_finding.start, end=link_finding.end,
             message=link_finding.message))
 
-    # An image with a missing file is reported by both mdlinks (which sees an
-    # image as a link with a destination) and by check.missing-asset. Two
-    # diagnostics for one problem is how a gate loses trust, so the more
-    # specific rule wins at the same span.
+    blocked = set(suppress)
+
+    def is_blocked(rule: str) -> bool:
+        return (rule in blocked
+                or any(rule.startswith(b.rstrip("*"))
+                       for b in blocked if b.endswith("*")))
+
+    # Prefer the more specific rule when two tools flag the same span.
     assets = {(f.path, f.start, f.end) for f in findings
-              if f.rule == "check.missing-asset"}
+              if f.rule == "check.missing-asset" and not is_blocked(f.rule)}
     findings = [f for f in findings
                 if not (f.rule == "links.missing-file"
                         and (f.path, f.start, f.end) in assets)]
 
-    blocked = set(suppress)
-    findings = [f for f in findings
-                if f.rule not in blocked
-                and not any(f.rule.startswith(b.rstrip("*"))
-                            for b in blocked if b.endswith("*"))]
+    # Unterminated fences: IR check owns the error; drop the dialect twin
+    # only when the check rule will still be reported.
+    if not is_blocked("check.unterminated-fence"):
+        open_fences = {f.path for f in findings
+                       if f.rule == "check.unterminated-fence"}
+        findings = [f for f in findings
+                    if not (f.rule == "dialect.fence.unterminated"
+                            and f.path in open_fences)]
+
+    findings = [f for f in findings if not is_blocked(f.rule)]
     findings.sort(key=lambda f: (f.path, f.line, f.rule))
     return findings

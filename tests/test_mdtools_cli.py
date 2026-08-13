@@ -100,8 +100,7 @@ class DispatchTests(CliTestCase):
         self.assertTrue(out_path.read_text(encoding="utf-8").startswith("# Title"))
 
     def test_check_reaches_mdcheck(self) -> None:
-        # The verb was reserved and returned 2 with a pointer to #13; this
-        # test failed when mdcheck landed, which is what reserving it was for.
+        # Dispatcher must surface link findings with exit 1 via mdcheck.
         path = self._doc("# T\n\nSee [x](#nope).\n")
         rc, out, _ = self._run("check", str(path))
         self.assertEqual(rc, 1)

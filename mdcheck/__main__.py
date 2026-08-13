@@ -1,9 +1,8 @@
 """
 mdcheck — repository-aware Markdown validation (issue #13).
 
-Read-only, offline, deterministic. It composes what the other tools already
-know — mdlinks has the link graph, mdfix has the dialect — and adds the checks
-nothing else performs.
+Read-only, offline, deterministic. Composes the link graph and dialect
+diagnostics, then adds the checks nothing else performs.
 """
 
 from __future__ import annotations
@@ -21,6 +20,7 @@ from .checks import Finding, run
 try:
     from mdtools_cli.config import ConfigError, load as load_config
 except ImportError:  # pragma: no cover
+    ConfigError = RuntimeError  # type: ignore
     load_config = None  # type: ignore
 
 
@@ -88,9 +88,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if load_config is not None:
         try:
             config = load_config(args.paths[0])
-            suppress.extend(config.raw.get("suppress", []) or [])
-        except Exception:
-            pass   # config problems are mdtools' to report, not mdcheck's
+            suppress.extend(config.suppress)
+        except ConfigError as exc:
+            # A present but unusable project policy must not look like success.
+            print(f"mdcheck: {exc}", file=sys.stderr)
+            return 2
 
     try:
         findings = run(args.paths, args.mdfix, suppress)
