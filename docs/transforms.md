@@ -60,12 +60,20 @@ without the transform, so applying one is an editorial choice.
 | `--spaced-emdash` | Preserve `word — word` | Typographic preference |
 | `-w` | Collapse trailing whitespace | **Breaks I2.1** — see §7 gap 5 |
 | `--wrap[=N]` | Hard-wrap paragraphs | Presentation; **breaks I2.1** via `-w` |
-| `--canonical` | Profile: the above minus wrap | Convenience bundle |
+| `--canonical` | Profile: editorial + chicago + structural canonicalizers + `-w` (not wrap) | Convenience bundle |
 | `--technical` | Profile: `--canonical` + spaced em-dash + wrap 78 | Convenience bundle |
+| `--normalize-nfc` | Compose text to Unicode NFC | Pandoc reads both spellings; changes byte offsets and heading anchors, so it is not in either profile — architecture **I1.2** |
 
 `tests/test_transform_matrix.py` asserts **I3.1** across this table: every
 optional transform, alone and in each profile, must still satisfy I2.1 and
 I2.2. The violations it finds are pinned there and in dialect-policy §7.
+
+Note that `--normalize-nfc` is not in `--canonical` or `--technical`, and
+should not be added to them. A profile is a bundle of things safe to apply
+without looking; moving a heading anchor is not one of those. It is also
+the only optional transform that applies inside a code fence, because NFC
+is a spelling of the same text rather than an edit to it — skipping fences
+would leave a document that is still not NFC after being asked to be.
 
 ## The editorial bundle: `--editorial`
 

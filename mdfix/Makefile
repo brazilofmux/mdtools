@@ -6,19 +6,25 @@ CFLAGS ?= -O2
 
 all: mdfix
 
-mdfix: mdfix.c vendor/utf_width.c
-	$(CC) $(CFLAGS) -o $@ mdfix.c vendor/utf_width.c
+mdfix: mdfix.c vendor/utf_width.c vendor/utf_nfc.c
+	$(CC) $(CFLAGS) -o $@ mdfix.c vendor/utf_width.c vendor/utf_nfc.c
 
 # Sanitizer build. Every fixer mutates its line in place and several of them
 # lengthen it, so a wrong-sized line allocation overflows the heap by a few
 # bytes — invisible to the test suite, obvious to ASan. Run this after
 # touching read_all or any fixer that grows a line.
-asan: mdfix.c vendor/utf_width.c
-	$(CC) -O1 -g -fsanitize=address,undefined -o mdfix-asan mdfix.c vendor/utf_width.c
+#
+# The sweep is over every .md in the tree, which is why tests/fixtures/nfc
+# exists: the repo's own prose is all NFC, so without a deliberately
+# decomposed document --normalize-nfc would be a no-op here and the DFA table
+# walks in vendor/utf_nfc.c would never be sanitized at all.
+asan: mdfix.c vendor/utf_width.c vendor/utf_nfc.c
+	$(CC) -O1 -g -fsanitize=address,undefined -o mdfix-asan mdfix.c vendor/utf_width.c vendor/utf_nfc.c
 	@err=$$(mktemp); \
 	find .. -name '*.md' -not -path '*/.git/*' -print0 \
 	| while IFS= read -r -d '' f; do \
-		for p in --canonical --technical "--canonical --pandoc-safe-links"; do \
+		for p in --canonical --technical "--canonical --pandoc-safe-links" \
+		         --normalize-nfc; do \
 			./mdfix-asan -n -q $$p "$$f" >/dev/null 2>$$err || \
 				{ cat $$err; rm -f $$err; exit 1; }; \
 		done; \

@@ -48,6 +48,7 @@ may not. They are namespaced by area:
 | `chicago.` | punctuation, abbreviations, and the two lint-only checks |
 | `footnote.` | reference and definition formatting |
 | `fence.` | code fence delimiters |
+| `unicode.` | normalization: `unicode.non-nfc` |
 | `blockquote.`, `whitespace.`, `emphasis.`, `punct.`, `link.` | one rule each |
 
 `heading.atx-space`, `list.blank-before` and `list.blank-after` are the three
@@ -56,7 +57,11 @@ produces none of them at default settings is Pandoc-clean in the sense §3
 means.
 
 `chicago.serial-comma` and `chicago.number-style` are lint-only: they never
-change the file and always carry `severity: "warning"`.
+change the file and always carry `severity: "warning"`. So does
+`unicode.non-nfc`, which reports text that is not in Unicode NFC —
+architecture **I1.2** says L1 detects normalization problems and does not fix
+them. `mdfix --normalize-nfc` is the opt-in rewrite; see
+[transforms.md](transforms.md).
 
 ## Gating in CI
 
@@ -87,6 +92,13 @@ before reporting, so two ellipses on one line report once.
 
 `fence.unterminated` is a warning when a fence closer never matches (the rest
 of the file was left unchecked).
+
+`unicode.non-nfc` is the exception to the line-level span above: it reports
+the exact code point, because "somewhere on this line is a combining mark in
+the wrong order" is not something a human can act on. It is also the one rule
+that may over-report — the UAX #15 quick check is allowed to answer *maybe*,
+and a maybe is reported. For a warning that changes nothing, over-reporting is
+the safe direction.
 
 **Not yet emitted:** the L1 encoding errors from #53 and the under-report
 warnings mdquery prints. Both are diagnostics in everything but format, and

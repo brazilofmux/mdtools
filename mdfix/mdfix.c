@@ -65,6 +65,7 @@
 #include <strings.h>   /* strncasecmp */
 #include <ctype.h>
 #include "vendor/utf_width.h"
+#include "vendor/utf_nfc.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -72,14 +73,14 @@
 #include <unistd.h>
 
 
-#line 76 "mdfix.c"
+#line 77 "mdfix.c"
 static const int mdfix_scanner_start = 14;
 static const int mdfix_scanner_error = -1;
 
 static const int mdfix_scanner_en_main = 14;
 
 
-#line 75 "mdfix.rl"
+#line 76 "mdfix.rl"
 
 
 #define MAX_LINE  8192
@@ -229,10 +230,12 @@ static int  opt_editorial  = 0;       /* L3 editorial bundle; --editorial */
 static int  opt_apply_edits = 0;      /* L5 applier; reads JSONL on stdin */
 static int  opt_wrap_width = 0;       /* 0 = disabled */
 static int  opt_emit_ir   = 0;        /* structural IR to stdout; never writes */
+static int  opt_normalize_nfc = 0;    /* L3: rewrite to NFC; --normalize-nfc */
 
 static int  serial_comma_warnings = 0;
 static int  number_style_warnings = 0;
 static int  unterminated_fence_warnings = 0;
+static int  non_nfc_warnings = 0;
 
 static char *lines[MAX_LINES];
 static int   nlines = 0;
@@ -268,6 +271,21 @@ static void ir_json_string(FILE *out, const char *s);
 
 static int opt_diagnostics = 0;
 static const char *diag_path = "";
+
+static void emit_diagnostic_span(const char *rule, const char *severity,
+                                 int linenum, long long start, long long end,
+                                 const char *message)
+{
+    if (!opt_diagnostics)
+        return;
+    fputs("{\"kind\":\"diagnostic\",\"path\":", stderr);
+    ir_json_string(stderr, diag_path);
+    fprintf(stderr, ",\"rule\":\"%s\",\"severity\":\"%s\","
+                    "\"line\":%d,\"start\":%lld,\"end\":%lld,\"message\":",
+            rule, severity, linenum, start, end);
+    ir_json_string(stderr, message);
+    fputs("}\n", stderr);
+}
 
 static void emit_diagnostic(const char *rule, const char *severity,
                             int linenum, const char *message)
@@ -3511,6 +3529,181 @@ static long long utf8_first_bad(const char *s, int len, const char **why)
     return -1;
 }
 
+/*
+ * L1 normalization check — architecture.md I1.2.
+ *
+ * Reports where a document leaves NFC. It does not rewrite it: normalizing at
+ * input would move every offset after the change and so break I1.3, and it
+ * would edit the author's file as a side effect of reading it. Rewriting is
+ * L3 and opt-in (--normalize-nfc).
+ *
+ * This is the UAX #15 quick check, not normalize-and-compare: per code point,
+ * NFC_QC must be Yes and the canonical combining class must not go backwards.
+ * Quick check is allowed to answer "maybe" (it reports a Maybe as not-NFC),
+ * so a run may name a sequence that full normalization would leave alone.
+ * Over-reporting is the safe direction for a warning that changes nothing.
+ *
+ * Called per line rather than per file, which is exact rather than merely
+ * convenient: a line terminator is ASCII, so it is a starter with class 0 and
+ * ends any combining sequence. No sequence spans a newline.
+ *
+ * Returns the byte offset within [s, s+len) of the first code point that
+ * fails and stores its length in *plen, or -1. Assumes s is already known to
+ * be well-formed UTF-8 — I1.1 runs first and refuses the file otherwise.
+ */
+static long long nfc_first_bad(const char *s, int len, int *plen)
+{
+    *plen = 0;
+    const unsigned char *p = (const unsigned char *)s;
+    int i = 0, last_ccc = 0;
+
+    while (i < len) {
+        if (p[i] < 0x80) {          /* ASCII: NFC_QC=Yes, ccc=0 */
+            last_ccc = 0;
+            i++;
+            continue;
+        }
+        const char *why = NULL;
+        int n = utf8_sequence_len(p + i, len - i, &why);
+        if (n == 0)
+            return -1;              /* I1.1 refuses this file; do not guess */
+
+        int ccc, qc;
+        mdfix_nfc_ccc_qc(p + i, p + i + n, &ccc, &qc);
+        *plen = n;
+        if (qc != 0)
+            return i;               /* NFC_QC No or Maybe */
+        if (ccc != 0 && last_ccc > ccc)
+            return i;               /* marks out of canonical order */
+
+        last_ccc = ccc;
+        i += n;
+    }
+    *plen = 0;
+    return -1;
+}
+
+/*
+ * L3: rewrite lines[] to NFC when --normalize-nfc is set (off by default).
+ * Runs after the IR early-return so emitted spans still address the file on
+ * disk. Destination is sized past UAX #15's 3× NFC expansion; length-checked
+ * because libutf may truncate without reporting (brazilofmux/utf#2).
+ */
+#define NFC_DST_MAX (MAX_LINE * 3 + 8)
+
+/*
+ * Refuse input that would hit libutf's silent segment truncate
+ * (brazilofmux/utf#1). Bound dirty segments at 31 input code points so the
+ * decomposed form stays ≤124 of the normalizer's 128-slot segment.
+ * Returns the byte offset of the first over-long segment, or -1.
+ */
+#define NFC_SEGMENT_MAX 31
+
+static long long nfc_segment_overrun(const char *s, int len)
+{
+    const unsigned char *p = (const unsigned char *)s;
+    int i = 0, seg_start = 0, last_ccc = 0;
+
+    while (i < len) {
+        if (p[i] < 0x80) {              /* ASCII ends a segment */
+            seg_start = i;
+            last_ccc = 0;
+            i++;
+            continue;
+        }
+        const char *why = NULL;
+        int n = utf8_sequence_len(p + i, len - i, &why);
+        if (n == 0)
+            return -1;                  /* I1.1 already refused this file */
+
+        int ccc, qc;
+        mdfix_nfc_ccc_qc(p + i, p + i + n, &ccc, &qc);
+        if (qc == 0 && (ccc == 0 || last_ccc <= ccc)) {
+            if (ccc == 0)
+                seg_start = i;
+            last_ccc = ccc;
+            i += n;
+            continue;
+        }
+
+        /* A dirty segment starts at seg_start and runs to the next clean
+         * starter. Count its code points as upstream will see them. */
+        i += n;
+        while (i < len) {
+            if (p[i] < 0x80)
+                break;
+            int n2 = utf8_sequence_len(p + i, len - i, &why);
+            if (n2 == 0)
+                return -1;
+            int ccc2, qc2;
+            mdfix_nfc_ccc_qc(p + i, p + i + n2, &ccc2, &qc2);
+            if (ccc2 == 0 && qc2 == 0)
+                break;
+            i += n2;
+        }
+
+        int points = 0;
+        for (int k = seg_start; k < i; ) {
+            int nk = utf8_sequence_len(p + k, len - k, &why);
+            if (nk == 0)
+                return -1;
+            k += nk;
+            points++;
+        }
+        if (points > NFC_SEGMENT_MAX)
+            return seg_start;
+
+        seg_start = i;
+        last_ccc = 0;
+    }
+    return -1;
+}
+
+static int normalize_lines_nfc(void)
+{
+    static unsigned char dst[NFC_DST_MAX];
+
+    for (int i = 0; i < nlines; i++) {
+        int len = (int)strlen(lines[i]);
+        int bad_len = 0;
+        if (nfc_first_bad(lines[i], len, &bad_len) < 0)
+            continue;               /* already NFC — nothing to write */
+
+        long long overrun = nfc_segment_overrun(lines[i], len);
+        if (overrun >= 0) {
+            fprintf(stderr,
+                "error: line %d, byte %lld: a combining sequence longer than "
+                "%d code points.\n"
+                "The bundled normalizer truncates these silently, so mdfix "
+                "refuses to normalize\nrather than lose text. The file is "
+                "unchanged; report this input.\n",
+                i + 1, line_off[i] + overrun, NFC_SEGMENT_MAX);
+            return 1;
+        }
+
+        size_t nout = 0;
+        mdfix_nfc_normalize((const unsigned char *)lines[i], (size_t)len,
+                            dst, sizeof dst, &nout);
+        if (nout >= sizeof dst) {
+            fprintf(stderr,
+                "error: line %d overflows the normalization buffer.\n"
+                "This should be unreachable; please report it.\n", i + 1);
+            return 1;
+        }
+        if (nout > (size_t)(MAX_LINE - 1)) {
+            fprintf(stderr,
+                "error: line %d is %zu bytes after NFC normalization "
+                "(limit %d).\n"
+                "mdfix refuses to silently split or truncate long lines.\n",
+                i + 1, nout, MAX_LINE - 1);
+            return 1;
+        }
+        memcpy(lines[i], dst, nout);
+        lines[i][nout] = '\0';
+    }
+    return 0;
+}
+
 static int read_all(FILE *fp)
 {
     char *buf = NULL;
@@ -3561,6 +3754,24 @@ static int read_all(FILE *fp)
 
         nread -= skip;
         memmove(buf, buf + skip, (size_t)nread + 1);
+
+        /*
+         * I1.2: report, do not rewrite. One diagnostic per line, at the first
+         * offending code point — a decomposed document would otherwise emit a
+         * diagnostic per accent and bury everything else on the stream.
+         */
+        int bad_len = 0;
+        long long non_nfc = nfc_first_bad(buf, (int)nread, &bad_len);
+        if (non_nfc >= 0) {
+            non_nfc_warnings++;
+            long long at = src_bytes + skip + non_nfc;
+            emit_diagnostic_span("unicode.non-nfc", "warning", nlines + 1,
+                                 at, at + bad_len,
+                                 opt_normalize_nfc
+                                   ? "not NFC; will rewrite with --normalize-nfc"
+                                   : "not NFC; mdfix reports but does not "
+                                     "rewrite (use --normalize-nfc)");
+        }
 
         /*
          * ">" not ">=": a line of exactly MAX_LINE-1 content bytes plus its
@@ -3693,7 +3904,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 3697 "mdfix.c"
+#line 3908 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -3701,20 +3912,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 3705 "mdfix.c"
+#line 3916 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 4090 "mdfix.rl"
+#line 4301 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 3841 "mdfix.rl"
+#line 4052 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -3754,7 +3965,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 3717 "mdfix.rl"
+#line 3928 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial || ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -3791,19 +4002,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 3710 "mdfix.rl"
+#line 3921 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 3710 "mdfix.rl"
+#line 3921 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 4025 "mdfix.rl"
+#line 4236 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -3827,7 +4038,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 4070 "mdfix.rl"
+#line 4281 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -3848,7 +4059,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 4048 "mdfix.rl"
+#line 4259 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -3871,13 +4082,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 4090 "mdfix.rl"
+#line 4301 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 3970 "mdfix.rl"
+#line 4181 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -3900,7 +4111,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 3883 "mdfix.rl"
+#line 4094 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_CHAR('.');
@@ -3951,13 +4162,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 4090 "mdfix.rl"
+#line 4301 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 3933 "mdfix.rl"
+#line 4144 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -3995,7 +4206,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 3992 "mdfix.rl"
+#line 4203 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -4029,7 +4240,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 3779 "mdfix.rl"
+#line 3990 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4042,7 +4253,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 3753 "mdfix.rl"
+#line 3964 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4056,7 +4267,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 3791 "mdfix.rl"
+#line 4002 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4069,7 +4280,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 3766 "mdfix.rl"
+#line 3977 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4083,7 +4294,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 3803 "mdfix.rl"
+#line 4014 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -4122,7 +4333,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 3710 "mdfix.rl"
+#line 3921 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -4135,7 +4346,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 4139 "mdfix.c"
+#line 4350 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -4161,7 +4372,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 4165 "mdfix.c"
+#line 4376 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -4205,7 +4416,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 4209 "mdfix.c"
+#line 4420 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -4254,7 +4465,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 4258 "mdfix.c"
+#line 4469 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -4273,7 +4484,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 4277 "mdfix.c"
+#line 4488 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -4299,7 +4510,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 4303 "mdfix.c"
+#line 4514 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -4348,7 +4559,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 4352 "mdfix.c"
+#line 4563 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -4428,7 +4639,7 @@ case 13:
 
 	}
 
-#line 4097 "mdfix.rl"
+#line 4308 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';
@@ -4909,8 +5120,12 @@ static void print_summary(const char *path)
     for (int i = 0; i < NUM_FIXES; i++)
         total += fix_counts[i];
 
-    if (total == 0 && serial_comma_warnings == 0 && number_style_warnings == 0
-        && unterminated_fence_warnings == 0) {
+    int nfc_rewrote = opt_normalize_nfc && non_nfc_warnings > 0;
+    int lint_only = serial_comma_warnings + number_style_warnings
+                    + unterminated_fence_warnings
+                    + (non_nfc_warnings > 0 && !opt_normalize_nfc ? 1 : 0);
+
+    if (total == 0 && !nfc_rewrote && lint_only == 0) {
         printf("%s: clean. Nothing to fix.\n", path);
         return;
     }
@@ -4921,6 +5136,13 @@ static void print_summary(const char *path)
             if (fix_counts[i] > 0)
                 printf("  %-40s %d\n", fix_labels[i], fix_counts[i]);
         }
+    } else if (nfc_rewrote) {
+        /* Applied rewrite, not a pure lint pass — avoid "nothing to fix". */
+        printf("\n%s: %d line%s normalized to NFC\n", path, non_nfc_warnings,
+               non_nfc_warnings == 1 ? "" : "s");
+    } else {
+        /* Warnings without fixes still need a file header for the counts. */
+        printf("\n%s: nothing to fix, but:\n", path);
     }
     if (serial_comma_warnings > 0) {
         printf("  %-40s %d\n",
@@ -4936,6 +5158,13 @@ static void print_summary(const char *path)
         printf("  %-40s %d\n",
             "unterminated code fence",
             unterminated_fence_warnings);
+    }
+    if (non_nfc_warnings > 0 && opt_normalize_nfc && total > 0) {
+        printf("  %-40s %d\n", "line(s) normalized to NFC", non_nfc_warnings);
+    } else if (non_nfc_warnings > 0 && !opt_normalize_nfc) {
+        printf("  %-40s %d\n",
+            "line(s) not NFC (--normalize-nfc fixes)",
+            non_nfc_warnings);
     }
 }
 
@@ -5358,6 +5587,9 @@ static int count_required_repairs(const char *text, long long len)
     /* Internal dirt check must not leak JSONL for temp buffers. */
     opt_diagnostics = 0;
     memset(fix_counts, 0, sizeof fix_counts);
+    /* read_all counts non-NFC lines; the temp buffer's count is not the
+     * user's file, so it must not reach the summary. */
+    int saved_nfc_warnings = non_nfc_warnings;
 
     int dirty = -1;
     if (read_all(mem) == 0) {
@@ -5392,6 +5624,7 @@ static int count_required_repairs(const char *text, long long len)
     opt_quiet = saved_quiet;
     opt_verbose = saved_verbose;
     opt_diagnostics = saved_diagnostics;
+    non_nfc_warnings = saved_nfc_warnings;
     memset(fix_counts, 0, sizeof fix_counts);
     return dirty;
 }
@@ -5556,6 +5789,10 @@ static void usage(const char *prog)
         "  --emit-ir\n"
         "        Emit the structural IR as JSONL on stdout and write nothing.\n"
         "        Byte spans slice the input exactly; see docs/ir-schema.md\n"
+        "  --normalize-nfc\n"
+        "        Rewrite text to Unicode NFC. mdfix always *reports* non-NFC\n"
+        "        input (rule unicode.non-nfc); this asks it to fix it, which\n"
+        "        changes byte offsets and heading anchors\n"
         "  --footnote-canonical\n"
         "        Normalize footnote refs/defs to canonical style\n"
         "  --heading-canonical\n"
@@ -5991,6 +6228,7 @@ static int process_file(const char *input_path, const char *output_path)
     serial_comma_warnings = 0;
     number_style_warnings = 0;
     unterminated_fence_warnings = 0;
+    non_nfc_warnings = 0;
     npara = 0;
 
     if (opt_apply_edits)
@@ -6028,6 +6266,19 @@ static int process_file(const char *input_path, const char *output_path)
             return 1;
         }
         return 0;
+    }
+
+    /*
+     * ── L3 normalization ──
+     * After the IR return, before any other transform: everything downstream,
+     * including the heading text a consumer slugs into an anchor, then sees
+     * one spelling. Recomputing rather than carrying an identifier over is
+     * the whole point — a decomposed `Héading` anchors as `heading` in
+     * Pandoc, the precomposed one as `héading`.
+     */
+    if (opt_normalize_nfc && normalize_lines_nfc() != 0) {
+        free_lines();
+        return 1;
     }
 
     /* ── Write / lint ── */
@@ -6174,6 +6425,11 @@ int main(int argc, char *argv[])
         }
         if (strcmp(argv[argi], "--emit-ir") == 0) {
             opt_emit_ir = 1;
+            argi++;
+            continue;
+        }
+        if (strcmp(argv[argi], "--normalize-nfc") == 0) {
+            opt_normalize_nfc = 1;
             argi++;
             continue;
         }

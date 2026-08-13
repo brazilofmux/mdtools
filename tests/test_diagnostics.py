@@ -38,7 +38,7 @@ EXPECTED_RULES = {
     "link.autolink-bare", "heading.scrivener-split",
     # lint-only / structural warnings, not fix categories
     "chicago.number-style", "chicago.serial-comma",
-    "fence.unterminated",
+    "fence.unterminated", "unicode.non-nfc",
 }
 
 
