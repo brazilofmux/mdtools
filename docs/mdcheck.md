@@ -30,7 +30,7 @@ trust.
 
 | Rule | Severity | |
 |---|---|---|
-| `check.missing-asset` | error | an image file that is not on disk, or on `asset_paths` |
+| `check.missing-asset` | error | an image file that is neither beside the document nor on `asset_paths` |
 | `check.image-alt` | warning | an image with no alt text |
 | `check.fence-language` | warning | a code fence with no language |
 | `check.unterminated-fence` | error | a fence that is never closed |
@@ -80,7 +80,7 @@ wrong for one whose build gathers them. `asset_paths` says where else to look:
 asset_paths = ["timelines", "images"]
 ```
 
-Relative to the config file, like `bibliography` — the search path describes
+Relative to the project root, like `bibliography` — the search path describes
 the project's layout, not the directory a tool was run from. The referencing
 file's own directory is tried **first and always**, so a layout that resolves
 today keeps resolving. Each root is tried with the path as written and with

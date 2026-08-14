@@ -137,6 +137,24 @@ class CompositionTests(AssetTestCase):
         self.assertIn("links.missing-file",
                       self._rules(asset_paths=[self.dir / "timelines"]))
 
+    def test_a_markdown_link_is_not_silenced_by_a_same_named_asset(self) -> None:
+        # The filter is the image span, not the destination name.
+        self._doc("# T\n\n[see](notes.md)\n")
+        self._doc("# decoy\n", name="timelines/notes.md")
+        self.assertIn("links.missing-file",
+                      self._rules(asset_paths=[self.dir / "timelines"]))
+
+    def test_a_markdown_link_is_not_silenced_by_a_matching_basename(self) -> None:
+        self._doc("# T\n\n[see](chapters/intro.md)\n")
+        self._doc("# decoy\n", name="images/intro.md")
+        self.assertIn("links.missing-file",
+                      self._rules(asset_paths=[self.dir / "images"]))
+
+    def test_a_reference_style_image_on_the_search_path_is_silent(self) -> None:
+        self._doc("# T\n\n![x][id]\n\n[id]: timeline_vol1.png\n")
+        self._asset("timelines/timeline_vol1.png")
+        self.assertEqual(self._rules(asset_paths=[self.dir / "timelines"]), [])
+
 
 @needs_toml
 class ConfigTests(AssetTestCase):

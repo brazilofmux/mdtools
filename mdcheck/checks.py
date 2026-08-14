@@ -115,6 +115,33 @@ def _asset_exists(path: Path, target: str,
     return False
 
 
+def _image_target(doc, link) -> str:
+    """Path part of an image destination, or empty if this is not one."""
+    if link.kind != "image":
+        return ""
+    dest = link.destination
+    if link.form in ("reference", "shortcut"):
+        label = link.label
+        if link.form == "reference" and not label:
+            label = link.text
+        definition = doc.definitions.get(_normalize_label(label))
+        dest = definition.destination if definition else ""
+    if not dest or _is_external(dest):
+        return ""
+    return dest.split("#", 1)[0]
+
+
+def _found_image_spans(docs, asset_paths: Sequence[Path]):
+    """Image record spans whose file exists beside the document or on the search path."""
+    found = set()
+    for doc in docs:
+        for link in doc.links:
+            target = _image_target(doc, link)
+            if target and _asset_exists(doc.path, target, asset_paths):
+                found.add((str(doc.path), link.start, link.end))
+    return found
+
+
 def check_document(path: Path, mdfix: Optional[str] = None,
                    frontmatter: Optional[dict] = None,
                    bibliography: Optional[Sequence[str]] = None,
@@ -314,19 +341,14 @@ def run(paths: Sequence[Path], mdfix: Optional[str] = None,
     findings.extend(check_repository(files, mdfix))
 
     docs = [link_read(p, mdfix) for p in files]
+    found_images = _found_image_spans(docs, asset_paths)
     for link_finding in link_check(docs):
-        # mdlinks resolves a destination against the file that references it,
-        # which is all a link checker can know. Where the project has said
-        # its build gathers assets from somewhere else, mdcheck knows better
-        # and drops the duplicate — the same "more specific rule wins" that
-        # keeps check.missing-asset and links.missing-file from double-
-        # reporting, applied to the case where neither should fire.
-        if (asset_paths and link_finding.rule == "links.missing-file"
-                and link_finding.target is not None
-                and _asset_exists(Path(link_finding.path),
-                                  link_finding.target.destination
-                                  .split("#", 1)[0],
-                                  asset_paths)):
+        # mdlinks cannot see asset_paths. Drop its missing-file only on an
+        # image span that exists beside the document or on the search path;
+        # a markdown link stays mdlinks' even if a gather root has that name.
+        if (link_finding.rule == "links.missing-file"
+                and (link_finding.path, link_finding.start, link_finding.end)
+                in found_images):
             continue
         findings.append(Finding(
             path=link_finding.path, rule=link_finding.rule,
