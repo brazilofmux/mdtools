@@ -2156,6 +2156,144 @@ static int inline_autolink_len(const char *s)
     return (s[i] == '>' && has_colon_or_at && i > 1) ? i + 1 : 0;
 }
 
+/* Matched emphasis on one line: the whole construct, and its text. */
+#define IR_EMPH_MAX 64
+
+struct emph_span {
+    int start;          /* first delimiter byte */
+    int end;            /* one past the last delimiter byte */
+    int text_start;
+    int text_end;
+    int strong;         /* 2 delimiters rather than 1 */
+};
+
+/*
+ * Matched `*`/`_` pairs on one line, in source order.
+ *
+ * Deliberately narrow: a pair is recorded only when the opening and closing
+ * runs are the same length and that length is 1 or 2. Everything else is
+ * left out — `***both***` (Pandoc reads `Strong [ Emph … ]`, two constructs
+ * from one run), `****x****` (Pandoc reads it literally), and any run whose
+ * two halves disagree. Emphasis is the hairiest corner of CommonMark, and a
+ * record that disagrees with the renderer is worse than no record: consumers
+ * are told what is emphasized, never guessed at.
+ *
+ * Under-reports rather than mis-reports, the same contract as citations. See
+ * docs/ir-schema.md for what that costs, measured.
+ */
+static int find_emphasis(const char *text, struct emph_span *out, int max)
+{
+    struct { int pos; int len; char marker; int enclosed; } stack[IR_EMPH_STACK];
+    int open_count = 0, found = 0;
+    int end = (int)strlen(text);
+    int i = 0;
+
+    while (i < end) {
+        if (text[i] == '\\' && text[i + 1]) {
+            i += 2;                       /* an escaped marker is literal */
+            continue;
+        }
+        int body_off = 0, body_len = 0;
+        int span = inline_code_len(text + i, &body_off, &body_len);
+        if (span) {
+            i += span;                    /* a `*` inside code is not markup */
+            continue;
+        }
+        if (text[i] == '<') {
+            span = inline_autolink_len(text + i);
+            if (!span)
+                span = inline_html_tag_len(text + i);
+            if (span) {
+                i += span;
+                continue;
+            }
+        }
+        if (text[i] == '[' || (text[i] == '!' && text[i + 1] == '[')) {
+            int text_off = 0, text_len = 0;
+            span = inline_link_len(text + i, &text_off, &text_len);
+            if (span) {
+                /* The whole link, destination and text alike. Emphasis
+                 * inside link text is the recursive inline tree, which is
+                 * the rest of #88 and not this. */
+                i += span;
+                continue;
+            }
+        }
+        if (text[i] != '*' && text[i] != '_') {
+            i++;
+            continue;
+        }
+
+        char marker = text[i];
+        int run = 0;
+        while (text[i + run] == marker)
+            run++;
+        int can_open = emphasis_can_open(marker, text, 0, i, i + run, end);
+        int can_close = emphasis_can_close(marker, text, 0, i, i + run, end);
+
+        int matched = -1;
+        if (can_close) {
+            for (int k = open_count - 1; k >= 0; k--) {
+                if (stack[k].marker == marker) {
+                    matched = k;
+                    break;
+                }
+            }
+        }
+
+        /*
+         * Every same-marker run that is not this pair's own ends the claim.
+         * Pandoc's markdown reader is not CommonMark's delimiter algorithm —
+         * it pairs `*a *b* c*` as one emphasis over `a ` and leaves `b*` and
+         * `c*` literal, which no reading of the stack reproduces. So a pair
+         * is claimed only when nothing else could have paired with either
+         * half: no same-marker run between them, and none still open around
+         * them.
+         */
+        int others = 0;
+        for (int k = 0; k < open_count; k++)
+            if (stack[k].marker == marker && k != matched) {
+                stack[k].enclosed = 1;
+                others = 1;
+            }
+
+        if (matched >= 0) {
+            int pos = stack[matched].pos;
+            int opener_len = stack[matched].len;
+            if (opener_len == run && run <= 2 && !stack[matched].enclosed
+                && !others && found < max) {
+                out[found].start = pos;
+                out[found].end = i + run;
+                out[found].text_start = pos + run;
+                out[found].text_end = i;
+                out[found].strong = (run == 2);
+                found++;
+            }
+            open_count = matched;         /* openers inside it are literal */
+            i += run;
+            continue;
+        }
+        if (can_open && open_count < IR_EMPH_STACK) {
+            stack[open_count].pos = i;
+            stack[open_count].len = run;
+            stack[open_count].marker = marker;
+            stack[open_count].enclosed = 0;
+            open_count++;
+        }
+        i += run;
+    }
+
+    /* Source order: the stack closes inner pairs first. */
+    for (int a = 0; a < found; a++)
+        for (int b = a + 1; b < found; b++)
+            if (out[b].start < out[a].start) {
+                struct emph_span tmp = out[a];
+                out[a] = out[b];
+                out[b] = tmp;
+            }
+    return found;
+}
+
 /* `[^label]` — a footnote reference, not a link. */
 static int inline_footnote_ref_len(const char *s, int *label_off, int *label_len)
 {
@@ -2385,8 +2523,24 @@ static void emit_inline(FILE *out, const char *text, long long base,
                         int line, int depth, long long parent,
                         int at_block_start)
 {
+    struct emph_span emph[IR_EMPH_MAX];
+    int nemph = find_emphasis(text, emph, IR_EMPH_MAX);
+    int next_emph = 0;
     int i = 0;
+
     while (text[i]) {
+        /* In source order with the rest, and only where the scan reaches:
+         * a pair inside a code span or a link is skipped with it. */
+        while (next_emph < nemph && emph[next_emph].start == i) {
+            const struct emph_span *e = &emph[next_emph++];
+            ir_inline(out, e->strong ? "strong" : "emphasis",
+                      base + e->start, base + e->end, line, 0, depth, parent);
+            ir_inline_field(out, "text", text + e->text_start,
+                            e->text_end - e->text_start);
+            fprintf(out, ",\"textStart\":%lld,\"textEnd\":%lld}\n",
+                    base + e->text_start, base + e->text_end);
+        }
+
         if (text[i] == '\\' && text[i + 1]) {
             i += 2;               /* an escaped bracket opens nothing */
             continue;
