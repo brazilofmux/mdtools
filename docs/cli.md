@@ -65,6 +65,10 @@ and the build goes green on a check that never ran. So an unreadable
 a file that is not there, and an mdfix that cannot be found are all `2` — in
 every tool, with a test that sweeps them.
 
+`mdfix --canonical-lint` answers the same way: `1` when the file is not
+canonical, `2` only when the gate could not run. It returned `2` for a
+finding from the initial import, which predates this table (#116).
+
 After `--fix`, `1` means *still findings*, not *the fix failed*. `mdterms
 --fix` returns 1 when a forbidden spelling was inside a code span, because
 that one was never fixable; the file was still repaired everywhere else.

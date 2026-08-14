@@ -7,6 +7,11 @@ from pathlib import Path
 
 from prosevary.segment import LineKind, parse
 
+# `--canonical-lint` reports findings, not an environment failure (#116). It
+# returned 2 from the initial import, which predates the shared exit-code
+# contract; docs/cli.md has said 0 clean / 1 findings / 2 could not run since.
+from mdtools_cli.contract import FINDINGS
+
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures" / "fences"
@@ -118,7 +123,7 @@ class UnterminatedFenceTests(unittest.TestCase):
                 [str(MDFIX), "--canonical-lint", str(src)],
                 capture_output=True, text=True,
             )
-        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.returncode, FINDINGS)
         self.assertIn("unterminated code fence", result.stderr)
 
     def test_unterminated_fence_counter_resets_between_files(self) -> None:

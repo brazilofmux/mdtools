@@ -7,6 +7,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+# `--canonical-lint` reports findings, not an environment failure (#116). It
+# returned 2 from the initial import, which predates the shared exit-code
+# contract; docs/cli.md has said 0 clean / 1 findings / 2 could not run since.
+from mdtools_cli.contract import FINDINGS
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MDFIX = ROOT / "mdfix" / "mdfix"
@@ -89,21 +94,21 @@ class CanonicalLintContentTests(unittest.TestCase):
         path = self.dir / "crlf.md"
         path.write_bytes(b"- item\r\n")
         result = _run(["--canonical-lint", str(path)])
-        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.returncode, FINDINGS)
         self.assertIn("output differs from input", result.stderr)
 
     def test_missing_final_newline_fails(self) -> None:
         path = self.dir / "nonl.md"
         path.write_bytes(b"- item")
         result = _run(["--canonical-lint", str(path)])
-        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.returncode, FINDINGS)
         self.assertIn("output differs from input", result.stderr)
 
     def test_bullet_fix_fails_lint(self) -> None:
         path = self.dir / "star.md"
         path.write_text("* item\n", encoding="utf-8")
         result = _run(["--canonical-lint", str(path)])
-        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.returncode, FINDINGS)
         self.assertIn("failed", result.stderr)
 
     def test_line_lengthening_fixes_are_detected(self) -> None:
@@ -128,7 +133,7 @@ class CanonicalLintContentTests(unittest.TestCase):
                 before = path.read_bytes()
 
                 result = _run(["--canonical-lint", str(path)])
-                self.assertEqual(result.returncode, 2, msg=result.stderr)
+                self.assertEqual(result.returncode, FINDINGS, msg=result.stderr)
                 # Lint is no-write: the input must be untouched.
                 self.assertEqual(path.read_bytes(), before)
 

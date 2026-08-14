@@ -5939,7 +5939,20 @@ static void process(FILE *out)
             had_blank = 1;
             prev_was_list_ctx = 0;
             prev_was_para = 0;
-            fprintf(out, "\n");
+            /*
+             * A blank line may still have bytes in it. Printing "\n" here
+             * emptied a whitespace-only line on every run — including a bare
+             * one, which is meant to perform the required repairs and nothing
+             * else — and recorded no fix, so `-n` answered "clean" about a
+             * file it would change (#116).
+             *
+             * Pandoc reads " \n" and "\n" identically, so emptying it is not
+             * a required repair. It belongs to `-w`, and fix_trailing_ws
+             * already knows the whole rule: it declines without the flag, and
+             * both of its guards return early on a whitespace-only line.
+             */
+            fix_trailing_ws(line, i + 1, i);
+            fprintf(out, "%s\n", line);
             continue;
         }
 
@@ -7489,7 +7502,16 @@ static int run_canonical_lint(const char *input_path)
                 "canonical-lint: failed with %d issue%s.\n",
                 report, report == 1 ? "" : "s");
         }
-        return 2;
+        /*
+         * Findings, not an environment failure. The gate ran and reached an
+         * answer; the answer is that the file is not canonical.
+         *
+         * This returned 2 from the initial import, which predates the shared
+         * exit-code contract (#12). docs/cli.md has said 0/1/2 since, and a
+         * gate that reads 2 as a broken toolchain reports one for every
+         * non-canonical file, while a gate that only checks 1 passes them all.
+         */
+        return 1;
     }
     if (!opt_quiet)
         fprintf(stderr, "canonical-lint: clean.\n");
