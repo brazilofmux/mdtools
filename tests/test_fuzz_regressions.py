@@ -295,26 +295,42 @@ class ConvergenceTests(WrapRegressionTestCase):
 @unittest.skipUnless(PANDOC, "pandoc not installed")
 class KnownDivergenceTests(WrapRegressionTestCase):
     """
-    What the sweep is told to ignore, asserted so it cannot be ignored quietly.
+    The R2/wrap divergence, now closed — and pinned closed.
 
-    `fuzz.KNOWN_DIVERGENCES` filters this shape out of the sweep. If it were
-    only filtered, fixing it would leave a pin nobody removed and a filter
-    quietly hiding the next instance. So the divergence is pinned here too:
-    fix it and this test fails, which is the signal to delete both.
+    This was the sweep's one filtered shape: R2 fired on the wrapped output
+    and not on the unwrapped one, so the same document took two block
+    structures depending on whether `--wrap` had joined a lazy continuation
+    away first. The pin said fixing it would fail this test, and it did.
+
+    The cause was not R2. An indented line entered "list context" whether or
+    not any list existed, so the continuation hid the paragraph above from the
+    repair — and, with no list in the document at all, a paragraph whose first
+    line happened to be indented two spaces got split in two. One guard fixed
+    both.
     """
 
     SOURCE = (b"A paragraph of prose number 1 with words.\n"
               b"    indented continuation\n2. two 4\n")
 
-    def test_the_repair_still_depends_on_the_continuation(self) -> None:
-        # mdfix's blank-before-list repair fires when an ordered marker
-        # directly follows paragraph text, and not when a lazy continuation
-        # sits between them. `--wrap` joins that continuation away, so the
-        # same document gets two block structures depending on the flag.
+    def test_the_repair_no_longer_depends_on_the_continuation(self) -> None:
         plain = self._blocks(self._stable(self.SOURCE))
         wrapped = self._blocks(self._stable(self.SOURCE, "--wrap=40"))
-        self.assertEqual(plain, ["Para"])
-        self.assertEqual(wrapped, ["Para", "OrderedList"])
+        self.assertEqual(plain, ["Para", "OrderedList"])
+        self.assertEqual(wrapped, plain)
+
+    def test_an_indented_paragraph_is_not_a_list(self) -> None:
+        # The other half of the same guard, and the half that was silently
+        # editing documents containing no list at all.
+        self.assertEqual(self._blocks(self._stable(b"  aaaa\nbbbb\n")),
+                         ["Para"])
+        self.assertEqual(self._stable(b"  aaaa\nbbbb\n"), b"  aaaa\nbbbb\n")
+
+    def test_a_real_continuation_after_a_blank_still_continues(self) -> None:
+        # What the guard must not break: inside an item, a blank line does not
+        # end the item, so the indented line after it is still continuation.
+        # `list_content_col` is the state that survives the blank.
+        source = b"- item\n\n  After.\n\n      code -> here\n"
+        self.assertIn(b"code -> here", self._stable(source))
 
     def test_pandoc_reads_no_ordered_marker_as_interrupting(self) -> None:
         # The fact that makes this a decision rather than a bug: R2 is not

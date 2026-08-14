@@ -37,10 +37,20 @@ ROOT = Path(__file__).resolve().parents[1]
 MDFIX = ROOT / "mdfix" / "mdfix"
 PANDOC = shutil.which("pandoc")
 
-DECIMAL = ("1. x", "23. x", "1) x", "(1) x", "#. x", "#) x", "(#) x")
-ALPHA = ("a. x", "z) x", "A) x", "A.  x", "(a) x", "p. one")
+DECIMAL = ("1. x", "23. x", "1) x", "(1) x", "#. x", "#) x", "(#) x",
+           "1.\tx")
+ALPHA = ("a. x", "z) x", "A) x", "A.  x", "(a) x", "p. one", "p.  1", "p.\t1")
 ROMAN = ("i. x", "iv) x", "IV. x", "mix. x", "I.  x", "(iv) x")
 EXAMPLE = ("@lab. x", "@. x", "@lab) x", "(@lab) x", "(@) x")
+
+# A marker and nothing else. Pandoc reads a one-item list; every form does it,
+# and end of line satisfies the two-column rule that `A. x` fails.
+EMPTY_ITEMS = ("1.", "1)", "(1)", "#.", "a.", "A.", "iv)", "@lab.", "(@lab)",
+               "-", "*", "+", "- ")
+
+# `-` under a paragraph is a setext underline, not an empty item, so it is not
+# part of the mid-paragraph prose check below. Both tools already agree.
+SETEXT_UNDERLINES = ("-", "- ")
 
 FANCY = ALPHA + ROMAN + EXAMPLE
 RECOGNIZED = DECIMAL + FANCY
@@ -132,6 +142,14 @@ class ClassificationTests(MarkerTestCase):
                           if r.get("depth")]
                 self.assertEqual([r["kind"] for r in nested], ["paragraph"])
 
+    def test_prose_under_an_empty_item_is_reachable(self) -> None:
+        # list_content_column used to return -1 on `1.`, so emit_list_children
+        # skipped the item and the wrapped line never became a nested paragraph.
+        source = "1.\n   more\n"
+        self.assertEqual(self._top_kinds(source), ["list"])
+        nested = [r for r in self._records(source) if r.get("depth")]
+        self.assertEqual([r["kind"] for r in nested], ["paragraph"])
+
     def test_a_tab_separates_as_two_columns(self) -> None:
         # Pandoc expands tabs before parsing, so `A.` then a tab reaches
         # column 4 — the two columns the initials rule wants.
@@ -180,6 +198,62 @@ class ContextTests(MarkerTestCase):
                 kinds = self._top_kinds(before + "a. x\n")
                 self.assertEqual(kinds[-1], "list")
 
+    def test_an_empty_item_is_a_list_where_a_list_may_start(self) -> None:
+        for marker in EMPTY_ITEMS:
+            with self.subTest(marker=marker):
+                self.assertEqual(self._top_kinds(marker + "\n"), ["list"])
+
+    @unittest.skipUnless(PANDOC, "pandoc not installed")
+    def test_pandoc_agrees_an_empty_item_is_a_list(self) -> None:
+        for marker in EMPTY_ITEMS:
+            with self.subTest(marker=marker):
+                self.assertEqual(len(self._blocks(marker + "\n")), 1)
+                self.assertTrue(self._blocks(marker + "\n")[0].endswith("List"))
+
+    def test_an_empty_item_mid_paragraph_is_prose(self) -> None:
+        # The one part of the marker predicates that needs context, and the
+        # reason it does is below: a wrapped year is not an empty list item.
+        for marker in EMPTY_ITEMS:
+            if marker in SETEXT_UNDERLINES:
+                continue
+            with self.subTest(marker=marker):
+                self.assertEqual(
+                    self._top_kinds("para text\n" + marker + "\n"),
+                    ["paragraph"])
+
+    @unittest.skipUnless(PANDOC, "pandoc not installed")
+    def test_pandoc_agrees_an_empty_item_mid_paragraph_is_prose(self) -> None:
+        for marker in EMPTY_ITEMS:
+            if marker in SETEXT_UNDERLINES:
+                continue
+            with self.subTest(marker=marker):
+                self.assertEqual(self._blocks("para text\n" + marker + "\n"),
+                                 ["Para"])
+
+    def test_a_lone_dash_under_a_paragraph_is_still_a_setext_heading(self) -> None:
+        # The empty-item rule must not reach this: `-` there underlines the
+        # line above. Both tools already read it that way, and the gate keeps
+        # it that way.
+        for marker in SETEXT_UNDERLINES:
+            with self.subTest(marker=marker):
+                source = "para text\n" + marker + "\n"
+                self.assertEqual(self._top_kinds(source), ["heading"])
+                if PANDOC:
+                    self.assertEqual(self._blocks(source), ["Header"])
+
+    def test_a_wrapped_year_is_not_an_empty_item(self) -> None:
+        # From slow32-book, and the reason the empty-item rule is gated.
+        # `--wrap` puts the year at the head of a line; reading `2003.` as a
+        # marker there made R2 insert a blank and cut the sentence in two.
+        source = ("Everything in this chapter is a consequence of what we\n"
+                  "learned since 2003.\n")
+        self.assertEqual(self._top_kinds(source), ["paragraph"])
+        for profile in ("", "--canonical", "--technical", "--wrap=40"):
+            with self.subTest(profile=profile):
+                flags = (profile,) if profile else ()
+                out = self._fix(source, *flags)
+                self.assertNotIn("\n\n", out)
+
     def test_a_two_item_fancy_list_is_one_record(self) -> None:
         for source in ("a. first\nb. second\n",
                        "a. first\n\nb. second\n"):
@@ -200,6 +274,24 @@ class ContextTests(MarkerTestCase):
         self.assertEqual(self._blocks("- item\na. x\n"),
                          ["BulletList", "OrderedList"])
         self.assertEqual(self._top_kinds("- item\na. x\n"), ["list", "list"])
+
+    def test_tab_and_empty_bullets_share_a_style(self) -> None:
+        # list_style used to require a literal space, so `-` and `-\ty` were
+        # style 0 and split off from `- x`.
+        for source in ("- x\n-\n", "- x\n-\ty\n"):
+            with self.subTest(source=source):
+                self.assertEqual(self._top_kinds(source), ["list"])
+                if PANDOC:
+                    self.assertEqual(self._blocks(source), ["BulletList"])
+
+    def test_a_tab_bullet_is_not_an_ordered_list(self) -> None:
+        # Style 0 also disabled the style check, so `-\tx` then `1. y`
+        # collapsed into one record.
+        source = "-\tx\n1. y\n"
+        self.assertEqual(self._top_kinds(source), ["list", "list"])
+        if PANDOC:
+            self.assertEqual(self._blocks(source),
+                             ["BulletList", "OrderedList"])
 
     def test_wrapped_prose_is_why(self) -> None:
         # Verbatim from slow32-book, and the only marker-shaped line in 339
@@ -259,6 +351,15 @@ class RepairTests(MarkerTestCase):
         source = "A.  First item whose text\n    wraps onto a second line.\n"
         self.assertEqual(self._fix(source), source)
         self.assertEqual(self._top_kinds(source), ["list"])
+
+    def test_an_empty_item_resets_the_content_column(self) -> None:
+        # `123456. foo` is content column 8; empty `2.` is column 3. Seven
+        # spaces then is indented code (3+4), so --technical must leave
+        # the arrow alone rather than rewrite it as prose. The width has
+        # to live in the marker: extra spaces after `1.` collapse under
+        # --technical before the column is measured.
+        source = "123456. foo\n2.\n       code -> here\n"
+        self.assertEqual(self._fix(source, "--technical"), source)
 
 
 @unittest.skipUnless(PANDOC, "pandoc not installed")

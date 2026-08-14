@@ -268,7 +268,19 @@ than read off a spec:
 - roman numerals are Pandoc's **loose** kind: `iiii` and `ivi` parse, `did`
   and `ll` do not.
 
-Pinned in `tests/test_ordered_markers.py`. Issue #90.
+The separator has three rules of its own, all from the same oracle. A **tab**
+separates, and reaches two columns doing it. **End of line** separates — a
+marker alone is an empty item, in every form, and satisfies the two-column
+rule. And the `p.` exclusion is **one space wide**: `p.  1` and `p.\t1` are
+lists.
+
+Empty items are the one part of this that needs context, for the reason the
+whole feature does: `--wrap` puts a year at the head of a line, and
+`... learned since` / `2003.` is a sentence, not a one-item list.
+
+Pinned in `tests/test_ordered_markers.py`, and swept against Pandoc over 3,384
+marker spellings in context — every body × delimiter × separator × content
+combination — with zero disagreements. Issue #90.
 
 ### Citations
 
