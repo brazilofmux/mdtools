@@ -116,14 +116,10 @@ def check_document(path: Path, mdfix: Optional[str] = None,
 
         if kind == "heading":
             level = record.get("level")
-            # Every heading record is the document's outline: the IR emits
-            # none nested inside a block quote or a list item, which
-            # test_mdcheck pins. So the sequence needs no depth filter.
+            # The IR emits no heading inside a quote or list item.
             if isinstance(level, int):
-                # Only a heading that descends more than one level at a time.
-                # The first heading in a file has nothing to descend from, so
-                # a chapter that opens at `##` is not a finding — the rule is
-                # about the sequence, not about where it starts.
+                # The first heading has nothing to descend from, so a
+                # chapter that opens at `##` is not a finding.
                 if previous_level is not None and level > previous_level + 1:
                     add("check.heading-skip", "warning", record,
                         f"h{previous_level} is followed by h{level}; "

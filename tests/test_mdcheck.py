@@ -161,8 +161,9 @@ class HeadingSkipTests(CheckTestCase):
         self.assertEqual(rules.count("check.heading-skip"), 1)
 
     def test_the_sequence_does_not_run_between_files(self) -> None:
-        self._doc("# One\n\n## Section\n", name="a.md")
-        self._doc("### Three\n\n#### Four\n", name="b.md")
+        # `#` then `###` would skip if previous_level leaked across files.
+        self._doc("# One\n", name="a.md")
+        self._doc("### Three\n", name="b.md")
         self.assertNotIn("check.heading-skip", self._rules())
 
     def test_setext_headings_take_part(self) -> None:
