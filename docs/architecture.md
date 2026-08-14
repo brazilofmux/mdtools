@@ -70,9 +70,10 @@ Each has an identifier so issues and tests can cite it.
 - **I1.2 Normalization is reported, not performed.** L1 detects text that is
   not NFC and says so. It does not rewrite it. Normalizing belongs to L3 —
   see Q2. *(Issue #54, done. Rule `unicode.non-nfc`, one diagnostic per line
-  spanning the offending code point; the UAX #15 quick check, so it is cheap
-  enough to leave on and is allowed to say "maybe". `--normalize-nfc` is the
-  opt-in L3 rewrite. The Unicode data is vendored from libutf in
+  spanning the offending code point. The UAX #15 quick check filters, so the
+  rule is cheap enough to leave on, and a candidate is confirmed by
+  normalizing the line — a quick-check "maybe" is not a finding (#103).
+  `--normalize-nfc` is the opt-in L3 rewrite. The Unicode data is vendored from libutf in
   `mdfix/vendor/utf_nfc.c`, including the bound and status API — see
   [vendoring.md](vendoring.md).)*
 - **I1.3 Spans address the file on disk.** Every IR offset indexes the input
