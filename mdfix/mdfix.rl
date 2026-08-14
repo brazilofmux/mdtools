@@ -3621,11 +3621,33 @@ static int punct_ends_a_word(const char *p, const char *pe)
 
 /* fix_chicago_space_before_punct — now handled by Ragel scanner */
 
-static int should_insert_space_after_punct(unsigned char punct, unsigned char next)
+/*
+ * `!` and `?` are sentence-final only after a word.
+ *
+ * The rest of this rule keys on what *follows* the mark, which is enough for
+ * `,` `;` `:` `.` and wrong for `!`. Khoisan orthography writes a click with a
+ * leading `!` — `!Kung`, `!kia`, `!kanna` — so a rule that fires on "`!` then
+ * a letter" re-spells every San term it meets. It is a content change to a
+ * proper noun, and `! Kung` reads as ordinary prose, so nothing catches it:
+ * the damage shipped in Volume 1 of *Evolution of the Sacred* (#102).
+ *
+ * A preceding letter or digit is the whole of the difference. English does
+ * not omit the space after a sentence-final `!` — `Wow!Next` is a typo, and
+ * that is the only shape this branch can legitimately claim. A `!` that
+ * follows a space, `(`, `*`, `[` or the start of a line is an orthographic
+ * click, a Markdown image, or a shell fragment.
+ *
+ * Measured over 511 files of manuscript: 4 firings, all Khoisan clicks, all
+ * damage. Zero true positives in the corpus this rule has ever run on.
+ */
+static int should_insert_space_after_punct(unsigned char punct, unsigned char next,
+                                           int prev_is_word)
 {
     if (next == '\0' || next == '\n' || next == '\r')
         return 0;
     if (isspace(next))
+        return 0;
+    if ((punct == '!' || punct == '?') && !prev_is_word)
         return 0;
     if ((punct == ',' || punct == '.') && isdigit(next))
         return 0;
@@ -4658,6 +4680,22 @@ struct scan_ctx {
 };
 
 /*
+ * Is the code point already emitted a word character?
+ *
+ * Asked of the output buffer rather than the input because the scanner may
+ * have rewritten what came before. `mdfix_is_word` is Unicode's answer, so a
+ * letter in any script counts and `Ọ!` is as sentence-final as `Wow!`.
+ */
+static int last_emitted_is_word(const struct scan_ctx *ctx)
+{
+    int start = utf8_prev_start(ctx->out, 0, ctx->oi);
+    if (start < 0)
+        return 0;
+    return mdfix_is_word((const unsigned char *)ctx->out + start,
+                         (const unsigned char *)ctx->out + ctx->oi);
+}
+
+/*
  * U+2026 HORIZONTAL ELLIPSIS, the mark this profile emits.
  *
  * dialect-policy §4: typography mdtools *writes* must render the same with
@@ -4992,10 +5030,14 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 
             # ── Punctuation after-spacing: ,;:?! ──
             [,;:?!] => {
+                /* Before the mark is emitted, while `out` still ends at the
+                 * character in front of it. */
+                int prev_is_word = last_emitted_is_word(ctx);
                 EMIT_CHAR(fc);
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
                     unsigned char next = (unsigned char)*te;
-                    if (should_insert_space_after_punct((unsigned char)fc, next)) {
+                    if (should_insert_space_after_punct((unsigned char)fc, next,
+                                                        prev_is_word)) {
                         EMIT_CHAR(' ');
                         BUMP(FIX_CHI_SPACE_AFTER_PUNCT);
                     } else if (next == ' ') {
