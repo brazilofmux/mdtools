@@ -35,6 +35,7 @@ trust.
 | `check.fence-language` | warning | a code fence with no language |
 | `check.unterminated-fence` | error | a fence that is never closed |
 | `check.duplicate-definition` | error | a link label defined twice |
+| `check.heading-skip` | warning | a heading level reached without passing through the one above it |
 | `check.anchor-collision` | warning | two files claiming one anchor |
 | `check.lossy-math`, `check.lossy-latex` | warning | constructs the IR treats as prose |
 | `check.frontmatter-missing` | error | a required field, or no front matter at all |
@@ -52,6 +53,21 @@ Within a single file Pandoc disambiguates with `-1` and `-2` suffixes; every
 cross-file slug collision is reported (whether or not something links to it).
 Unterminated fences use `check.unterminated-fence` only — the matching
 `dialect.fence.unterminated` row is dropped so the gate does not double-count.
+
+`check.heading-skip` is the opposite: a level sequence is a within-document
+property, so it never looks across files. A file may **start** at any level —
+a chapter that opens at `##` has nothing to descend from, and requiring `#`
+would report every included fragment in a book. Climbing back up is not a
+skip either; only descending more than one level at a time is.
+
+It is a warning because there is no safe repair. `### A Voice in the Rubble`
+under an `#` might want to be `##`, or the file might want a `##` above it,
+and picking either is guessing at intent. Nothing is broken by a skip, which
+is exactly how one survives: two chapters of *An Agnostic's Guide to the
+Bible* carried one through six volumes and a full editorial pass, rendering a
+size smaller than their peers and nesting a level deeper in the navigation.
+Across 511 files of manuscript the rule fires four times — those two chapters,
+and the same two again in the assembled volume — and no false positives.
 
 ## Suppression
 
