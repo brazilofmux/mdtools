@@ -92,9 +92,60 @@ def _front_matter_data(data: bytes, record: dict) -> Optional[dict]:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _asset_exists(path: Path, target: str,
+                  asset_paths: Sequence[Path]) -> bool:
+    """
+    Is the image somewhere the build will gather it from?
+
+    The referencing file's own directory is tried first and always, so a
+    layout that resolves today keeps resolving. `asset_paths` is what a
+    project adds when its build copies images in beside the manuscript: the
+    path in the document is correct at the moment Pandoc reads it, and there
+    was no way to say so (issue #101).
+    """
+    if (path.parent / target).exists():
+        return True
+    name = Path(target).name
+    for root in asset_paths:
+        # Both spellings: the path as written, relative to the search root,
+        # and the bare file name — a build that flattens `timelines/x.png`
+        # into the output directory is the case this exists for.
+        if (root / target).exists() or (root / name).exists():
+            return True
+    return False
+
+
+def _image_target(doc, link) -> str:
+    """Path part of an image destination, or empty if this is not one."""
+    if link.kind != "image":
+        return ""
+    dest = link.destination
+    if link.form in ("reference", "shortcut"):
+        label = link.label
+        if link.form == "reference" and not label:
+            label = link.text
+        definition = doc.definitions.get(_normalize_label(label))
+        dest = definition.destination if definition else ""
+    if not dest or _is_external(dest):
+        return ""
+    return dest.split("#", 1)[0]
+
+
+def _found_image_spans(docs, asset_paths: Sequence[Path]):
+    """Image record spans whose file exists beside the document or on the search path."""
+    found = set()
+    for doc in docs:
+        for link in doc.links:
+            target = _image_target(doc, link)
+            if target and _asset_exists(doc.path, target, asset_paths):
+                found.add((str(doc.path), link.start, link.end))
+    return found
+
+
 def check_document(path: Path, mdfix: Optional[str] = None,
                    frontmatter: Optional[dict] = None,
-                   bibliography: Optional[Sequence[str]] = None) -> List[Finding]:
+                   bibliography: Optional[Sequence[str]] = None,
+                   asset_paths: Sequence[Path] = ()) -> List[Finding]:
     """The checks nothing else performs."""
     findings: List[Finding] = []
     data = path.read_bytes()
@@ -133,7 +184,7 @@ def check_document(path: Path, mdfix: Optional[str] = None,
                     "image has no alt text")
             if destination and not _is_external(destination):
                 target = destination.split("#", 1)[0]
-                if target and not (path.parent / target).exists():
+                if target and not _asset_exists(path, target, asset_paths):
                     add("check.missing-asset", "error", record,
                         f"{target} does not exist")
 
@@ -279,16 +330,26 @@ def dialect_findings(path: Path, mdfix: Optional[str] = None) -> List[Finding]:
 def run(paths: Sequence[Path], mdfix: Optional[str] = None,
         suppress: Iterable[str] = (),
         frontmatter: Optional[dict] = None,
-        bibliography: Optional[Sequence[str]] = None) -> List[Finding]:
+        bibliography: Optional[Sequence[str]] = None,
+        asset_paths: Sequence[Path] = ()) -> List[Finding]:
     files = discover(paths)
     findings: List[Finding] = []
     for path in files:
-        findings.extend(check_document(path, mdfix, frontmatter, bibliography))
+        findings.extend(check_document(path, mdfix, frontmatter, bibliography,
+                                       asset_paths))
         findings.extend(dialect_findings(path, mdfix))
     findings.extend(check_repository(files, mdfix))
 
     docs = [link_read(p, mdfix) for p in files]
+    found_images = _found_image_spans(docs, asset_paths)
     for link_finding in link_check(docs):
+        # mdlinks cannot see asset_paths. Drop its missing-file only on an
+        # image span that exists beside the document or on the search path;
+        # a markdown link stays mdlinks' even if a gather root has that name.
+        if (link_finding.rule == "links.missing-file"
+                and (link_finding.path, link_finding.start, link_finding.end)
+                in found_images):
+            continue
         findings.append(Finding(
             path=link_finding.path, rule=link_finding.rule,
             severity=link_finding.severity, line=link_finding.line,

@@ -78,7 +78,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         findings = run(args.paths, resolve_mdfix(args.mdfix, config),
                        suppress, config.frontmatter,
-                       config.bibliography)
+                       config.bibliography, config.asset_paths)
     except IRError as exc:
         return fail("mdcheck", str(exc))
 
