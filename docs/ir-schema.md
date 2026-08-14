@@ -201,8 +201,8 @@ walks (and nested block quotes) are the rest of #65.
 
 ## Inline records
 
-Links, images, code spans and footnote references inside prose, so a consumer
-can find them without learning inline Markdown:
+Links, images, code spans, footnote references, citations and emphasis inside
+prose, so a consumer can find them without learning inline Markdown:
 
 ```console
 $ mdfix --emit-ir chapter.md | grep '"kind":"link"'
@@ -216,6 +216,7 @@ $ mdfix --emit-ir chapter.md | grep '"kind":"link"'
 | `code_span` | `text`; **protected** |
 | `footnote_ref` | `label` |
 | `citation` | `key`, `mode`, `keyStart`, `keyEnd` |
+| `emphasis`, `strong` | `text`, `textStart`, `textEnd` |
 | `raw_inline` | — ; **protected** |
 
 `destination` is the bare URL: optional surrounding `<>` and a trailing title
@@ -282,6 +283,48 @@ Pinned in `tests/test_ordered_markers.py`, and swept against Pandoc over 3,384
 marker spellings in context — every body × delimiter × separator × content
 combination — with zero disagreements. Issue #90.
 
+### Emphasis and strong
+
+`emphasis` and `strong` records carry the construct's span and, like link
+destinations, a `textStart`/`textEnd` pair for the content between the
+delimiters — so a consumer can rewrite the text without holding grammar.
+
+```console
+$ mdfix --emit-ir chapter.md | grep -m1 emphasis
+{"kind":"emphasis","start":10,"end":16,...,"text":"emph","textStart":11,"textEnd":15}
+```
+
+**Under-reporting is the contract here, more than anywhere else in the IR.**
+Emphasis is the hairiest corner of the dialect, and Pandoc's markdown reader
+is not CommonMark's delimiter algorithm — it reads `*a *b* c*` as one emphasis
+over `a ` and leaves `b*` and `c*` literal, which no stack discipline
+reproduces. A record that disagrees with the renderer is worse than no record,
+so a pair is claimed only when nothing else could have paired with either
+half: matching runs of one or two delimiters, with no other run of the same
+marker between them or still open around them.
+
+What that leaves out, each because Pandoc reads it as something other than one
+construct:
+
+| | |
+|---|---|
+| `***both***` | `Strong [ Emph … ]` — one run, two constructs |
+| `****four****` | literal to Pandoc |
+| `*a *b* c*` | Pandoc pairs the first two delimiters; the rest is literal |
+| `*a **b** c*` | both are read, but the runs between make the outer pair unclaimable |
+| `[a *link*](x)` | the recursive inline tree, still missing |
+| `*wrapped`↵`emphasis*` | `emit_inline` walks one line at a time, so no record spans a newline |
+
+Measured against `pandoc -t json` over 511 files of manuscript: **96.7% of
+`Emph` and 95.0% of `Strong`**, with the records emitted agreeing.
+
+One shape diverges the other way, twice in those 511 files: `**%@**` is a
+`strong` record Pandoc does not read, because `+citations` makes it read `@*`
+as a citation whose key is `*` and that eats the closing delimiter. mdfix's
+citation keys start with an alphanumeric, so it sees no citation there.
+Pinned in `tests/test_emphasis_records.py`; closing it means matching Pandoc's
+citation-key grammar rather than narrowing emphasis further.
+
 ### Citations
 
 `+citations` is pinned by dialect-policy §3. One record per key, with
@@ -320,8 +363,7 @@ counts match `pandoc -t json` exactly, in all thirteen documents.
 
 Cell boundaries are not modelled — a record inside a table locates the
 construct, and a consumer that edits must respect `protected` on the table
-record above it. Emphasis and strong are not emitted; `heading.plain` already
-resolves them where it matters.
+record above it. Heading slugs still come from `heading.plain`.
 
 ## Known divergences from Pandoc
 
@@ -360,9 +402,10 @@ name, which the header record makes detectable.
 
 - **Remaining inline structure.** Links, images, code spans, footnote
   references and raw inline HTML are emitted (see [Inline records](#inline-records)).
-  Still missing: emphasis/strong, a full recursive inline tree
-  (nested markup inside link text), cell-level table structure, and a separate
-  title field on destinations (titles are stripped, not retained). Inline
+  Emphasis and strong are emitted too, with the limits below. Still missing:
+  a full recursive inline tree (nested markup inside link text), cell-level
+  table structure, and a separate title field on destinations (titles are
+  stripped, not retained). Inline
   `endLine` is the construct's start line; multi-line code spans are not
   joined across line boundaries.
 - **Partial nesting only.** Schema 3 emits plain list-item prose as nested
