@@ -92,9 +92,33 @@ def _front_matter_data(data: bytes, record: dict) -> Optional[dict]:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _asset_exists(path: Path, target: str,
+                  asset_paths: Sequence[Path]) -> bool:
+    """
+    Is the image somewhere the build will gather it from?
+
+    The referencing file's own directory is tried first and always, so a
+    layout that resolves today keeps resolving. `asset_paths` is what a
+    project adds when its build copies images in beside the manuscript: the
+    path in the document is correct at the moment Pandoc reads it, and there
+    was no way to say so (issue #101).
+    """
+    if (path.parent / target).exists():
+        return True
+    name = Path(target).name
+    for root in asset_paths:
+        # Both spellings: the path as written, relative to the search root,
+        # and the bare file name — a build that flattens `timelines/x.png`
+        # into the output directory is the case this exists for.
+        if (root / target).exists() or (root / name).exists():
+            return True
+    return False
+
+
 def check_document(path: Path, mdfix: Optional[str] = None,
                    frontmatter: Optional[dict] = None,
-                   bibliography: Optional[Sequence[str]] = None) -> List[Finding]:
+                   bibliography: Optional[Sequence[str]] = None,
+                   asset_paths: Sequence[Path] = ()) -> List[Finding]:
     """The checks nothing else performs."""
     findings: List[Finding] = []
     data = path.read_bytes()
@@ -133,7 +157,7 @@ def check_document(path: Path, mdfix: Optional[str] = None,
                     "image has no alt text")
             if destination and not _is_external(destination):
                 target = destination.split("#", 1)[0]
-                if target and not (path.parent / target).exists():
+                if target and not _asset_exists(path, target, asset_paths):
                     add("check.missing-asset", "error", record,
                         f"{target} does not exist")
 
@@ -279,16 +303,31 @@ def dialect_findings(path: Path, mdfix: Optional[str] = None) -> List[Finding]:
 def run(paths: Sequence[Path], mdfix: Optional[str] = None,
         suppress: Iterable[str] = (),
         frontmatter: Optional[dict] = None,
-        bibliography: Optional[Sequence[str]] = None) -> List[Finding]:
+        bibliography: Optional[Sequence[str]] = None,
+        asset_paths: Sequence[Path] = ()) -> List[Finding]:
     files = discover(paths)
     findings: List[Finding] = []
     for path in files:
-        findings.extend(check_document(path, mdfix, frontmatter, bibliography))
+        findings.extend(check_document(path, mdfix, frontmatter, bibliography,
+                                       asset_paths))
         findings.extend(dialect_findings(path, mdfix))
     findings.extend(check_repository(files, mdfix))
 
     docs = [link_read(p, mdfix) for p in files]
     for link_finding in link_check(docs):
+        # mdlinks resolves a destination against the file that references it,
+        # which is all a link checker can know. Where the project has said
+        # its build gathers assets from somewhere else, mdcheck knows better
+        # and drops the duplicate — the same "more specific rule wins" that
+        # keeps check.missing-asset and links.missing-file from double-
+        # reporting, applied to the case where neither should fire.
+        if (asset_paths and link_finding.rule == "links.missing-file"
+                and link_finding.target is not None
+                and _asset_exists(Path(link_finding.path),
+                                  link_finding.target.destination
+                                  .split("#", 1)[0],
+                                  asset_paths)):
+            continue
         findings.append(Finding(
             path=link_finding.path, rule=link_finding.rule,
             severity=link_finding.severity, line=link_finding.line,

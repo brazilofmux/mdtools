@@ -55,6 +55,10 @@ class Config:
     # Project default for citation resolution (issue #13). A document that
     # names bibliography: replaces this; references: merge with it.
     bibliography: List[str] = field(default_factory=list)
+    # Where a build gathers images from (issue #101). Tried in order after the
+    # referencing file's own directory, which stays first: a path that
+    # resolves today must keep resolving.
+    asset_paths: List[Path] = field(default_factory=list)
     raw: Dict[str, Any] = field(default_factory=dict)
 
     def resolved(self) -> Dict[str, Any]:
@@ -66,6 +70,7 @@ class Config:
             "wrap": self.wrap,
             "editorial": self.editorial,
             "bibliography": list(self.bibliography),
+            "asset_paths": [str(p) for p in self.asset_paths],
             "frontmatter": self.frontmatter,
             "glossary": str(self.glossary) if self.glossary else None,
             "state_dir": str(self.state_dir) if self.state_dir else None,
@@ -96,7 +101,7 @@ def find_config(start: Optional[Path] = None) -> Optional[Path]:
 
 _ALLOWED = {
     "profile", "wrap", "editorial", "glossary", "state_dir", "mdfix", "suppress",
-    "frontmatter", "bibliography",
+    "frontmatter", "bibliography", "asset_paths",
 }
 
 # What a field may declare, and what a value may be.
@@ -268,6 +273,16 @@ def _read(path: Path, root: Path) -> Config:
         # Root-relative, like glossary and state_dir: a config is about the
         # project, not about whichever directory a tool was run from.
         config.bibliography = [str((root / n).resolve()) for n in names]
+    if "asset_paths" in section:
+        value = section["asset_paths"]
+        names = [value] if isinstance(value, str) else value
+        if not isinstance(names, list) or not all(isinstance(n, str)
+                                                  for n in names):
+            raise ConfigError(
+                f"{path}: asset_paths must be a path or a list of paths")
+        # Root-relative, like bibliography: the search path describes the
+        # project's layout, not the directory a tool was run from.
+        config.asset_paths = [(root / n).resolve() for n in names]
     if "frontmatter" in section:
         config.frontmatter = _read_frontmatter(path, section["frontmatter"])
     if "suppress" in section:

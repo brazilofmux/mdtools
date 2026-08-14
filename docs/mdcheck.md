@@ -30,7 +30,7 @@ trust.
 
 | Rule | Severity | |
 |---|---|---|
-| `check.missing-asset` | error | an image file that is not on disk |
+| `check.missing-asset` | error | an image file that is not on disk, or on `asset_paths` |
 | `check.image-alt` | warning | an image with no alt text |
 | `check.fence-language` | warning | a code fence with no language |
 | `check.unterminated-fence` | error | a fence that is never closed |
@@ -68,6 +68,37 @@ Bible* carried one through six volumes and a full editorial pass, rendering a
 size smaller than their peers and nesting a level deeper in the navigation.
 Across 511 files of manuscript the rule fires four times — those two chapters,
 and the same two again in the assembled volume — and no false positives.
+
+## Where assets are gathered from
+
+`check.missing-asset` resolves an image against the file that references it,
+which is right for a repository whose markdown sits beside its pictures and
+wrong for one whose build gathers them. `asset_paths` says where else to look:
+
+```toml
+[mdtools]
+asset_paths = ["timelines", "images"]
+```
+
+Relative to the config file, like `bibliography` — the search path describes
+the project's layout, not the directory a tool was run from. The referencing
+file's own directory is tried **first and always**, so a layout that resolves
+today keeps resolving. Each root is tried with the path as written and with
+the bare file name, because a build that flattens `timelines/x.png` into the
+output directory is the case this exists for.
+
+*An Agnostic's Guide to the Bible* is that case: chapters at the repository
+root, timelines in `timelines/`, and an assembler that copies each volume's
+timeline beside the manuscript it belongs to. The path is correct at the
+moment Pandoc reads it — the PNG is in the shipped EPUB — and five volumes
+each reported a false error. It was the one finding class in that repository
+that stopped `mdcheck` exiting 0 (issue #101).
+
+mdlinks is not told any of this and should not be: resolving a destination
+against the referencing file is all a link checker can know. mdcheck knows the
+project, so it drops the `links.missing-file` that would otherwise take the
+silenced error's place — the same "more specific rule wins" as above, applied
+to the case where neither should fire.
 
 ## Suppression
 
