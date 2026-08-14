@@ -43,7 +43,7 @@ may not. They are namespaced by area:
 
 | Prefix | Covers |
 |---|---|
-| `list.` | bullet style, blank lines around lists |
+| `list.` | bullet style, blank lines around lists, marker columns and doubts |
 | `heading.` | ATX spacing, trailing hashes, emphasis, Scrivener repair |
 | `chicago.` | punctuation, abbreviations, and the two lint-only checks |
 | `footnote.` | reference and definition formatting |
@@ -52,10 +52,10 @@ may not. They are namespaced by area:
 | `terms.` | glossary: `terms.forbidden`, `terms.undefined-acronym` |
 | `blockquote.`, `whitespace.`, `emphasis.`, `punct.`, `link.` | one rule each |
 
-`heading.atx-space`, `list.blank-before` and `list.blank-after` are the three
-**required** repairs from [transforms.md](transforms.md) — a document that
-produces none of them at default settings is Pandoc-clean in the sense §3
-means.
+`heading.atx-space`, `list.blank-before`, `list.blank-after` and
+`list.marker-column` are the four **required** repairs from
+[transforms.md](transforms.md) — a document that produces none of them at
+default settings is Pandoc-clean in the sense §3 means.
 
 `chicago.serial-comma` and `chicago.number-style` are lint-only: they never
 change the file and always carry `severity: "warning"`. So does
@@ -67,12 +67,13 @@ them. `mdfix --normalize-nfc` is the opt-in rewrite; see
 ## Gating in CI
 
 ```bash
-# fail if anything but the three required repairs would fire
+# fail if anything but the four required repairs would fire
 mdfix -n --diagnostics --canonical *.md 2>&1 >/dev/null \
   | jq -e 'select(.severity == "fix"
                   and .rule != "heading.atx-space"
                   and .rule != "list.blank-before"
-                  and .rule != "list.blank-after")' \
+                  and .rule != "list.blank-after"
+                  and .rule != "list.marker-column")' \
   && exit 1 || exit 0
 ```
 
@@ -93,6 +94,20 @@ before reporting, so two ellipses on one line report once.
 
 `fence.unterminated` is a warning when a fence closer never matches (the rest
 of the file was left unchecked).
+
+`list.marker-ambiguous` is the other half of `list.marker-column`, and the
+reason it is a warning is the whole of its design: it fires where Pandoc's
+reading and the author's intent can come apart and mdfix must not pick. A lone
+`A. text` opening a block is a list item one column short, or a name
+abbreviated. `@key.` there is an example-list marker to Pandoc and a citation
+to a reader. A word that parses as a roman numeral is a marker to Pandoc and a
+word to everyone else. Never rewritten; reported so a person decides (#97).
+
+It is deliberately silent mid-paragraph, where Pandoc and the author agree the
+line is prose — that is where the shapes actually occur, and reporting them
+would be pure noise. Over 511 files of manuscript the rule fires **zero**
+times. It is a trap for what arrives, not a backlog to clear, which is what
+makes a hit worth reading.
 
 `unicode.non-nfc` is the exception to the line-level span above: it reports
 the exact code point, because "somewhere on this line is a combining mark in

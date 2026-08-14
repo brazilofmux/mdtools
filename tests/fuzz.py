@@ -62,6 +62,9 @@ BLOCKS = [
     "A.  initial {n}", "A. not a list {n}", "mix. roman word {n}",
     "@lab{n}. example", "(@lab{n}) example", "@. anonymous {n}",
     "Wrapped prose that ends a line\nC. and continues here {n}.",
+    # The #97 shapes: a run R4 repairs, and the singletons it must not.
+    "A. first {n}\nB. second {n}", "A. alone {n}", "A. one {n}\nZ. two {n}",
+    "@lab{n}. a claim opening a block", "mix. of things {n}", "cd. drive {n}",
     "- outer {n}\n  - inner {n}\n\n    para in item",
     "> quote {n}\n> more", ">quote{n}", "> > nested {n}",
     "```\ncode {n}\n```", "```python\ncode {n}\n```", "~~~\ntilde {n}\n~~~",

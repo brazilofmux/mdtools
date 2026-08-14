@@ -139,6 +139,7 @@ enum fixcat {
     FIX_FENCE_CANONICAL,
     FIX_PANDOC_SAFE_LINKS,
     FIX_SCRIVENER_SPLIT_EMPH,
+    FIX_MARKER_COLUMN,
     NUM_FIXES
 };
 
@@ -166,6 +167,7 @@ static const char *fix_labels[] = {
     "fences: canonical delimiter formatting",
     "links: bare URLs wrapped for Pandoc",
     "scrivener: split heading emphasis repaired",
+    "second column added after an uppercase marker",
 };
 
 /*
@@ -199,6 +201,7 @@ static const char *fix_rules[] = {
     "fence.canonical",
     "link.autolink-bare",
     "heading.scrivener-split",
+    "list.marker-column",
 };
 
 
@@ -1436,6 +1439,11 @@ static int is_headerless_table_header(const char *line);
  * emit_ir or it will join header to delimiter.
  */
 static unsigned char pipe_table_line[MAX_LINES];
+
+/* Lines R4 gave a second column to. They are a list the author wrote and
+ * Pandoc cannot see, so process() reads them as one even where a paragraph
+ * is open — which is what lets R2 space them. */
+static unsigned char marker_run_line[MAX_LINES];
 
 static void mark_pipe_tables(void)
 {
@@ -4723,6 +4731,228 @@ static int normalize_lines_nfc(void)
     return 0;
 }
 
+/*
+ * An uppercase marker one column short: `A. text`.
+ *
+ * Pandoc wants two columns after `A.` so that "B. Russell wrote" is not a
+ * list, and this is what that costs — the shape generated Markdown produces
+ * when it means a list. Returns the letter, or 0.
+ */
+static char short_initial_marker(const char *line, int *indent_chars)
+{
+    int chars = 0;
+    indent_columns(line, &chars);
+    if (!isupper((unsigned char)line[chars]) || line[chars + 1] != '.')
+        return 0;
+    if (line[chars + 2] != ' ' || line[chars + 3] == ' '
+        || line[chars + 3] == '\t' || line[chars + 3] == '\0')
+        return 0;
+    if (indent_chars)
+        *indent_chars = chars;
+    return line[chars];
+}
+
+/*
+ * R4: give a run of uppercase markers the second column Pandoc wants.
+ *
+ * `A. First` then `B. Second` is one paragraph to Pandoc and a list to every
+ * reader, and the difference is one space nobody can see. A run of two or
+ * more with consecutive letters at the same indent is not ambiguous — the
+ * repair makes the document say what it means, which is what the required
+ * set is for (dialect-policy §7). A single one is ambiguous and is diagnosed
+ * instead, never rewritten.
+ *
+ * Runs inside a fence, front matter, indented code, or raw HTML are left
+ * alone: those are verbatim (dialect-policy §6). A nested run under a list
+ * item is a list, not code — skip only where process() would emit
+ * LT_INDENTCODE (indent ≥ list_content_col + 4).
+ */
+static void repair_initial_runs(void)
+{
+    memset(marker_run_line, 0, (size_t)nlines);
+    if (!opt_required)
+        return;
+
+    struct fence_state fence = {0, 0, 0, 0, 0};
+    enum raw_html_kind raw_html = RAW_HTML_NONE;
+    int fmatter_close = frontmatter_close_line();
+    int i = (fmatter_close > 0) ? fmatter_close + 1 : 0;
+    int list_content_col = 0;
+    int had_blank = 1;
+    enum linetype prev_content_type = LT_BLANK;
+
+    for (; i < nlines; i++) {
+        const char *line = lines[i];
+
+        if (raw_html != RAW_HTML_NONE) {
+            if (raw_html_line_has_end(line, raw_html))
+                raw_html = RAW_HTML_NONE;
+            prev_content_type = LT_RAWHTML;
+            had_blank = 0;
+            continue;
+        }
+        if (fence.active) {
+            if (is_fence_closer(line, &fence))
+                fence.active = 0;
+            continue;
+        }
+        if (parse_fence_opener(line, &fence))
+            continue;
+
+        {
+            enum raw_html_kind kind = raw_html_open_kind(line);
+            if (kind != RAW_HTML_NONE) {
+                const char *lt = strchr(line, '<');
+                const char *after = lt ? lt + 1 : line + 1;
+                if (!raw_html_line_has_end(after, kind))
+                    raw_html = kind;
+                prev_content_type = LT_RAWHTML;
+                had_blank = 0;
+                continue;
+            }
+        }
+
+        if (is_blank(line)) {
+            had_blank = 1;
+            continue;
+        }
+
+        int indent = indent_columns(line, NULL);
+        if (indent < list_content_col)
+            list_content_col = 0;
+
+        /* Same threshold process() uses. Fail closed: do not rewrite code. */
+        if (indent >= list_content_col + 4
+            && (had_blank || prev_content_type != LT_TEXT)) {
+            prev_content_type = LT_INDENTCODE;
+            had_blank = 0;
+            continue;
+        }
+
+        int run_indent = 0;
+        char letter = short_initial_marker(line, &run_indent);
+        if (letter) {
+            int end = i;
+            for (int j = i + 1; j < nlines; j++) {
+                int next_indent = 0;
+                char next = short_initial_marker(lines[j], &next_indent);
+                if (next != letter + (j - i) || next_indent != run_indent)
+                    break;
+                end = j;
+            }
+            if (end > i) {
+                for (int j = i; j <= end; j++) {
+                    int len = (int)strlen(lines[j]);
+                    if (len + 1 > MAX_LINE - 1)
+                        continue;
+                    memmove(lines[j] + run_indent + 3,
+                            lines[j] + run_indent + 2,
+                            (size_t)(len - run_indent - 2) + 1);
+                    lines[j][run_indent + 2] = ' ';
+                    marker_run_line[j] = 1;
+                    record_fix(FIX_MARKER_COLUMN, j + 1);
+                    if (opt_verbose)
+                        fprintf(stderr,
+                                "  line %d: second column added after '%c.'\n",
+                                j + 1, lines[j][run_indent]);
+                }
+                int col = list_content_column(lines[i]);
+                if (col >= 0)
+                    list_content_col = col;
+                prev_content_type = LT_ORDERED;
+                had_blank = 0;
+                i = end;
+                continue;
+            }
+        }
+
+        int paragraph_open = paragraph_is_open(had_blank,
+                                               prev_content_type == LT_TEXT);
+        enum linetype type = classify_ctx(line, paragraph_open);
+        if (is_list_type(type)) {
+            int col = list_content_column(line);
+            if (col >= 0)
+                list_content_col = col;
+        }
+        prev_content_type = type;
+        had_blank = 0;
+    }
+}
+
+/*
+ * Marker shapes whose reading turns on something the page does not show.
+ *
+ * Each is a line that opens a block, where Pandoc's answer and the author's
+ * intent can come apart and mdfix must not pick. Reported, never repaired —
+ * see docs/diagnostics.md and issue #97.
+ */
+enum marker_doubt {
+    DOUBT_NONE = 0,
+    DOUBT_INITIALS,     /* `A. text` — a list item, or a name abbreviated */
+    DOUBT_CITATION,     /* `@key. text` — an example list, or a citation */
+    DOUBT_ROMAN_WORD    /* `mix. text` — a numeral, or an English word */
+};
+
+/* Past this, a roman numeral is not a list position. `ii.` through `xxx.`
+ * are ordinary markers; `cd.` (400) and `mix.` (1009) are words that happen
+ * to parse. */
+#define ROMAN_LIST_MAX 30
+
+static enum marker_doubt marker_doubt_at(const char *line)
+{
+    int chars = 0;
+    indent_columns(line, &chars);
+    const char *s = line + chars;
+
+    if (short_initial_marker(line, NULL))
+        return DOUBT_INITIALS;
+
+    /*
+     * Everything below doubts a marker Pandoc *does* read, so ask the marker
+     * predicate rather than re-deriving one. `cc.fth` has no separator.
+     */
+    if (fancy_marker_len(line) <= 0)
+        return DOUBT_NONE;
+
+    if (s[0] == '@' || (s[0] == '(' && s[1] == '@')) {
+        /* An anonymous `@.` is a list marker and nothing else; a labelled one
+         * is spelled exactly like a citation key. */
+        int label = (s[0] == '(') ? 2 : 1;
+        return (s[label] == '.' || s[label] == ')') ? DOUBT_NONE
+                                                    : DOUBT_CITATION;
+    }
+
+    if (islower((unsigned char)s[0])) {
+        int j = 0;
+        while (isalpha((unsigned char)s[j]))
+            j++;
+        int value = 0;
+        if (j >= 2 && roman_numeral(s, 0, &value) == j
+            && value > ROMAN_LIST_MAX)
+            return DOUBT_ROMAN_WORD;
+    }
+    return DOUBT_NONE;
+}
+
+static const char *marker_doubt_message(enum marker_doubt doubt)
+{
+    switch (doubt) {
+    case DOUBT_INITIALS:
+        return "`A. text` opening a block is a paragraph to Pandoc: an "
+               "uppercase marker wants two columns. Add one to make it a "
+               "list, or leave it if the letter is an initial";
+    case DOUBT_CITATION:
+        return "`@key.` opening a block is an example-list marker to Pandoc, "
+               "not a citation. Move it off the start of the block if a "
+               "citation was meant";
+    case DOUBT_ROMAN_WORD:
+        return "this word parses as a roman numeral, so Pandoc reads it as an "
+               "ordered-list marker. Escape the delimiter if it is a word";
+    default:
+        return "";
+    }
+}
+
 static int read_all(FILE *fp)
 {
     char *buf = NULL;
@@ -4953,7 +5183,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 4957 "mdfix.c"
+#line 5187 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -4961,20 +5191,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 4965 "mdfix.c"
+#line 5195 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 5355 "mdfix.rl"
+#line 5585 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 5101 "mdfix.rl"
+#line 5331 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -5014,7 +5244,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 4977 "mdfix.rl"
+#line 5207 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial || ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -5051,19 +5281,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 4970 "mdfix.rl"
+#line 5200 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 4970 "mdfix.rl"
+#line 5200 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 5290 "mdfix.rl"
+#line 5520 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -5087,7 +5317,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 5335 "mdfix.rl"
+#line 5565 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -5108,7 +5338,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 5313 "mdfix.rl"
+#line 5543 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -5131,13 +5361,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 5355 "mdfix.rl"
+#line 5585 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 5231 "mdfix.rl"
+#line 5461 "mdfix.rl"
 	{te = p+1;{
                 /* Before the mark is emitted, while `out` still ends at the
                  * character in front of it. */
@@ -5164,7 +5394,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 5143 "mdfix.rl"
+#line 5373 "mdfix.rl"
 	{te = p+1;{
                 /*
                  * Either Chicago flag answers "is this run an ellipsis?"
@@ -5215,13 +5445,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 5355 "mdfix.rl"
+#line 5585 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 5193 "mdfix.rl"
+#line 5423 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -5260,7 +5490,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 5257 "mdfix.rl"
+#line 5487 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -5294,7 +5524,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 5039 "mdfix.rl"
+#line 5269 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5307,7 +5537,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 5013 "mdfix.rl"
+#line 5243 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5321,7 +5551,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 5051 "mdfix.rl"
+#line 5281 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5334,7 +5564,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 5026 "mdfix.rl"
+#line 5256 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5348,7 +5578,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 5063 "mdfix.rl"
+#line 5293 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -5387,7 +5617,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 4970 "mdfix.rl"
+#line 5200 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -5400,7 +5630,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 5404 "mdfix.c"
+#line 5634 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -5426,7 +5656,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 5430 "mdfix.c"
+#line 5660 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -5470,7 +5700,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 5474 "mdfix.c"
+#line 5704 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -5519,7 +5749,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 5523 "mdfix.c"
+#line 5753 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -5538,7 +5768,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 5542 "mdfix.c"
+#line 5772 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -5564,7 +5794,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 5568 "mdfix.c"
+#line 5798 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -5613,7 +5843,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 5617 "mdfix.c"
+#line 5847 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -5693,7 +5923,7 @@ case 13:
 
 	}
 
-#line 5362 "mdfix.rl"
+#line 5592 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';
@@ -5778,6 +6008,8 @@ static void process(FILE *out)
     const int fmatter_close = frontmatter_close_line();
     int in_frontmatter     = 0;
 
+    if (opt_required)
+        repair_initial_runs();
     mark_pipe_tables();
     struct fence_state fence = {0, 0, 0, 0, 0};
     enum raw_html_kind raw_html = RAW_HTML_NONE;
@@ -5801,9 +6033,12 @@ static void process(FILE *out)
 
     for (int i = 0; i < nlines; i++) {
         char *line = lines[i];
-        enum linetype type = classify_ctx(line,
-                                          paragraph_is_open(had_blank,
-                                                            prev_was_para));
+        int paragraph_open = paragraph_is_open(had_blank, prev_was_para);
+        enum linetype type = classify_ctx(line, paragraph_open);
+        /* R4 decided this line is a marker. Pandoc will agree once R2 has
+         * put a blank in front of it, and R2 only acts on a list. */
+        if (marker_run_line[i] && type == LT_TEXT)
+            type = LT_ORDERED;
 
         /* YAML frontmatter: open only at line 0 when a closer exists.
          * Close at the precomputed line (--- or ...), not by LT_FMATTER —
@@ -6074,6 +6309,18 @@ static void process(FILE *out)
             /* prev_was_list_ctx is left alone: code nested in a list item is
              * still inside that item. */
             continue;
+        }
+
+        /*
+         * The shapes mdfix must not resolve (#97). Only where a block opens:
+         * mid-paragraph, Pandoc and the author agree the line is prose, and
+         * saying so would be pure noise.
+         */
+        if (!paragraph_open) {
+            enum marker_doubt doubt = marker_doubt_at(line);
+            if (doubt != DOUBT_NONE)
+                emit_diagnostic("list.marker-ambiguous", "warning", i + 1,
+                                marker_doubt_message(doubt));
         }
 
         /*
@@ -7149,6 +7396,8 @@ static void usage(const char *prog)
         "                                      swallowed into the item)\n"
         "  R3. Space after the ATX marker     (#Title is a paragraph,\n"
         "                                      not a heading)\n"
+        "  R4. Second column after a run of   (A. one / B. two is one\n"
+        "      uppercase markers               paragraph without it)\n"
         "\n"
         "Fixes (opt-in with --editorial):\n"
         "  1. Bullet markers normalized to -  (linter: list_bullet_style)\n"

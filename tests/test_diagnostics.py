@@ -36,9 +36,11 @@ EXPECTED_RULES = {
     "chicago.etal-period", "footnote.ref-format", "footnote.def-format",
     "heading.atx-space", "heading.canonical", "fence.canonical",
     "link.autolink-bare", "heading.scrivener-split",
+    "list.marker-column",
     # lint-only / structural warnings, not fix categories
     "chicago.number-style", "chicago.serial-comma",
     "fence.unterminated", "unicode.non-nfc",
+    "list.marker-ambiguous",
 }
 
 
