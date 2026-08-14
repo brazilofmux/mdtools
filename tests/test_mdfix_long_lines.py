@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from mdtools_cli.contract import FINDINGS, USAGE
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MDFIX = ROOT / "mdfix" / "mdfix"
@@ -44,7 +46,7 @@ class LongLineTests(unittest.TestCase):
         path.write_text("a" * 9000 + "\n", encoding="utf-8")
         out = self.dir / "out.md"
         result = _run(["-q", str(path), str(out)])
-        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.returncode, USAGE)
         self.assertIn("refuses to silently split or truncate", result.stderr)
         self.assertIn("9000 bytes", result.stderr)
         self.assertFalse(out.exists())
@@ -64,7 +66,7 @@ class LongLineTests(unittest.TestCase):
         path = self.dir / "edge.md"
         path.write_text("x" * (MAX_CONTENT + 1) + "\n", encoding="utf-8")
         result = _run(["-n", "-q", str(path)])
-        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.returncode, USAGE)
         # The message must name the largest accepted length, not the rejected one.
         self.assertIn(f"limit {MAX_CONTENT}", result.stderr)
         self.assertIn(str(MAX_CONTENT + 1), result.stderr)
@@ -89,21 +91,21 @@ class CanonicalLintContentTests(unittest.TestCase):
         path = self.dir / "crlf.md"
         path.write_bytes(b"- item\r\n")
         result = _run(["--canonical-lint", str(path)])
-        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.returncode, FINDINGS)
         self.assertIn("output differs from input", result.stderr)
 
     def test_missing_final_newline_fails(self) -> None:
         path = self.dir / "nonl.md"
         path.write_bytes(b"- item")
         result = _run(["--canonical-lint", str(path)])
-        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.returncode, FINDINGS)
         self.assertIn("output differs from input", result.stderr)
 
     def test_bullet_fix_fails_lint(self) -> None:
         path = self.dir / "star.md"
         path.write_text("* item\n", encoding="utf-8")
         result = _run(["--canonical-lint", str(path)])
-        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.returncode, FINDINGS)
         self.assertIn("failed", result.stderr)
 
     def test_line_lengthening_fixes_are_detected(self) -> None:
@@ -128,7 +130,7 @@ class CanonicalLintContentTests(unittest.TestCase):
                 before = path.read_bytes()
 
                 result = _run(["--canonical-lint", str(path)])
-                self.assertEqual(result.returncode, 2, msg=result.stderr)
+                self.assertEqual(result.returncode, FINDINGS, msg=result.stderr)
                 # Lint is no-write: the input must be untouched.
                 self.assertEqual(path.read_bytes(), before)
 
