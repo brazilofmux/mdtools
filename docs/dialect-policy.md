@@ -146,7 +146,7 @@ Load-bearing extensions, with the behavior each one buys:
 | `-four_space_rule` | List continuation is measured from the item's **content column**, not a fixed four spaces. `list_content_column()` implements exactly this. |
 | `+markdown_in_html_blocks` | `<div>` contents are parsed as Markdown, so they stay prose-variable. |
 | `+raw_html` | `<script>`, `<style>`, `<pre>`, `<textarea>`, comments, CDATA, PIs, and declarations become `RawBlock` and must survive byte-for-byte. |
-| `+pipe_tables`, `+simple_tables`, `+grid_tables`, `+multiline_tables` | All four forms are recognized. Grid, simple, and multiline are byte-protected in mdfix; **pipe cells still take prose passes** (deliberate for `|`-delimited cells today — see §7). |
+| `+pipe_tables`, `+simple_tables`, `+grid_tables`, `+multiline_tables` | All four forms are recognized, and no prose pass runs on a table row (#117). Grid, simple and multiline are byte-protected; a pipe row still has trailing whitespace normalized, which is why it is not. |
 | `+line_blocks` | `\|`-prefixed lines are `LineBlock`, whitespace- and line-count-significant. See §7. |
 | `+yaml_metadata_block` | Front matter is metadata, not prose. |
 | `+footnotes`, `+inline_notes` | Footnote definitions are structure, not paragraphs. |
@@ -330,14 +330,7 @@ Each was found by running the tools against Pandoc while pinning this profile
 3. **Raw LaTeX.** `\begin{verbatim} … \end{verbatim}` is a `RawBlock`. Both
    tools treat its contents as prose.
 
-4. **Pipe table cells in mdfix.** Structure is preserved, but punctuation
-   inside cells is rewritten (arrows, Chicago) when editorial/Chicago
-   (or a profile that implies them) runs. That is intentional for
-   `|`-delimited cells today and recorded in [ir-schema.md](ir-schema.md);
-   it is still not “protected” in the byte-for-byte sense of this table.
-   prosevary freezes the whole row.
-
-All four remaining gaps are cases where a verbatim construct reaches a prose
+All three remaining gaps are cases where a verbatim construct reaches a prose
 pass — the duplication argument in §2 restated as a bug report. They become
 single-site fixes once the grammar lives in one place, and none of them is a
 profile/contract mismatch: `tests/test_transform_matrix.py` now pins **no**
@@ -462,6 +455,25 @@ either direction.
 Worth keeping: *over-reporting is safe* is a claim about a rule, not a
 property of warnings. Here it meant a gate could not be run clean on a correct
 chapter — the same "warning people learn to skip" that #97 argues against.
+
+**Pipe table cells** (#117). The Chicago spacing passes read a line as a
+sentence, and a table row is not one. `| ...  | ...` gave
+`chicago.space-before-punct` a space in front of what it took for sentence
+punctuation, so it deleted the space and welded the delimiter to the cell;
+`chicago.sentence-space` collapsed the column padding beside it. The first
+moves the boundary between structure and content, which is damage rather than
+typography.
+
+The scanner no longer runs on a table row at all — the same rule mdterms
+already applies, and what §7 listed as its fourth gap. The corpus found the
+part nobody reported: arrow-aside had been rewriting notation arrows inside
+cells across 22 files, so `` `switch` → jump table `` was arriving as
+`` `switch` — jump table ``. All 386 table blocks in 111 files now survive
+`--canonical` byte for byte.
+
+A pipe table is still `protected: false` in the IR, and now for one small
+reason rather than a large one: `fix_trailing_ws` normalizes whitespace after
+the final `|`. Pandoc ignores it; the flag stays honest about it.
 
 **Chicago ellipsis.** A spaced run (`. . .`) or a run of four or more dots now
 becomes U+2026 `…` rather than ASCII `...`, under every flag that rewrites
