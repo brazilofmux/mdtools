@@ -7,9 +7,6 @@ from pathlib import Path
 
 from prosevary.segment import LineKind, parse
 
-# `--canonical-lint` reports findings, not an environment failure (#116). It
-# returned 2 from the initial import, which predates the shared exit-code
-# contract; docs/cli.md has said 0 clean / 1 findings / 2 could not run since.
 from mdtools_cli.contract import FINDINGS
 
 

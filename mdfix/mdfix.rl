@@ -5939,18 +5939,8 @@ static void process(FILE *out)
             had_blank = 1;
             prev_was_list_ctx = 0;
             prev_was_para = 0;
-            /*
-             * A blank line may still have bytes in it. Printing "\n" here
-             * emptied a whitespace-only line on every run — including a bare
-             * one, which is meant to perform the required repairs and nothing
-             * else — and recorded no fix, so `-n` answered "clean" about a
-             * file it would change (#116).
-             *
-             * Pandoc reads " \n" and "\n" identically, so emptying it is not
-             * a required repair. It belongs to `-w`, and fix_trailing_ws
-             * already knows the whole rule: it declines without the flag, and
-             * both of its guards return early on a whitespace-only line.
-             */
+            /* Whitespace-only lines are blank to Pandoc; emptying them is
+             * -w's job, not a required repair. */
             fix_trailing_ws(line, i + 1, i);
             fprintf(out, "%s\n", line);
             continue;
@@ -7446,7 +7436,7 @@ static int write_inplace_buf(const char *input_path,
  * input. Relying on fix_counts alone missed silent normalizations (CRLF→LF,
  * final newline) that change the file while reporting "clean".
  *
- * Returns 0 clean, 2 not canonical, 1 hard error.
+ * Returns 0 clean, 1 not canonical, 2 could not run.
  */
 static int run_canonical_lint(const char *input_path)
 {
@@ -7465,13 +7455,13 @@ static int run_canonical_lint(const char *input_path)
                      tmpdir, (tmpdir[strlen(tmpdir) - 1] == '/') ? "" : "/");
     if (n < 0 || (size_t)n >= sizeof(tmp_path)) {
         fprintf(stderr, "canonical-lint: temp path too long\n");
-        return 1;
+        return 2;
     }
     int fd = mkstemp(tmp_path);
     if (fd < 0) {
         fprintf(stderr, "canonical-lint: can't create temp file: ");
         perror(NULL);
-        return 1;
+        return 2;
     }
     FILE *out = fdopen(fd, "w");
     if (!out) {
@@ -7479,12 +7469,12 @@ static int run_canonical_lint(const char *input_path)
         perror(NULL);
         close(fd);
         unlink(tmp_path);
-        return 1;
+        return 2;
     }
 
     process(out);
     if (finalize_output(&out, tmp_path) != 0)
-        return 1;
+        return 2;
 
     int same = files_identical(tmp_path, input_path);
     unlink(tmp_path);
@@ -7502,15 +7492,7 @@ static int run_canonical_lint(const char *input_path)
                 "canonical-lint: failed with %d issue%s.\n",
                 report, report == 1 ? "" : "s");
         }
-        /*
-         * Findings, not an environment failure. The gate ran and reached an
-         * answer; the answer is that the file is not canonical.
-         *
-         * This returned 2 from the initial import, which predates the shared
-         * exit-code contract (#12). docs/cli.md has said 0/1/2 since, and a
-         * gate that reads 2 as a broken toolchain reports one for every
-         * non-canonical file, while a gate that only checks 1 passes them all.
-         */
+        /* The gate ran; a non-canonical file is a finding. */
         return 1;
     }
     if (!opt_quiet)
@@ -7645,11 +7627,11 @@ static int process_file(const char *input_path, const char *output_path)
     if (!in) {
         fprintf(stderr, "Can't open '%s': ", input_path);
         perror(NULL);
-        return 1;
+        return 2;
     }
     if (read_all(in) != 0) {
         fclose(in);
-        return 1;
+        return 2;
     }
     fclose(in);
 
@@ -7679,7 +7661,7 @@ static int process_file(const char *input_path, const char *output_path)
      */
     if (opt_normalize_nfc && normalize_lines_nfc() != 0) {
         free_lines();
-        return 1;
+        return 2;
     }
 
     /* ── Write / lint ── */
@@ -7997,14 +7979,11 @@ int main(int argc, char *argv[])
         int exit_code = 0;
         for (int i = 0; i < npos; i++) {
             int rc = process_file(pos[i], NULL);
-            /*
-             * A hard error (1: unreadable, overlong line, I/O failure) must
-             * outrank a lint failure (2). Last-writer-wins let a later
-             * non-canonical file overwrite an earlier 1, so CI reported "not
-             * canonical" and nobody learned a file had been skipped entirely.
-             */
-            if (rc == 1)
-                exit_code = 1;
+            /* A file the gate could not run on must outrank a finding.
+             * Otherwise CI reports "not canonical" and a skipped file is
+             * invisible. */
+            if (rc == 2)
+                exit_code = 2;
             else if (rc != 0 && exit_code == 0)
                 exit_code = rc;
         }

@@ -26,7 +26,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mdtools_cli.contract import FINDINGS, OK
+from mdtools_cli.contract import FINDINGS, OK, USAGE
 
 ROOT = Path(__file__).resolve().parents[1]
 MDFIX = ROOT / "mdfix" / "mdfix"
@@ -123,16 +123,7 @@ class TrailingWhitespaceTests(BlankBytesTestCase):
 
 
 class LintExitCodeTests(BlankBytesTestCase):
-    """
-    `--canonical-lint` reports findings, and findings are exit 1.
-
-    It returned 2 from the initial import, which predates the shared
-    exit-code contract (#12). Nothing in the documentation ever agreed — the
-    downstream book repository's own README spells the gate as
-    "0 clean, 1 findings, 2 could not run" — and 2 means *the tool could not
-    run*. A gate reading it that way reports a broken toolchain for every
-    non-canonical file; one that only checks for 1 passes them all.
-    """
+    """The gate ran; a non-canonical file is a finding."""
 
     def _lint(self, text: str) -> int:
         src = self.dir / "in.md"
@@ -160,6 +151,30 @@ class LintExitCodeTests(BlankBytesTestCase):
             capture_output=True, text=True)
         self.assertEqual(result.returncode, FINDINGS)
         self.assertIn("output differs from input", result.stderr)
+
+    def test_a_missing_file_is_usage(self) -> None:
+        result = subprocess.run(
+            [str(MDFIX), "-q", "--canonical-lint", str(self.dir / "gone.md")],
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, USAGE)
+        self.assertTrue(result.stderr.strip())
+
+    def test_an_unreadable_file_is_usage(self) -> None:
+        path = self.dir / "not-a-file"
+        path.mkdir()
+        result = subprocess.run(
+            [str(MDFIX), "-q", "--canonical-lint", str(path)],
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, USAGE)
+
+    def test_a_skipped_file_outranks_a_finding(self) -> None:
+        dirty = self.dir / "dirty.md"
+        dirty.write_text("#Title\n\nBody.\n", encoding="utf-8")
+        result = subprocess.run(
+            [str(MDFIX), "-q", "--canonical-lint",
+             str(self.dir / "gone.md"), str(dirty)],
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, USAGE)
 
 
 if __name__ == "__main__":

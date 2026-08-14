@@ -7,10 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-# `--canonical-lint` reports findings, not an environment failure (#116). It
-# returned 2 from the initial import, which predates the shared exit-code
-# contract; docs/cli.md has said 0 clean / 1 findings / 2 could not run since.
-from mdtools_cli.contract import FINDINGS
+from mdtools_cli.contract import FINDINGS, USAGE
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,7 +46,7 @@ class LongLineTests(unittest.TestCase):
         path.write_text("a" * 9000 + "\n", encoding="utf-8")
         out = self.dir / "out.md"
         result = _run(["-q", str(path), str(out)])
-        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.returncode, USAGE)
         self.assertIn("refuses to silently split or truncate", result.stderr)
         self.assertIn("9000 bytes", result.stderr)
         self.assertFalse(out.exists())
@@ -69,7 +66,7 @@ class LongLineTests(unittest.TestCase):
         path = self.dir / "edge.md"
         path.write_text("x" * (MAX_CONTENT + 1) + "\n", encoding="utf-8")
         result = _run(["-n", "-q", str(path)])
-        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.returncode, USAGE)
         # The message must name the largest accepted length, not the rejected one.
         self.assertIn(f"limit {MAX_CONTENT}", result.stderr)
         self.assertIn(str(MAX_CONTENT + 1), result.stderr)

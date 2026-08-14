@@ -66,8 +66,7 @@ a file that is not there, and an mdfix that cannot be found are all `2` — in
 every tool, with a test that sweeps them.
 
 `mdfix --canonical-lint` answers the same way: `1` when the file is not
-canonical, `2` only when the gate could not run. It returned `2` for a
-finding from the initial import, which predates this table (#116).
+canonical, `2` only when the gate could not run.
 
 After `--fix`, `1` means *still findings*, not *the fix failed*. `mdterms
 --fix` returns 1 when a forbidden spelling was inside a code span, because

@@ -18,6 +18,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from mdtools_cli.contract import USAGE
+
 ROOT = Path(__file__).resolve().parents[1]
 MDFIX = ROOT / "mdfix" / "mdfix"
 
@@ -64,7 +66,7 @@ class RejectionTests(EncodingTestCase):
             with self.subTest(case=reason):
                 path = self._write(data)
                 result = self._run("--emit-ir", str(path))
-                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.returncode, USAGE)
                 self.assertIn(reason, result.stderr)
                 self.assertEqual(result.stdout, "")
 
@@ -81,7 +83,7 @@ class RejectionTests(EncodingTestCase):
         # file came back 22 bytes with `AFTER` gone, silently.
         path = self._write(b"# Title\n\nBefore\x00AFTER\n\nEnd.\n")
         result = self._run("--emit-ir", str(path))
-        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.returncode, USAGE)
         self.assertIn("NUL", result.stderr)
 
     def test_no_ir_is_emitted_for_a_rejected_file(self) -> None:
@@ -116,13 +118,13 @@ class NoWriteOnRejectionTests(EncodingTestCase):
         src = self._write(self.BAD, "in.md")
         out = self.dir / "out.md"
         result = self._run("-q", str(src), str(out))
-        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.returncode, USAGE)
         self.assertFalse(out.exists())
 
     def test_in_place_leaves_the_file_alone(self) -> None:
         src = self._write(self.BAD, "in.md")
         result = self._run("-q", "-i", str(src))
-        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.returncode, USAGE)
         self.assertEqual(src.read_bytes(), self.BAD)
         self.assertFalse((self.dir / "in.md.bak").exists())
 
@@ -131,7 +133,7 @@ class NoWriteOnRejectionTests(EncodingTestCase):
         bad = self._write(self.BAD, "b.md")
         good2 = self._write(b"# Also good\n", "c.md")
         result = self._run("--emit-ir", str(good1), str(bad), str(good2))
-        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.returncode, USAGE)
         sources = [json.loads(line)["source"]
                    for line in result.stdout.splitlines()
                    if json.loads(line)["kind"] == "document"]
