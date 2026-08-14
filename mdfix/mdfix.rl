@@ -4754,54 +4754,120 @@ static char short_initial_marker(const char *line, int *indent_chars)
  * set is for (dialect-policy §7). A single one is ambiguous and is diagnosed
  * instead, never rewritten.
  *
- * Runs inside a fence or front matter are left alone: those are verbatim.
+ * Runs inside a fence, front matter, indented code, or raw HTML are left
+ * alone: those are verbatim (dialect-policy §6). A nested run under a list
+ * item is a list, not code — skip only where process() would emit
+ * LT_INDENTCODE (indent ≥ list_content_col + 4).
  */
 static void repair_initial_runs(void)
 {
     memset(marker_run_line, 0, (size_t)nlines);
+    if (!opt_required)
+        return;
+
     struct fence_state fence = {0, 0, 0, 0, 0};
+    enum raw_html_kind raw_html = RAW_HTML_NONE;
     int fmatter_close = frontmatter_close_line();
     int i = (fmatter_close > 0) ? fmatter_close + 1 : 0;
+    int list_content_col = 0;
+    int had_blank = 1;
+    enum linetype prev_content_type = LT_BLANK;
 
     for (; i < nlines; i++) {
+        const char *line = lines[i];
+
+        if (raw_html != RAW_HTML_NONE) {
+            if (raw_html_line_has_end(line, raw_html))
+                raw_html = RAW_HTML_NONE;
+            prev_content_type = LT_RAWHTML;
+            had_blank = 0;
+            continue;
+        }
         if (fence.active) {
-            if (is_fence_closer(lines[i], &fence))
+            if (is_fence_closer(line, &fence))
                 fence.active = 0;
             continue;
         }
-        if (parse_fence_opener(lines[i], &fence))
+        if (parse_fence_opener(line, &fence))
             continue;
 
-        int indent = 0;
-        char letter = short_initial_marker(lines[i], &indent);
-        if (!letter)
+        {
+            enum raw_html_kind kind = raw_html_open_kind(line);
+            if (kind != RAW_HTML_NONE) {
+                const char *lt = strchr(line, '<');
+                const char *after = lt ? lt + 1 : line + 1;
+                if (!raw_html_line_has_end(after, kind))
+                    raw_html = kind;
+                prev_content_type = LT_RAWHTML;
+                had_blank = 0;
+                continue;
+            }
+        }
+
+        if (is_blank(line)) {
+            had_blank = 1;
             continue;
-
-        int end = i;
-        for (int j = i + 1; j < nlines; j++) {
-            int next_indent = 0;
-            char next = short_initial_marker(lines[j], &next_indent);
-            if (next != letter + (j - i) || next_indent != indent)
-                break;
-            end = j;
         }
-        if (end == i)
-            continue;               /* a singleton: ambiguous, see below */
 
-        for (int j = i; j <= end; j++) {
-            int len = (int)strlen(lines[j]);
-            if (len + 1 > MAX_LINE - 1)
-                continue;           /* no room; leave it for the diagnostic */
-            memmove(lines[j] + indent + 3, lines[j] + indent + 2,
-                    (size_t)(len - indent - 2) + 1);
-            lines[j][indent + 2] = ' ';
-            marker_run_line[j] = 1;
-            record_fix(FIX_MARKER_COLUMN, j + 1);
-            if (opt_verbose)
-                fprintf(stderr, "  line %d: second column added after '%c.'\n",
-                        j + 1, lines[j][indent]);
+        int indent = indent_columns(line, NULL);
+        if (indent < list_content_col)
+            list_content_col = 0;
+
+        /* Same threshold process() uses. Fail closed: do not rewrite code. */
+        if (indent >= list_content_col + 4
+            && (had_blank || prev_content_type != LT_TEXT)) {
+            prev_content_type = LT_INDENTCODE;
+            had_blank = 0;
+            continue;
         }
-        i = end;
+
+        int run_indent = 0;
+        char letter = short_initial_marker(line, &run_indent);
+        if (letter) {
+            int end = i;
+            for (int j = i + 1; j < nlines; j++) {
+                int next_indent = 0;
+                char next = short_initial_marker(lines[j], &next_indent);
+                if (next != letter + (j - i) || next_indent != run_indent)
+                    break;
+                end = j;
+            }
+            if (end > i) {
+                for (int j = i; j <= end; j++) {
+                    int len = (int)strlen(lines[j]);
+                    if (len + 1 > MAX_LINE - 1)
+                        continue;
+                    memmove(lines[j] + run_indent + 3,
+                            lines[j] + run_indent + 2,
+                            (size_t)(len - run_indent - 2) + 1);
+                    lines[j][run_indent + 2] = ' ';
+                    marker_run_line[j] = 1;
+                    record_fix(FIX_MARKER_COLUMN, j + 1);
+                    if (opt_verbose)
+                        fprintf(stderr,
+                                "  line %d: second column added after '%c.'\n",
+                                j + 1, lines[j][run_indent]);
+                }
+                int col = list_content_column(lines[i]);
+                if (col >= 0)
+                    list_content_col = col;
+                prev_content_type = LT_ORDERED;
+                had_blank = 0;
+                i = end;
+                continue;
+            }
+        }
+
+        int paragraph_open = paragraph_is_open(had_blank,
+                                               prev_content_type == LT_TEXT);
+        enum linetype type = classify_ctx(line, paragraph_open);
+        if (is_list_type(type)) {
+            int col = list_content_column(line);
+            if (col >= 0)
+                list_content_col = col;
+        }
+        prev_content_type = type;
+        had_blank = 0;
     }
 }
 
@@ -4835,9 +4901,7 @@ static enum marker_doubt marker_doubt_at(const char *line)
 
     /*
      * Everything below doubts a marker Pandoc *does* read, so ask the marker
-     * predicate rather than re-deriving one. `cc.fth` in a wrapped path is
-     * not a marker at all — there is no separator after the delimiter — and
-     * an earlier cut of this reported it.
+     * predicate rather than re-deriving one. `cc.fth` has no separator.
      */
     if (fancy_marker_len(line) <= 0)
         return DOUBT_NONE;
@@ -5609,6 +5673,8 @@ static void process(FILE *out)
     const int fmatter_close = frontmatter_close_line();
     int in_frontmatter     = 0;
 
+    if (opt_required)
+        repair_initial_runs();
     mark_pipe_tables();
     struct fence_state fence = {0, 0, 0, 0, 0};
     enum raw_html_kind raw_html = RAW_HTML_NONE;
@@ -7592,15 +7658,6 @@ static int process_file(const char *input_path, const char *output_path)
         free_lines();
         return 1;
     }
-
-    /*
-     * R4 rewrites lines[] rather than a line in flight, because a run is a
-     * property of several lines and the repair has to be decided before
-     * anything classifies them. Everything downstream then sees an ordinary
-     * list, so R2 and R3 space it without knowing this pass exists.
-     */
-    if (opt_required)
-        repair_initial_runs();
 
     /* ── Write / lint ── */
     int write_rc = 0;

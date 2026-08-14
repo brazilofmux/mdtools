@@ -4762,54 +4762,120 @@ static char short_initial_marker(const char *line, int *indent_chars)
  * set is for (dialect-policy §7). A single one is ambiguous and is diagnosed
  * instead, never rewritten.
  *
- * Runs inside a fence or front matter are left alone: those are verbatim.
+ * Runs inside a fence, front matter, indented code, or raw HTML are left
+ * alone: those are verbatim (dialect-policy §6). A nested run under a list
+ * item is a list, not code — skip only where process() would emit
+ * LT_INDENTCODE (indent ≥ list_content_col + 4).
  */
 static void repair_initial_runs(void)
 {
     memset(marker_run_line, 0, (size_t)nlines);
+    if (!opt_required)
+        return;
+
     struct fence_state fence = {0, 0, 0, 0, 0};
+    enum raw_html_kind raw_html = RAW_HTML_NONE;
     int fmatter_close = frontmatter_close_line();
     int i = (fmatter_close > 0) ? fmatter_close + 1 : 0;
+    int list_content_col = 0;
+    int had_blank = 1;
+    enum linetype prev_content_type = LT_BLANK;
 
     for (; i < nlines; i++) {
+        const char *line = lines[i];
+
+        if (raw_html != RAW_HTML_NONE) {
+            if (raw_html_line_has_end(line, raw_html))
+                raw_html = RAW_HTML_NONE;
+            prev_content_type = LT_RAWHTML;
+            had_blank = 0;
+            continue;
+        }
         if (fence.active) {
-            if (is_fence_closer(lines[i], &fence))
+            if (is_fence_closer(line, &fence))
                 fence.active = 0;
             continue;
         }
-        if (parse_fence_opener(lines[i], &fence))
+        if (parse_fence_opener(line, &fence))
             continue;
 
-        int indent = 0;
-        char letter = short_initial_marker(lines[i], &indent);
-        if (!letter)
+        {
+            enum raw_html_kind kind = raw_html_open_kind(line);
+            if (kind != RAW_HTML_NONE) {
+                const char *lt = strchr(line, '<');
+                const char *after = lt ? lt + 1 : line + 1;
+                if (!raw_html_line_has_end(after, kind))
+                    raw_html = kind;
+                prev_content_type = LT_RAWHTML;
+                had_blank = 0;
+                continue;
+            }
+        }
+
+        if (is_blank(line)) {
+            had_blank = 1;
             continue;
-
-        int end = i;
-        for (int j = i + 1; j < nlines; j++) {
-            int next_indent = 0;
-            char next = short_initial_marker(lines[j], &next_indent);
-            if (next != letter + (j - i) || next_indent != indent)
-                break;
-            end = j;
         }
-        if (end == i)
-            continue;               /* a singleton: ambiguous, see below */
 
-        for (int j = i; j <= end; j++) {
-            int len = (int)strlen(lines[j]);
-            if (len + 1 > MAX_LINE - 1)
-                continue;           /* no room; leave it for the diagnostic */
-            memmove(lines[j] + indent + 3, lines[j] + indent + 2,
-                    (size_t)(len - indent - 2) + 1);
-            lines[j][indent + 2] = ' ';
-            marker_run_line[j] = 1;
-            record_fix(FIX_MARKER_COLUMN, j + 1);
-            if (opt_verbose)
-                fprintf(stderr, "  line %d: second column added after '%c.'\n",
-                        j + 1, lines[j][indent]);
+        int indent = indent_columns(line, NULL);
+        if (indent < list_content_col)
+            list_content_col = 0;
+
+        /* Same threshold process() uses. Fail closed: do not rewrite code. */
+        if (indent >= list_content_col + 4
+            && (had_blank || prev_content_type != LT_TEXT)) {
+            prev_content_type = LT_INDENTCODE;
+            had_blank = 0;
+            continue;
         }
-        i = end;
+
+        int run_indent = 0;
+        char letter = short_initial_marker(line, &run_indent);
+        if (letter) {
+            int end = i;
+            for (int j = i + 1; j < nlines; j++) {
+                int next_indent = 0;
+                char next = short_initial_marker(lines[j], &next_indent);
+                if (next != letter + (j - i) || next_indent != run_indent)
+                    break;
+                end = j;
+            }
+            if (end > i) {
+                for (int j = i; j <= end; j++) {
+                    int len = (int)strlen(lines[j]);
+                    if (len + 1 > MAX_LINE - 1)
+                        continue;
+                    memmove(lines[j] + run_indent + 3,
+                            lines[j] + run_indent + 2,
+                            (size_t)(len - run_indent - 2) + 1);
+                    lines[j][run_indent + 2] = ' ';
+                    marker_run_line[j] = 1;
+                    record_fix(FIX_MARKER_COLUMN, j + 1);
+                    if (opt_verbose)
+                        fprintf(stderr,
+                                "  line %d: second column added after '%c.'\n",
+                                j + 1, lines[j][run_indent]);
+                }
+                int col = list_content_column(lines[i]);
+                if (col >= 0)
+                    list_content_col = col;
+                prev_content_type = LT_ORDERED;
+                had_blank = 0;
+                i = end;
+                continue;
+            }
+        }
+
+        int paragraph_open = paragraph_is_open(had_blank,
+                                               prev_content_type == LT_TEXT);
+        enum linetype type = classify_ctx(line, paragraph_open);
+        if (is_list_type(type)) {
+            int col = list_content_column(line);
+            if (col >= 0)
+                list_content_col = col;
+        }
+        prev_content_type = type;
+        had_blank = 0;
     }
 }
 
@@ -4843,9 +4909,7 @@ static enum marker_doubt marker_doubt_at(const char *line)
 
     /*
      * Everything below doubts a marker Pandoc *does* read, so ask the marker
-     * predicate rather than re-deriving one. `cc.fth` in a wrapped path is
-     * not a marker at all — there is no separator after the delimiter — and
-     * an earlier cut of this reported it.
+     * predicate rather than re-deriving one. `cc.fth` has no separator.
      */
     if (fancy_marker_len(line) <= 0)
         return DOUBT_NONE;
@@ -5119,7 +5183,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 5123 "mdfix.c"
+#line 5187 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -5127,20 +5191,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 5131 "mdfix.c"
+#line 5195 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 5521 "mdfix.rl"
+#line 5585 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 5267 "mdfix.rl"
+#line 5331 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -5180,7 +5244,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 5143 "mdfix.rl"
+#line 5207 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial || ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -5217,19 +5281,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 5136 "mdfix.rl"
+#line 5200 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 5136 "mdfix.rl"
+#line 5200 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 5456 "mdfix.rl"
+#line 5520 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -5253,7 +5317,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 5501 "mdfix.rl"
+#line 5565 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -5274,7 +5338,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 5479 "mdfix.rl"
+#line 5543 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -5297,13 +5361,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 5521 "mdfix.rl"
+#line 5585 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 5397 "mdfix.rl"
+#line 5461 "mdfix.rl"
 	{te = p+1;{
                 /* Before the mark is emitted, while `out` still ends at the
                  * character in front of it. */
@@ -5330,7 +5394,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 5309 "mdfix.rl"
+#line 5373 "mdfix.rl"
 	{te = p+1;{
                 /*
                  * Either Chicago flag answers "is this run an ellipsis?"
@@ -5381,13 +5445,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 5521 "mdfix.rl"
+#line 5585 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 5359 "mdfix.rl"
+#line 5423 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -5426,7 +5490,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 5423 "mdfix.rl"
+#line 5487 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -5460,7 +5524,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 5205 "mdfix.rl"
+#line 5269 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5473,7 +5537,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 5179 "mdfix.rl"
+#line 5243 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5487,7 +5551,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 5217 "mdfix.rl"
+#line 5281 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5500,7 +5564,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 5192 "mdfix.rl"
+#line 5256 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5514,7 +5578,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 5229 "mdfix.rl"
+#line 5293 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -5553,7 +5617,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 5136 "mdfix.rl"
+#line 5200 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -5566,7 +5630,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 5570 "mdfix.c"
+#line 5634 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -5592,7 +5656,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 5596 "mdfix.c"
+#line 5660 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -5636,7 +5700,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 5640 "mdfix.c"
+#line 5704 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -5685,7 +5749,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 5689 "mdfix.c"
+#line 5753 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -5704,7 +5768,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 5708 "mdfix.c"
+#line 5772 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -5730,7 +5794,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 5734 "mdfix.c"
+#line 5798 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -5779,7 +5843,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 5783 "mdfix.c"
+#line 5847 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -5859,7 +5923,7 @@ case 13:
 
 	}
 
-#line 5528 "mdfix.rl"
+#line 5592 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';
@@ -5944,6 +6008,8 @@ static void process(FILE *out)
     const int fmatter_close = frontmatter_close_line();
     int in_frontmatter     = 0;
 
+    if (opt_required)
+        repair_initial_runs();
     mark_pipe_tables();
     struct fence_state fence = {0, 0, 0, 0, 0};
     enum raw_html_kind raw_html = RAW_HTML_NONE;
@@ -7927,15 +7993,6 @@ static int process_file(const char *input_path, const char *output_path)
         free_lines();
         return 1;
     }
-
-    /*
-     * R4 rewrites lines[] rather than a line in flight, because a run is a
-     * property of several lines and the repair has to be decided before
-     * anything classifies them. Everything downstream then sees an ordinary
-     * list, so R2 and R3 space it without knowing this pass exists.
-     */
-    if (opt_required)
-        repair_initial_runs();
 
     /* ── Write / lint ── */
     int write_rc = 0;

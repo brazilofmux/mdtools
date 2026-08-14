@@ -279,6 +279,18 @@ class ValidateDoNotRepairTests(ApplyTestCase):
         self.assertIn("I4.3", result.stderr)
         self.assertIn("refused rather than silently fixed", result.stderr)
 
+    def test_a_marker_run_edit_is_refused(self) -> None:
+        # R4 is required. I4.3 must see it the same way it sees R2.
+        path = self._file()
+        data = SAMPLE.encode("utf-8")
+        i = data.index(b"Second paragraph here.")
+        result = self._apply(path, [
+            {"start": i, "end": i + 22,
+             "replacement": "A. First option\nB. Second option"},
+        ])
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("I4.3", result.stderr)
+
     def test_the_same_edit_written_correctly_is_accepted(self) -> None:
         path = self._file()
         data = SAMPLE.encode("utf-8")

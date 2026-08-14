@@ -136,6 +136,30 @@ class RunRepairTests(MarkerTestCase):
         source = "---\nA. one\nB. two\n---\n\nProse.\n"
         self.assertEqual(self._fix(source), source)
 
+    def test_a_run_inside_indented_code_is_left_alone(self) -> None:
+        source = "    A. one\n    B. two\n"
+        self.assertEqual(self._fix(source), source)
+
+    def test_a_run_inside_raw_html_is_left_alone(self) -> None:
+        source = "<!--\nA. one\nB. two\n-->\n"
+        self.assertEqual(self._fix(source), source)
+
+    def test_a_nested_run_under_a_list_is_still_repaired(self) -> None:
+        source = "- item\n    A. one\n    B. two\n"
+        self.assertEqual(self._fix(source),
+                         "- item\n    A.  one\n    B.  two\n")
+
+    def test_wrap_does_not_force_stale_run_lines(self) -> None:
+        # marker_run_line is rebuilt at the start of every process(). A
+        # wrap re-read that reused the first pass's bits would force a
+        # wrap line to LT_ORDERED and R2 would split the paragraph.
+        source = ("A long paragraph that will wrap under a narrow "
+                  "width into several lines.\n\n"
+                  "A. First option\nB. Second option\n")
+        out = self._fix(source, "--wrap=40")
+        self.assertIn("A.  First", out)
+        self.assertEqual(out.count("\n\n"), 1)
+
     def test_no_required_disables_it(self) -> None:
         self.assertEqual(self._fix(self.RUN, "--no-required"), self.RUN)
 
