@@ -3629,11 +3629,18 @@ static int punct_ends_a_word(const char *p, const char *pe)
 
 /* fix_chicago_space_before_punct — now handled by Ragel scanner */
 
-static int should_insert_space_after_punct(unsigned char punct, unsigned char next)
+/*
+ * `!`/`?` are sentence-final only after a word character. A leading `!` is
+ * a click (or image/shell), not a sentence end.
+ */
+static int should_insert_space_after_punct(unsigned char punct, unsigned char next,
+                                           int prev_is_word)
 {
     if (next == '\0' || next == '\n' || next == '\r')
         return 0;
     if (isspace(next))
+        return 0;
+    if ((punct == '!' || punct == '?') && !prev_is_word)
         return 0;
     if ((punct == ',' || punct == '.') && isdigit(next))
         return 0;
@@ -4666,6 +4673,22 @@ struct scan_ctx {
 };
 
 /*
+ * Is the code point already emitted a word character?
+ *
+ * Asked of the output buffer rather than the input because the scanner may
+ * have rewritten what came before. `mdfix_is_word` is Unicode's answer, so a
+ * letter in any script counts and `Ọ!` is as sentence-final as `Wow!`.
+ */
+static int last_emitted_is_word(const struct scan_ctx *ctx)
+{
+    int start = utf8_prev_start(ctx->out, 0, ctx->oi);
+    if (start < 0)
+        return 0;
+    return mdfix_is_word((const unsigned char *)ctx->out + start,
+                         (const unsigned char *)ctx->out + ctx->oi);
+}
+
+/*
  * U+2026 HORIZONTAL ELLIPSIS, the mark this profile emits.
  *
  * dialect-policy §4: typography mdtools *writes* must render the same with
@@ -4716,7 +4739,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 4720 "mdfix.c"
+#line 4743 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -4724,20 +4747,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 4728 "mdfix.c"
+#line 4751 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 5114 "mdfix.rl"
+#line 5141 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 4864 "mdfix.rl"
+#line 4887 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -4777,7 +4800,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 4740 "mdfix.rl"
+#line 4763 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial || ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -4814,19 +4837,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 4733 "mdfix.rl"
+#line 4756 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 4733 "mdfix.rl"
+#line 4756 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 5049 "mdfix.rl"
+#line 5076 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -4850,7 +4873,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 5094 "mdfix.rl"
+#line 5121 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -4871,7 +4894,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 5072 "mdfix.rl"
+#line 5099 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -4894,18 +4917,22 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 5114 "mdfix.rl"
+#line 5141 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 4994 "mdfix.rl"
+#line 5017 "mdfix.rl"
 	{te = p+1;{
+                /* Before the mark is emitted, while `out` still ends at the
+                 * character in front of it. */
+                int prev_is_word = last_emitted_is_word(ctx);
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
                     unsigned char next = (unsigned char)*te;
-                    if (should_insert_space_after_punct((unsigned char)(*p), next)) {
+                    if (should_insert_space_after_punct((unsigned char)(*p), next,
+                                                        prev_is_word)) {
                         EMIT_CHAR(' ');
                         BUMP(FIX_CHI_SPACE_AFTER_PUNCT);
                     } else if (next == ' ') {
@@ -4923,7 +4950,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 4906 "mdfix.rl"
+#line 4929 "mdfix.rl"
 	{te = p+1;{
                 /*
                  * Either Chicago flag answers "is this run an ellipsis?"
@@ -4974,13 +5001,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 5114 "mdfix.rl"
+#line 5141 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 4956 "mdfix.rl"
+#line 4979 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -5019,7 +5046,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 5016 "mdfix.rl"
+#line 5043 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -5053,7 +5080,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 4802 "mdfix.rl"
+#line 4825 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5066,7 +5093,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 4776 "mdfix.rl"
+#line 4799 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5080,7 +5107,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 4814 "mdfix.rl"
+#line 4837 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5093,7 +5120,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 4789 "mdfix.rl"
+#line 4812 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5107,7 +5134,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 4826 "mdfix.rl"
+#line 4849 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -5146,7 +5173,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 4733 "mdfix.rl"
+#line 4756 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -5159,7 +5186,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 5163 "mdfix.c"
+#line 5190 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -5185,7 +5212,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 5189 "mdfix.c"
+#line 5216 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -5229,7 +5256,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 5233 "mdfix.c"
+#line 5260 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -5278,7 +5305,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 5282 "mdfix.c"
+#line 5309 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -5297,7 +5324,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 5301 "mdfix.c"
+#line 5328 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -5323,7 +5350,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 5327 "mdfix.c"
+#line 5354 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -5372,7 +5399,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 5376 "mdfix.c"
+#line 5403 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -5452,7 +5479,7 @@ case 13:
 
 	}
 
-#line 5121 "mdfix.rl"
+#line 5148 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';

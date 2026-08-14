@@ -406,6 +406,28 @@ abbreviated. `apply_scanner()` already refused prose edits that change a
 line's block type — it was asking the narrow reading, to which a fancy marker
 is prose both before and after. It now asks the widest one.
 
+**Click consonants** (#102). The space-after-punctuation rule keyed on what
+*follows* the mark, which is right for `,` `;` `:` `.` and wrong for `!`.
+Khoisan orthography writes a click with a leading `!` — `!Kung`, `!kia`,
+`!kanna` — so "`!` then a letter" re-spelled every San term it met. `!` and
+`?` are now sentence-final only after a letter or digit, which the vendored
+word table answers, so a letter in any script counts.
+
+This is the most serious defect the tools have produced. It is a content
+change to a proper noun in a language that uses the character phonemically; it
+is invisible on the page, because `! Kung` reads as prose that happens to end
+a sentence; and it **shipped** — Volume 1 of *Evolution of the Sacred* went to
+print with it, and `git log -S'! Kung'` names the commit `Ran mdfix.`
+
+Two things are worth keeping from how it stayed hidden. The rule's only
+legitimate repair is `Wow!Next`, and over 511 files of manuscript it fired
+four times, all clicks, all damage — a branch with no true positive in its
+history. And the document disagreed with itself: footnote definitions skip the
+prose scanner (deliberately — they are structural, like reference
+definitions), so the same term survived in a note and broke in the body two
+lines above. A rule that damages text is easier to see than a rule that
+damages it inconsistently.
+
 **Chicago ellipsis.** A spaced run (`. . .`) or a run of four or more dots now
 becomes U+2026 `…` rather than ASCII `...`, under every flag that rewrites
 one. `--chicago-punct-2` was the awkward half: it reached `...` by stripping
