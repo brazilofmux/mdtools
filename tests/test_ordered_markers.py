@@ -142,6 +142,14 @@ class ClassificationTests(MarkerTestCase):
                           if r.get("depth")]
                 self.assertEqual([r["kind"] for r in nested], ["paragraph"])
 
+    def test_prose_under_an_empty_item_is_reachable(self) -> None:
+        # list_content_column used to return -1 on `1.`, so emit_list_children
+        # skipped the item and the wrapped line never became a nested paragraph.
+        source = "1.\n   more\n"
+        self.assertEqual(self._top_kinds(source), ["list"])
+        nested = [r for r in self._records(source) if r.get("depth")]
+        self.assertEqual([r["kind"] for r in nested], ["paragraph"])
+
     def test_a_tab_separates_as_two_columns(self) -> None:
         # Pandoc expands tabs before parsing, so `A.` then a tab reaches
         # column 4 — the two columns the initials rule wants.
@@ -267,6 +275,24 @@ class ContextTests(MarkerTestCase):
                          ["BulletList", "OrderedList"])
         self.assertEqual(self._top_kinds("- item\na. x\n"), ["list", "list"])
 
+    def test_tab_and_empty_bullets_share_a_style(self) -> None:
+        # list_style used to require a literal space, so `-` and `-\ty` were
+        # style 0 and split off from `- x`.
+        for source in ("- x\n-\n", "- x\n-\ty\n"):
+            with self.subTest(source=source):
+                self.assertEqual(self._top_kinds(source), ["list"])
+                if PANDOC:
+                    self.assertEqual(self._blocks(source), ["BulletList"])
+
+    def test_a_tab_bullet_is_not_an_ordered_list(self) -> None:
+        # Style 0 also disabled the style check, so `-\tx` then `1. y`
+        # collapsed into one record.
+        source = "-\tx\n1. y\n"
+        self.assertEqual(self._top_kinds(source), ["list", "list"])
+        if PANDOC:
+            self.assertEqual(self._blocks(source),
+                             ["BulletList", "OrderedList"])
+
     def test_wrapped_prose_is_why(self) -> None:
         # Verbatim from slow32-book, and the only marker-shaped line in 339
         # files across the corpora. `C. They built` is the third line of a
@@ -325,6 +351,15 @@ class RepairTests(MarkerTestCase):
         source = "A.  First item whose text\n    wraps onto a second line.\n"
         self.assertEqual(self._fix(source), source)
         self.assertEqual(self._top_kinds(source), ["list"])
+
+    def test_an_empty_item_resets_the_content_column(self) -> None:
+        # `123456. foo` is content column 8; empty `2.` is column 3. Seven
+        # spaces then is indented code (3+4), so --technical must leave
+        # the arrow alone rather than rewrite it as prose. The width has
+        # to live in the marker: extra spaces after `1.` collapse under
+        # --technical before the column is measured.
+        source = "123456. foo\n2.\n       code -> here\n"
+        self.assertEqual(self._fix(source, "--technical"), source)
 
 
 @unittest.skipUnless(PANDOC, "pandoc not installed")

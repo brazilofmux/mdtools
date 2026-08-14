@@ -727,8 +727,7 @@ static int list_style(const char *line)
     int i = 0;
     while (line[i] == ' ' || line[i] == '\t')
         i++;
-    if ((line[i] == '-' || line[i] == '*' || line[i] == '+')
-        && line[i + 1] == ' ')
+    if (find_bullet(line) >= 0)
         return 1;
 
     int paren = (line[i] == '(');
@@ -1081,6 +1080,7 @@ static int is_list_continuation(const char *line)
 /*
  * Column where a list item's content begins — past the marker and the
  * whitespace after it. `- x` gives 2, `1. x` gives 3, `    - x` gives 6.
+ * An empty item (`1.`, `-`) implies one column, the same as a trailing space.
  *
  * Indented code nested in a list starts four columns past *this*, not four
  * past the margin, so without it either list continuations get frozen as code
@@ -1112,8 +1112,10 @@ static int list_content_column(const char *line)
         i++;
         spaces++;
     }
-    /* A marker with no following space is not a list item. */
-    return spaces ? col : -1;
+    /* End of line is a separator: the implied space after the delimiter. */
+    if (!spaces)
+        return (line[i] == '\0') ? col + 1 : -1;
+    return col;
 }
 
 static int is_table_line(const char *line)
@@ -2065,7 +2067,7 @@ static int list_marker_bytes(const char *line)
     int i = chars;
     if (line[i] == '-' || line[i] == '*' || line[i] == '+') {
         i++;
-        if (line[i] != ' ' && line[i] != '\t')
+        if (line[i] != ' ' && line[i] != '\t' && line[i] != '\0')
             return -1;
     } else {
         /* Same helper as classify(), so `1)` items get nested prose too. */
@@ -3071,13 +3073,7 @@ static int fix_bullet(char *line, int linenum)
     int pos = find_bullet(line);
     if (pos < 0 || line[pos] == '-')
         return 0;
-    /*
-     * Never on an empty item. `*` alone is a bullet, and `-` alone is a
-     * bullet, but `-` alone is also a table's dash row and a setext
-     * underline — so the marker this pass exists to normalize is the one
-     * whose spelling carries structure. The fuzzer found both: `*` under a
-     * paragraph became a heading, and `*` under `---` became a table.
-     */
+    /* Empty `*`/`+` is a marker; rewriting it to `-` invents a heading or a table. */
     if (is_blank(line + pos + 1))
         return 0;
 
@@ -4720,7 +4716,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 4724 "mdfix.c"
+#line 4720 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -4728,20 +4724,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 4732 "mdfix.c"
+#line 4728 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 5118 "mdfix.rl"
+#line 5114 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 4868 "mdfix.rl"
+#line 4864 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -4781,7 +4777,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 4744 "mdfix.rl"
+#line 4740 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial || ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -4818,19 +4814,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 4737 "mdfix.rl"
+#line 4733 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 4737 "mdfix.rl"
+#line 4733 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 5053 "mdfix.rl"
+#line 5049 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -4854,7 +4850,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 5098 "mdfix.rl"
+#line 5094 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -4875,7 +4871,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 5076 "mdfix.rl"
+#line 5072 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -4898,13 +4894,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 5118 "mdfix.rl"
+#line 5114 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 4998 "mdfix.rl"
+#line 4994 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -4927,7 +4923,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 4910 "mdfix.rl"
+#line 4906 "mdfix.rl"
 	{te = p+1;{
                 /*
                  * Either Chicago flag answers "is this run an ellipsis?"
@@ -4978,13 +4974,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 5118 "mdfix.rl"
+#line 5114 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 4960 "mdfix.rl"
+#line 4956 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -5023,7 +5019,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 5020 "mdfix.rl"
+#line 5016 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -5057,7 +5053,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 4806 "mdfix.rl"
+#line 4802 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5070,7 +5066,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 4780 "mdfix.rl"
+#line 4776 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5084,7 +5080,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 4818 "mdfix.rl"
+#line 4814 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5097,7 +5093,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 4793 "mdfix.rl"
+#line 4789 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5111,7 +5107,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 4830 "mdfix.rl"
+#line 4826 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -5150,7 +5146,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 4737 "mdfix.rl"
+#line 4733 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -5163,7 +5159,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 5167 "mdfix.c"
+#line 5163 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -5189,7 +5185,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 5193 "mdfix.c"
+#line 5189 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -5233,7 +5229,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 5237 "mdfix.c"
+#line 5233 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -5282,7 +5278,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 5286 "mdfix.c"
+#line 5282 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -5301,7 +5297,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 5305 "mdfix.c"
+#line 5301 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -5327,7 +5323,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 5331 "mdfix.c"
+#line 5327 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -5376,7 +5372,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 5380 "mdfix.c"
+#line 5376 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -5456,7 +5452,7 @@ case 13:
 
 	}
 
-#line 5125 "mdfix.rl"
+#line 5121 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';
@@ -5900,12 +5896,6 @@ static void process(FILE *out)
 
         /* Apply post-scanner C fixers */
         fix_trailing_ws(line, i + 1, i);
-        /*
-         * Only on a line this context calls a bullet. `*` alone under a
-         * paragraph is not one — and normalizing it to `-` there turns the
-         * paragraph above into a setext heading, which the fuzzer found the
-         * moment an empty item became a marker.
-         */
         if (type == LT_BULLET)
             fix_bullet(line, i + 1);
         /* `#. x` is a list, not a heading; R3 must not insert a space there. */
@@ -5940,11 +5930,6 @@ static void process(FILE *out)
              * continue. `list_content_col` is the test that survives a blank
              * line, which `prev_was_list_ctx` deliberately does not — nested
              * content after a blank is still inside its item.
-             *
-             * Without the guard, a paragraph whose *first* line happens to be
-             * indented two spaces entered list context on its own, and the
-             * blank-after-list repair then split it in two. No list was
-             * involved anywhere in the document.
              */
             prev_was_list_ctx = 1;
             /*

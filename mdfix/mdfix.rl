@@ -719,8 +719,7 @@ static int list_style(const char *line)
     int i = 0;
     while (line[i] == ' ' || line[i] == '\t')
         i++;
-    if ((line[i] == '-' || line[i] == '*' || line[i] == '+')
-        && line[i + 1] == ' ')
+    if (find_bullet(line) >= 0)
         return 1;
 
     int paren = (line[i] == '(');
@@ -1073,6 +1072,7 @@ static int is_list_continuation(const char *line)
 /*
  * Column where a list item's content begins — past the marker and the
  * whitespace after it. `- x` gives 2, `1. x` gives 3, `    - x` gives 6.
+ * An empty item (`1.`, `-`) implies one column, the same as a trailing space.
  *
  * Indented code nested in a list starts four columns past *this*, not four
  * past the margin, so without it either list continuations get frozen as code
@@ -1104,8 +1104,10 @@ static int list_content_column(const char *line)
         i++;
         spaces++;
     }
-    /* A marker with no following space is not a list item. */
-    return spaces ? col : -1;
+    /* End of line is a separator: the implied space after the delimiter. */
+    if (!spaces)
+        return (line[i] == '\0') ? col + 1 : -1;
+    return col;
 }
 
 static int is_table_line(const char *line)
@@ -2057,7 +2059,7 @@ static int list_marker_bytes(const char *line)
     int i = chars;
     if (line[i] == '-' || line[i] == '*' || line[i] == '+') {
         i++;
-        if (line[i] != ' ' && line[i] != '\t')
+        if (line[i] != ' ' && line[i] != '\t' && line[i] != '\0')
             return -1;
     } else {
         /* Same helper as classify(), so `1)` items get nested prose too. */
@@ -3063,13 +3065,7 @@ static int fix_bullet(char *line, int linenum)
     int pos = find_bullet(line);
     if (pos < 0 || line[pos] == '-')
         return 0;
-    /*
-     * Never on an empty item. `*` alone is a bullet, and `-` alone is a
-     * bullet, but `-` alone is also a table's dash row and a setext
-     * underline — so the marker this pass exists to normalize is the one
-     * whose spelling carries structure. The fuzzer found both: `*` under a
-     * paragraph became a heading, and `*` under `---` became a table.
-     */
+    /* Empty `*`/`+` is a marker; rewriting it to `-` invents a heading or a table. */
     if (is_blank(line + pos + 1))
         return 0;
 
@@ -5565,12 +5561,6 @@ static void process(FILE *out)
 
         /* Apply post-scanner C fixers */
         fix_trailing_ws(line, i + 1, i);
-        /*
-         * Only on a line this context calls a bullet. `*` alone under a
-         * paragraph is not one — and normalizing it to `-` there turns the
-         * paragraph above into a setext heading, which the fuzzer found the
-         * moment an empty item became a marker.
-         */
         if (type == LT_BULLET)
             fix_bullet(line, i + 1);
         /* `#. x` is a list, not a heading; R3 must not insert a space there. */
@@ -5605,11 +5595,6 @@ static void process(FILE *out)
              * continue. `list_content_col` is the test that survives a blank
              * line, which `prev_was_list_ctx` deliberately does not — nested
              * content after a blank is still inside its item.
-             *
-             * Without the guard, a paragraph whose *first* line happens to be
-             * indented two spaces entered list context on its own, and the
-             * blank-after-list repair then split it in two. No list was
-             * involved anywhere in the document.
              */
             prev_was_list_ctx = 1;
             /*
