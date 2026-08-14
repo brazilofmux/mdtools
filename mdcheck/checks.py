@@ -110,10 +110,23 @@ def check_document(path: Path, mdfix: Optional[str] = None,
     saw_frontmatter = False
     front_data: Optional[dict] = None
     citations: List[dict] = []
+    previous_level: Optional[int] = None
     for record in records:
         kind = record["kind"]
 
-        if kind == "image":
+        if kind == "heading":
+            level = record.get("level")
+            # The IR emits no heading inside a quote or list item.
+            if isinstance(level, int):
+                # The first heading has nothing to descend from, so a
+                # chapter that opens at `##` is not a finding.
+                if previous_level is not None and level > previous_level + 1:
+                    add("check.heading-skip", "warning", record,
+                        f"h{previous_level} is followed by h{level}; "
+                        f"h{previous_level + 1} is missing")
+                previous_level = level
+
+        elif kind == "image":
             destination = record.get("destination", "")
             if not record.get("text"):
                 add("check.image-alt", "warning", record,

@@ -20,6 +20,7 @@ from pathlib import Path
 
 from mdcheck import __main__ as cli
 from mdcheck.checks import discover, run
+from mdquery.ir import raw_records
 
 ROOT = Path(__file__).resolve().parents[1]
 MDFIX = ROOT / "mdfix" / "mdfix"
@@ -102,6 +103,84 @@ class OwnChecksTests(CheckTestCase):
     def test_lossy_constructs_are_warnings(self) -> None:
         self._doc("# T\n\n$$\nx = 1\n$$\n")
         self.assertIn("check.lossy-math", self._rules())
+
+
+class HeadingSkipTests(CheckTestCase):
+    """
+    `check.heading-skip` (issue #99): a level reached without passing through
+    the one above it.
+
+    Nothing is broken by a skip — which is how two chapters of *An Agnostic's
+    Guide to the Bible* carried one through six volumes and a full editorial
+    pass. The consequence is that the sections render a size smaller than
+    their peers and nest a level deeper in the navigation: the document says
+    a structure the author did not mean.
+
+    There is no safe repair — the heading might want to be `##`, or the file
+    might want a `##` above it — so this is a warning and stays one.
+    """
+
+    def test_a_skipped_level_is_reported(self) -> None:
+        self._doc("# Title\n\n### Section\n\ntext\n")
+        self.assertIn("check.heading-skip", self._rules())
+
+    def test_a_descent_of_one_is_silent(self) -> None:
+        self._doc("# Title\n\n## Section\n\n### Sub\n\n#### Deeper\n")
+        self.assertNotIn("check.heading-skip", self._rules())
+
+    def test_climbing_back_up_any_distance_is_silent(self) -> None:
+        # `####` then `#` is not a skip: the level above has been passed
+        # through already, and every book does this at a chapter boundary.
+        self._doc("# T\n\n## A\n\n### B\n\n#### C\n\n# Next\n")
+        self.assertNotIn("check.heading-skip", self._rules())
+
+    def test_a_file_may_start_at_any_level(self) -> None:
+        # A chapter file that opens at `##` has nothing to descend from. The
+        # rule is about the sequence, not about where it starts — otherwise
+        # every included fragment in a book reports one.
+        for opener in ("## Section\n\n### Sub\n", "### Deep\n\n#### Deeper\n"):
+            with self.subTest(opener=opener):
+                self._doc(opener)
+                self.assertNotIn("check.heading-skip", self._rules())
+
+    def test_the_report_names_both_levels(self) -> None:
+        self._doc("# Title\n\n### Section\n")
+        finding = next(f for f in run([self.dir])
+                       if f.rule == "check.heading-skip")
+        self.assertEqual(finding.severity, "warning")
+        self.assertEqual(finding.line, 3)
+        self.assertIn("h1", finding.message)
+        self.assertIn("h3", finding.message)
+
+    def test_it_fires_once_per_run_of_skipped_headings(self) -> None:
+        # The corpus shape: a chapter that uses `###` where its peers use
+        # `##`. After the first, the level is no longer a skip — so the file
+        # reports once rather than eleven times.
+        self._doc("# Title\n\n### A\n\n### B\n\n### C\n")
+        rules = [f.rule for f in run([self.dir])]
+        self.assertEqual(rules.count("check.heading-skip"), 1)
+
+    def test_the_sequence_does_not_run_between_files(self) -> None:
+        # `#` then `###` would skip if previous_level leaked across files.
+        self._doc("# One\n", name="a.md")
+        self._doc("### Three\n", name="b.md")
+        self.assertNotIn("check.heading-skip", self._rules())
+
+    def test_setext_headings_take_part(self) -> None:
+        self._doc("Title\n=====\n\n### Section\n")
+        self.assertIn("check.heading-skip", self._rules())
+
+    def test_every_heading_record_is_the_outline(self) -> None:
+        # Why the sequence needs no depth filter: the IR emits no heading
+        # record nested inside a block quote or a list item, so there is no
+        # nested heading to exclude. Pinning the fact rather than writing a
+        # guard nothing can exercise — if the IR ever descends, this fails and
+        # whoever changed it decides what the outline means.
+        path = self._doc("# T\n\n> ### Quoted\n\n- item\n\n  ### Indented\n")
+        levels = [(r.get("level"), r.get("depth"))
+                  for r in raw_records([path]) if r["kind"] == "heading"]
+        self.assertEqual(levels, [(1, None)])
+        self.assertNotIn("check.heading-skip", self._rules())
 
 
 class CompositionTests(CheckTestCase):
