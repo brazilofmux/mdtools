@@ -249,15 +249,26 @@ also carry `label` and `destination`). Collapsed `[text][]` emits
 ### Ordered-list markers
 
 `+fancy_lists`, `+startnum` and `+example_lists` are pinned, so Pandoc reads
-several marker forms as an `OrderedList`. mdfix recognizes the decimal forms
-`1. `, `23. ` and `1) `.
+several marker forms as an `OrderedList`, and mdfix now reads them:
+decimal (`1. `, `1) `, `(1) `, `#. `), alpha (`a. `, `A) `, `(a) `),
+roman (`iv) `, `IV. `, `(iv) `) and example lists (`@lab. `, `(@lab) `).
+Lowercase `p.` followed by a digit is a page number, not a list.
 
-**Alpha, roman, and example-list markers** — `a.`, `iv)`, `@lab.`, `(@lab)` —
-are deliberately not recognized, a divergence pinned in
-`tests/test_ordered_markers.py`. The first two collide with hard-wrapped
-prose; the last two are also mid-prose citations. Closing this needs Pandoc's
-rule — a list cannot interrupt a paragraph — rather than a wider predicate.
-Issue #90.
+What made the fancy forms unsafe was never the spelling — it was the missing
+context. Pandoc leaves `lists_without_preceding_blankline` **off**, so no list
+interrupts a paragraph, which is the whole of why a hard-wrapped
+`C. They built a real toolchain.` stays prose. `classify_ctx()` carries that
+rule, and three sub-rules come with it, each checked against Pandoc rather
+than read off a spec:
+
+- an uppercase marker ending in a period wants **two columns** after it, so
+  `B. Russell wrote` is prose and `B.  Russell wrote` is a list;
+- that rule keys on the numeral's **value**, so `IV. ` is a list and `IVI. `
+  — 5, spelled the long way — is not;
+- roman numerals are Pandoc's **loose** kind: `iiii` and `ivi` parse, `did`
+  and `ll` do not.
+
+Pinned in `tests/test_ordered_markers.py`. Issue #90.
 
 ### Citations
 
@@ -277,8 +288,9 @@ list, not a citation.
 That last one is `+example_lists`, also pinned. Pandoc reads `@label.` at the
 start of a block as an `OrderedList` marker and emits no citation at all, so
 mdfix does not either — otherwise mdcheck would report an unresolved citation
-for a list marker. (mdfix does not classify example lists as lists; that
-still needs the interruption rule on #90.)
+for a list marker. Since #90 the two halves agree: the same line is also
+classified as a list, so the marker is structure to both scanners rather than
+structure to one and prose to the other.
 
 **Under-reporting is the safe direction.** Citations inside link text are
 missed, because the link scanner consumes the bracket without descending into

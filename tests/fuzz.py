@@ -54,6 +54,15 @@ BLOCKS = [
     "Text{n}[^f{n}] here.", "[^f{n}]: Footnote {n}.",
     "- item {n}\n- item {n}b", "* star {n}\n+ plus {n}",
     "1. one {n}\n2. two {n}", "1) paren {n}",
+    # Fancy and example-list markers (#90). Each of these opens a list only
+    # where no paragraph is open, so the generator's separators — which put
+    # them after prose as often as after a blank — are the point.
+    "a. alpha {n}\nb. beta {n}", "iv) roman {n}", "IV. upper {n}",
+    "#. hash {n}", "(1) paren-num {n}", "(a) paren-alpha {n}",
+    "p. 1 is a page {n}",
+    "A.  initial {n}", "A. not a list {n}", "mix. roman word {n}",
+    "@lab{n}. example", "(@lab{n}) example", "@. anonymous {n}",
+    "Wrapped prose that ends a line\nC. and continues here {n}.",
     "- outer {n}\n  - inner {n}\n\n    para in item",
     "> quote {n}\n> more", ">quote{n}", "> > nested {n}",
     "```\ncode {n}\n```", "```python\ncode {n}\n```", "~~~\ntilde {n}\n~~~",
@@ -293,12 +302,16 @@ def _blank_before_list_after_continuation(data: bytes) -> bool:
     repair fires on the wrapped output and not on the unwrapped one — the
     same document, two block structures.
 
-    Which way that should resolve is a question about **R2's premise**, not a
-    bug with an obvious fix. Pandoc 3.10 reads *no* ordered marker as
-    interrupting a paragraph — not even `1.` — so the repair is deliberately
-    creating a list the reader would not have seen, which is allowed (I2.1's
-    stated exception) but worth deciding on purpose rather than by whether a
-    continuation line happened to be joined first.
+    R2's premise is now decided (dialect-policy §7): Pandoc 3.10 reads *no*
+    ordered marker as interrupting a paragraph — not even `1.` — and the
+    repair creates the list the author was plainly writing anyway. That is
+    what the required set is for.
+
+    What stays pinned is narrower and is still a wart: *whether* the repair
+    fires depends on whether a continuation line happened to be joined first,
+    so the same document takes two block structures depending on `--wrap`.
+    Deciding R2's premise did not decide that, and it is the reason this entry
+    survives rather than being deleted with the question that produced it.
     """
     lines = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n").split(b"\n")
     for i in range(len(lines) - 2):
