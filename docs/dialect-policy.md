@@ -266,7 +266,7 @@ reproduced byte for byte; "prose" means eligible for rewriting.
 | ATX / setext heading | `Header` | structural | protected | ok |
 | Fenced code | `CodeBlock` | protected | protected | ok |
 | Indented code | `CodeBlock` | protected | protected | ok |
-| Pipe table | `Table` | **prose rewrites in cells** | protected | **partial** |
+| Pipe table | `Table` | no scanner; trailing space after `\|` still stripped | protected | ok |
 | Simple table | `Table` | protected | protected | ok |
 | Grid table | `Table` | protected | protected | ok |
 | Multiline table | `Table` | protected | protected | ok |

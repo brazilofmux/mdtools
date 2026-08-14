@@ -6044,19 +6044,7 @@ static void process(FILE *out)
         fix_pandoc_safe_links(line, i + 1);
         fix_blockquote_space(line, i + 1);
 
-        /*
-         * Ragel scanner: arrow aside, bold-colon, Chicago punct, abbrevs.
-         *
-         * Never inside a pipe-table row. The scanner reads a line as a
-         * sentence, and a row is not one: `| ...  | ...` gives
-         * space-before-punct a space in front of what it takes for sentence
-         * punctuation, so it deletes it and welds the delimiter to the cell.
-         * That moves the boundary between structure and content, which is
-         * damage rather than typography (#117).
-         *
-         * The same reasoning mdterms already applies — only prose is
-         * checked — and it closes dialect-policy §7's fourth gap.
-         */
+        /* A table row is not a sentence; Chicago/arrow must not move `|`. */
         if (!pipe_table_line[i])
             apply_scanner(line, i + 1);
 

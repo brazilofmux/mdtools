@@ -47,8 +47,8 @@ $ mdquery blocks README.md --kind code_fence --protected
 
 `--protected` comes straight from the IR, so it is a claim about what the
 fixer actually does rather than about what the construct is in principle. A
-pipe table is a table and is *not* protected, because mdfix rewrites
-punctuation inside its cells.
+pipe table is a table and is *not* protected, because trailing whitespace
+after the final `|` is still stripped. No prose pass runs on a table row.
 
 ### Sections
 

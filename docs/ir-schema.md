@@ -172,9 +172,10 @@ from a line block. Pinned with `pandoc -t json`:
 | a | b | / | 1 | 2 |               -> LineBlock
 ```
 
-Distinguishing them is new in this schema. mdfix's fixer still treats both as
-prose, which is why both carry `"protected": false` — the IR reports the
-structure correctly while being honest that the fixer does not yet respect it.
+Distinguishing them is new in this schema. Line blocks stay unprotected
+because the fixer still treats them as prose. Pipe tables stay unprotected
+only because `fix_trailing_ws` still strips whitespace after the final `|`
+— no prose pass runs on a table row.
 
 ## Nested prose
 
