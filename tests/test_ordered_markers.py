@@ -10,7 +10,8 @@ What made the rest unsafe was never the spelling — it was the missing context.
 Pandoc leaves `lists_without_preceding_blankline` off, so *nothing* opens a
 list in the middle of a paragraph, and that is the whole of why a hard-wrapped
 `C. They built a real toolchain.` stays prose. mdfix now carries the same rule,
-and with it every form Pandoc reads.
+and with it the forms Pandoc reads — including `#.`, `(1)` and `(a)`.
+Lowercase `p.` followed by a digit is a page number, not a list.
 
 Three sub-rules come with the fancy forms, and each one is Pandoc's, checked
 against it rather than read off a spec:
@@ -36,9 +37,9 @@ ROOT = Path(__file__).resolve().parents[1]
 MDFIX = ROOT / "mdfix" / "mdfix"
 PANDOC = shutil.which("pandoc")
 
-DECIMAL = ("1. x", "23. x", "1) x")
-ALPHA = ("a. x", "z) x", "A) x", "A.  x")
-ROMAN = ("i. x", "iv) x", "IV. x", "mix. x", "I.  x")
+DECIMAL = ("1. x", "23. x", "1) x", "(1) x", "#. x", "#) x", "(#) x")
+ALPHA = ("a. x", "z) x", "A) x", "A.  x", "(a) x", "p. one")
+ROMAN = ("i. x", "iv) x", "IV. x", "mix. x", "I.  x", "(iv) x")
 EXAMPLE = ("@lab. x", "@. x", "@lab) x", "(@lab) x", "(@) x")
 
 FANCY = ALPHA + ROMAN + EXAMPLE
@@ -55,6 +56,7 @@ NOT_MARKERS = (
     "é. x",       # alpha markers are ASCII
     "1.x",        # every form needs a separator
     "a.x",
+    "p. 1",       # page number, not a list
 )
 
 
@@ -170,10 +172,26 @@ class ContextTests(MarkerTestCase):
 
     def test_a_marker_opens_a_list_after_anything_but_a_paragraph(self) -> None:
         for before in ("", "# Heading\n", "1. item\n", "- item\n",
-                       "para text\n\n", "```\ncode\n```\n"):
+                       "para text\n\n", "```\ncode\n```\n",
+                       "***\n", "---\n",
+                       "| a | b |\n|---|---|\n| 1 | 2 |\n",
+                       "---\ntitle: x\n---\n"):
             with self.subTest(before=before):
                 kinds = self._top_kinds(before + "a. x\n")
                 self.assertEqual(kinds[-1], "list")
+
+    def test_a_two_item_fancy_list_is_one_record(self) -> None:
+        for source in ("a. first\nb. second\n",
+                       "a. first\n\nb. second\n"):
+            with self.subTest(source=source):
+                self.assertEqual(self._top_kinds(source), ["list"])
+
+    def test_a_wrapped_sibling_stays_one_list(self) -> None:
+        source = ("a. First item whose text\n"
+                  "   wraps onto a second line.\n"
+                  "b. Second item.\n")
+        self.assertEqual(self._top_kinds(source), ["list"])
+        self.assertEqual(self._fix(source), source)
 
     @unittest.skipUnless(PANDOC, "pandoc not installed")
     def test_pandoc_agrees_a_marker_line_ends_a_list_item(self) -> None:

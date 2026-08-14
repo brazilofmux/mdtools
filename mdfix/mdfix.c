@@ -377,11 +377,11 @@ static int find_bullet(const char *line)
 }
 
 /*
- * A decimal ordered-list marker: `1. ` or `1) `.
+ * A decimal ordered-list marker: `1. `, `1) `, `(1) `, `#. `, `#) `, `(#)`.
  *
- * Context-free, because Pandoc reads a decimal marker as a list wherever a
- * list may begin. The fancy spellings are in fancy_marker_len(), which needs
- * to know whether a paragraph is open.
+ * `#` is Pandoc's default start number. Context-free, because these forms
+ * still classify mid-paragraph so R2 can create the list the author meant.
+ * The fancy spellings are in fancy_marker_len().
  */
 static int decimal_marker_len(const char *line)
 {
@@ -389,10 +389,22 @@ static int decimal_marker_len(const char *line)
     while (line[i] == ' ' || line[i] == '\t')
         i++;
     int start = i;
-    if (!isdigit((unsigned char)line[i]))
-        return 0;
-    while (isdigit((unsigned char)line[i]))
+    int paren = (line[i] == '(');
+    if (paren)
         i++;
+    if (line[i] == '#') {
+        i++;
+    } else if (isdigit((unsigned char)line[i])) {
+        while (isdigit((unsigned char)line[i]))
+            i++;
+    } else {
+        return 0;
+    }
+    if (paren) {
+        if (line[i] != ')' || line[i + 1] != ' ')
+            return 0;
+        return i + 2 - start;
+    }
     if ((line[i] == '.' || line[i] == ')') && line[i + 1] == ' ')
         return i + 2 - start;
     return 0;
@@ -491,9 +503,6 @@ static int space_columns(const char *s, int col)
  *
  * Returns bytes consumed and, in *value, the number — which the caller needs
  * because the initials rule keys on the value, not the spelling.
- *
- * Verified against pandoc over every 1–4 letter string in each case, both
- * delimiters, one and two spaces: 22,608 spellings, zero disagreements.
  */
 static int roman_numeral(const char *s, int upper, int *value)
 {
@@ -598,27 +607,44 @@ static int fancy_marker_len(const char *line)
     if (example > 0) {
         i += example;
     } else {
-        int j = i;
+        int paren = (line[i] == '(');
+        int body = i + (paren ? 1 : 0);
+        int j = body;
         while (isalpha((unsigned char)line[j]))
             j++;
-        int len = j - i;
-        if (len == 0 || (line[j] != '.' && line[j] != ')'))
+        int len = j - body;
+        if (len == 0)
             return 0;
+        if (paren) {
+            if (line[j] != ')')
+                return 0;
+        } else if (line[j] != '.' && line[j] != ')') {
+            return 0;
+        }
 
-        int upper = isupper((unsigned char)line[i]);
+        int upper = isupper((unsigned char)line[body]);
         int value = 0;
-        int roman = (roman_numeral(line + i, upper, &value) == len);
+        int roman = (roman_numeral(line + body, upper, &value) == len);
         if (len != 1 && !roman)
             return 0;
 
+        /* Pandoc reads lowercase `p.` + digit as a page number, not a list. */
+        if (!paren && len == 1 && !upper && line[body] == 'p'
+            && line[j] == '.') {
+            int k = j + 1;
+            while (line[k] == ' ' || line[k] == '\t')
+                k++;
+            if (isdigit((unsigned char)line[k]))
+                return 0;
+        }
+
         /*
-         * Pandoc wants two columns after an uppercase marker ending in a
-         * period, because one column is how a name is abbreviated: without
-         * the rule, "B. Russell wrote" opens a list. It applies to a single
-         * letter and to the roman numerals a single letter spells, so `IV. `
-         * is a list and `I. ` is not.
+         * Two columns after an uppercase marker ending in a period: one
+         * column is how a name is abbreviated. Applies to a single letter
+         * and to the roman numerals a single letter spells, so `IV. ` is a
+         * list and `I. ` is not.
          */
-        if (line[j] == '.' && upper
+        if (!paren && line[j] == '.' && upper
             && (len == 1 || roman_is_one_letter_value(value)))
             need = 2;
         i = j + 1;
@@ -645,6 +671,71 @@ static int ordered_marker_len(const char *line)
 static int is_ordered(const char *line)
 {
     return ordered_marker_len(line) > 0;
+}
+
+/*
+ * Pandoc continues a list only when the next marker has the same style and
+ * delimiter. `- item` then `a. x` is two lists; `a.` then `b.` is one.
+ * `#.` shares decimal-period with `1.`.
+ */
+static int list_style(const char *line)
+{
+    int i = 0;
+    while (line[i] == ' ' || line[i] == '\t')
+        i++;
+    if ((line[i] == '-' || line[i] == '*' || line[i] == '+')
+        && line[i + 1] == ' ')
+        return 1;
+
+    int paren = (line[i] == '(');
+    int body = i + paren;
+    int kind;
+    int delim;
+
+    if (line[body] == '@') {
+        int n = example_marker_len(line + i);
+        if (n <= 0)
+            return 0;
+        kind = 7;
+        delim = paren ? 2 : (line[i + n - 1] == '.' ? 0 : 1);
+        return kind * 4 + delim;
+    }
+
+    if (line[body] == '#' || isdigit((unsigned char)line[body])) {
+        kind = 2;
+        if (paren) {
+            delim = 2;
+        } else {
+            int j = body;
+            if (line[j] == '#')
+                j++;
+            else
+                while (isdigit((unsigned char)line[j]))
+                    j++;
+            delim = (line[j] == '.') ? 0 : 1;
+        }
+        return kind * 4 + delim;
+    }
+
+    if (!isalpha((unsigned char)line[body]))
+        return 0;
+    int upper = isupper((unsigned char)line[body]);
+    int j = body;
+    while (isalpha((unsigned char)line[j]))
+        j++;
+    int len = j - body;
+    int value = 0;
+    int roman = (roman_numeral(line + body, upper, &value) == len);
+    if (len == 1 && roman)
+        kind = upper ? 6 : 5;
+    else if (len == 1)
+        kind = upper ? 4 : 3;
+    else if (roman)
+        kind = upper ? 6 : 5;
+    else
+        return 0;
+    delim = paren ? 2 : (line[j] == '.' ? 0 : 1);
+    return kind * 4 + delim;
 }
 
 static int fence_prefix(
@@ -911,9 +1002,11 @@ static int raw_html_line_has_end(const char *s, enum raw_html_kind kind)
  * either, which the oracle settles: `- item` then `a. x` is two lists to
  * Pandoc, not one item with a lazy continuation.
  */
-static int paragraph_is_open(int had_blank, enum linetype prev_content_type)
+static int paragraph_is_open(int had_blank, int prev_was_para)
 {
-    return !had_blank && prev_content_type == LT_TEXT;
+    /* LT_TEXT is also leftovers: continuations, pipe rows, thematic
+     * breaks, YAML closers. Only an actual paragraph blocks a fancy marker. */
+    return !had_blank && prev_was_para;
 }
 
 static int is_list_type(enum linetype t)
@@ -2473,6 +2566,7 @@ static void emit_ir(FILE *out, const char *source)
 
     struct fence_state fence = {0, 0, 0, 0, 0};
     enum linetype prev_content_type = LT_BLANK;
+    int prev_was_para = 0;
     int list_content_col = 0;
     int had_blank = 1;
     int i = 0;
@@ -2491,6 +2585,7 @@ static void emit_ir(FILE *out, const char *source)
             ir_block(out, "frontmatter", 0, close, 1);
             i = close + 1;
             prev_content_type = LT_TEXT;
+            prev_was_para = 0;
             had_blank = 0;
         }
     }
@@ -2498,7 +2593,7 @@ static void emit_ir(FILE *out, const char *source)
     for (; i < nlines; i++) {
         const char *line = lines[i];
         enum linetype type = classify_ctx(line, paragraph_is_open(had_blank,
-                                                                 prev_content_type));
+                                                                 prev_was_para));
 
         /* ── Code fence ── */
         if (parse_fence_opener(line, &fence)) {
@@ -2515,6 +2610,7 @@ static void emit_ir(FILE *out, const char *source)
             fputs("}\n", out);
             i = end;
             prev_content_type = LT_CODEFENCE;
+            prev_was_para = 0;
             had_blank = 0;
             continue;
         }
@@ -2536,6 +2632,7 @@ static void emit_ir(FILE *out, const char *source)
                 emit_inline_lines(out, i, table_end - 1, 1);
                 i = table_end - 1;
                 prev_content_type = LT_TABLEBLOCK;
+                prev_was_para = 0;
                 had_blank = 0;
                 continue;
             }
@@ -2558,6 +2655,7 @@ static void emit_ir(FILE *out, const char *source)
                 fprintf(out, ",\"htmlKind\":\"%s\"}\n", ir_raw_html_name(kind));
                 i = end;
                 prev_content_type = LT_RAWHTML;
+                prev_was_para = 0;
                 had_blank = 0;
                 continue;
             }
@@ -2592,6 +2690,7 @@ static void emit_ir(FILE *out, const char *source)
             ir_block(out, "code_indented", i, last, 1);
             i = last;
             prev_content_type = LT_INDENTCODE;
+            prev_was_para = 0;
             had_blank = 0;
             continue;
         }
@@ -2630,6 +2729,7 @@ static void emit_ir(FILE *out, const char *source)
             }
             i = end;
             prev_content_type = LT_TEXT;
+            prev_was_para = 0;
             list_content_col = 0;
             had_blank = 0;
             continue;
@@ -2639,6 +2739,7 @@ static void emit_ir(FILE *out, const char *source)
         if (type == LT_HEADING) {
             ir_emit_heading(out, i);
             prev_content_type = type;
+            prev_was_para = 0;
             list_content_col = 0;
             had_blank = 0;
             continue;
@@ -2681,6 +2782,7 @@ static void emit_ir(FILE *out, const char *source)
                         0);
             i++;
             prev_content_type = LT_HEADING;
+            prev_was_para = 0;
             list_content_col = 0;
             had_blank = 0;
             continue;
@@ -2690,6 +2792,7 @@ static void emit_ir(FILE *out, const char *source)
         if (is_thematic_break(line)) {
             ir_block(out, "thematic_break", i, i, 1);
             prev_content_type = LT_TEXT;
+            prev_was_para = 0;
             list_content_col = 0;
             had_blank = 0;
             continue;
@@ -2795,6 +2898,7 @@ static void emit_ir(FILE *out, const char *source)
                  * indented code may follow it with no blank line. Pandoc
                  * reads `[id]: http://x` then four spaces as a CodeBlock. */
                 prev_content_type = LT_REFDEF;
+                prev_was_para = 0;
                 list_content_col = 0;
                 had_blank = 0;
                 continue;
@@ -2809,13 +2913,18 @@ static void emit_ir(FILE *out, const char *source)
             int j = i;
             int last = i;
             int col = list_content_column(lines[i]);
+            int style = list_style(lines[i]);
             if (col >= 0)
                 list_content_col = col;
             for (j = i + 1; j < nlines; j++) {
                 if (is_blank(lines[j]))
                     continue;
-                enum linetype t = classify(lines[j]);
+                /* Inside a list, a paragraph is not open. classify() would
+                 * hide the next fancy sibling and split one list into two. */
+                enum linetype t = classify_ctx(lines[j], 0);
                 if (is_list_type(t)) {
+                    if (style && list_style(lines[j]) != style)
+                        break;
                     int c = list_content_column(lines[j]);
                     if (c >= 0)
                         list_content_col = c;
@@ -2835,6 +2944,7 @@ static void emit_ir(FILE *out, const char *source)
             emit_list_children(out, i, last, line_off[i]);
             i = last;
             prev_content_type = LT_BULLET;
+            prev_was_para = 0;
             had_blank = 0;
             continue;
         }
@@ -2850,6 +2960,7 @@ static void emit_ir(FILE *out, const char *source)
             emit_inline_lines(out, i, j, 1);
             i = j;
             prev_content_type = LT_TEXT;
+            prev_was_para = 0;
             list_content_col = 0;
             had_blank = 0;
             continue;
@@ -2879,6 +2990,7 @@ static void emit_ir(FILE *out, const char *source)
                             k == i);
             i = j;
             prev_content_type = LT_TEXT;
+            prev_was_para = 1;
             list_content_col = 0;
             had_blank = 0;
         }
@@ -4545,7 +4657,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 4549 "mdfix.c"
+#line 4661 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -4553,20 +4665,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 4557 "mdfix.c"
+#line 4669 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 4943 "mdfix.rl"
+#line 5055 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 4693 "mdfix.rl"
+#line 4805 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -4606,7 +4718,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 4569 "mdfix.rl"
+#line 4681 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial || ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -4643,19 +4755,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 4562 "mdfix.rl"
+#line 4674 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 4562 "mdfix.rl"
+#line 4674 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 4878 "mdfix.rl"
+#line 4990 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -4679,7 +4791,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 4923 "mdfix.rl"
+#line 5035 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -4700,7 +4812,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 4901 "mdfix.rl"
+#line 5013 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -4723,13 +4835,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 4943 "mdfix.rl"
+#line 5055 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 4823 "mdfix.rl"
+#line 4935 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
                 if (!ctx->skip_punct2 && ctx->do_chicago_punct2 && te < pe) {
@@ -4752,7 +4864,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 4735 "mdfix.rl"
+#line 4847 "mdfix.rl"
 	{te = p+1;{
                 /*
                  * Either Chicago flag answers "is this run an ellipsis?"
@@ -4803,13 +4915,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 4943 "mdfix.rl"
+#line 5055 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 4785 "mdfix.rl"
+#line 4897 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -4848,7 +4960,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 4845 "mdfix.rl"
+#line 4957 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -4882,7 +4994,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 4631 "mdfix.rl"
+#line 4743 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4895,7 +5007,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 4605 "mdfix.rl"
+#line 4717 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4909,7 +5021,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 4643 "mdfix.rl"
+#line 4755 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4922,7 +5034,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 4618 "mdfix.rl"
+#line 4730 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -4936,7 +5048,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 4655 "mdfix.rl"
+#line 4767 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -4975,7 +5087,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 4562 "mdfix.rl"
+#line 4674 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -4988,7 +5100,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 4992 "mdfix.c"
+#line 5104 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -5014,7 +5126,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 5018 "mdfix.c"
+#line 5130 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -5058,7 +5170,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 5062 "mdfix.c"
+#line 5174 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -5107,7 +5219,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 5111 "mdfix.c"
+#line 5223 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -5126,7 +5238,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 5130 "mdfix.c"
+#line 5242 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -5152,7 +5264,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 5156 "mdfix.c"
+#line 5268 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -5201,7 +5313,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 5205 "mdfix.c"
+#line 5317 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -5281,7 +5393,7 @@ case 13:
 
 	}
 
-#line 4950 "mdfix.rl"
+#line 5062 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';
@@ -5372,6 +5484,7 @@ static void process(FILE *out)
 
     enum linetype prev_content_type = LT_BLANK;
     int prev_was_list_ctx = 0;    /* was previous content in a list context? */
+    int prev_was_para = 0;
     /*
      * Content column of the enclosing list item. Indented code starts at
      * list_content_col + 4, not at margin + 4.
@@ -5390,7 +5503,7 @@ static void process(FILE *out)
         char *line = lines[i];
         enum linetype type = classify_ctx(line,
                                           paragraph_is_open(had_blank,
-                                                            prev_content_type));
+                                                            prev_was_para));
 
         /* YAML frontmatter: open only at line 0 when a closer exists.
          * Close at the precomputed line (--- or ...), not by LT_FMATTER —
@@ -5402,6 +5515,7 @@ static void process(FILE *out)
                 fix_trailing_ws(line, i + 1, i);
                 fprintf(out, "%s\n", line);
                 prev_content_type = LT_TEXT;
+                prev_was_para = 0;
                 had_blank = 0;
                 continue;
             }
@@ -5410,6 +5524,7 @@ static void process(FILE *out)
                 fix_trailing_ws(line, i + 1, i);
                 fprintf(out, "%s\n", line);
                 prev_content_type = LT_TEXT;
+                prev_was_para = 0;
                 had_blank = 0;
                 continue;
             }
@@ -5436,6 +5551,7 @@ static void process(FILE *out)
                 raw_html = RAW_HTML_NONE;
             /* Not LT_TEXT: indented code may follow a raw block with no blank. */
             prev_content_type = LT_RAWHTML;
+            prev_was_para = 0;
             had_blank = 0;
             continue;
         }
@@ -5474,6 +5590,7 @@ static void process(FILE *out)
             fprintf(out, "%s\n", line);
             /* Not LT_TEXT: indented code may follow a fence with no blank. */
             prev_content_type = LT_CODEFENCE;
+            prev_was_para = 0;
             had_blank = 0;
             continue;
         }
@@ -5502,6 +5619,7 @@ static void process(FILE *out)
                     fprintf(out, "%s\n", lines[i]);
                 i--;  /* the loop's own i++ moves past the last table line */
                 prev_content_type = LT_TABLEBLOCK;
+                prev_was_para = 0;
                 had_blank = 0;
                 continue;
             }
@@ -5522,6 +5640,7 @@ static void process(FILE *out)
                     raw_html = kind;
                 /* Not LT_TEXT: indented code may follow with no blank. */
                 prev_content_type = LT_RAWHTML;
+                prev_was_para = 0;
                 had_blank = 0;
                 continue;
             }
@@ -5547,6 +5666,7 @@ static void process(FILE *out)
             prev_was_list_ctx = 0;
             list_content_col = 0;
             prev_content_type = LT_HEADING;
+            prev_was_para = 0;
             had_blank = 0;
             continue;
         }
@@ -5564,6 +5684,7 @@ static void process(FILE *out)
             prev_was_list_ctx = 0;
             list_content_col = 0;
             prev_content_type = LT_TEXT;
+            prev_was_para = 0;
             had_blank = 0;
             continue;
         }
@@ -5606,6 +5727,7 @@ static void process(FILE *out)
                 prev_was_list_ctx = 0;
                 list_content_col = 0;
                 prev_content_type = LT_REFDEF;
+                prev_was_para = 0;
                 had_blank = 0;
                 continue;
             }
@@ -5616,6 +5738,7 @@ static void process(FILE *out)
             flush_paragraph(out);
             had_blank = 1;
             prev_was_list_ctx = 0;
+            prev_was_para = 0;
             fprintf(out, "\n");
             continue;
         }
@@ -5646,6 +5769,7 @@ static void process(FILE *out)
             flush_paragraph(out);
             fprintf(out, "%s\n", line);
             prev_content_type = type;
+            prev_was_para = 0;
             had_blank = 0;
             /* prev_was_list_ctx is left alone: code nested in a list item is
              * still inside that item. */
@@ -5665,10 +5789,8 @@ static void process(FILE *out)
          * intervening blank line, pandoc will choke — especially
          * when the preceding line ends with a colon.
          *
-         * The marker set R2 acts on is now exactly what classify_ctx() calls
-         * a list, and the separate narrower predicate is gone with it: a
-         * fancy marker in the one place R2 could fire on it — mid-paragraph —
-         * is no longer classified as a list at all.
+         * Fancy markers are not lists mid-paragraph, so R2 cannot fire
+         * on them there.
          */
         if (opt_required
             && !had_blank
@@ -5716,9 +5838,12 @@ static void process(FILE *out)
         /* Apply post-scanner C fixers */
         fix_trailing_ws(line, i + 1, i);
         fix_bullet(line, i + 1);
-        fix_heading_fmt(line, i + 1);
-        fix_heading_space(line, i + 1);
-        fix_heading_canonical(line, i + 1);
+        /* `#. x` is a list, not a heading; R3 must not insert a space there. */
+        if (!is_list_type(type)) {
+            fix_heading_fmt(line, i + 1);
+            fix_heading_space(line, i + 1);
+            fix_heading_canonical(line, i + 1);
+        }
         if (type == LT_TEXT) {
             lint_serial_comma(line, i + 1);
             lint_chicago_numbers(line, i + 1);
@@ -5756,6 +5881,10 @@ static void process(FILE *out)
         }
 
         prev_content_type = type;
+        prev_was_para = (type == LT_TEXT
+                         && !is_list_continuation(line)
+                         && !pipe_table_line[i]
+                         && !is_blockquote_line(line));
         had_blank = 0;
     }
 

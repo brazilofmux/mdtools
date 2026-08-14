@@ -249,9 +249,10 @@ also carry `label` and `destination`). Collapsed `[text][]` emits
 ### Ordered-list markers
 
 `+fancy_lists`, `+startnum` and `+example_lists` are pinned, so Pandoc reads
-several marker forms as an `OrderedList`, and mdfix now reads all of them:
-decimal (`1. `, `23. `, `1) `), alpha (`a. `, `A) `), roman (`iv) `, `IV. `)
-and example lists (`@lab. `, `(@lab) `).
+several marker forms as an `OrderedList`, and mdfix now reads them:
+decimal (`1. `, `1) `, `(1) `, `#. `), alpha (`a. `, `A) `, `(a) `),
+roman (`iv) `, `IV. `, `(iv) `) and example lists (`@lab. `, `(@lab) `).
+Lowercase `p.` followed by a digit is a page number, not a list.
 
 What made the fancy forms unsafe was never the spelling — it was the missing
 context. Pandoc leaves `lists_without_preceding_blankline` **off**, so no list
@@ -267,9 +268,7 @@ than read off a spec:
 - roman numerals are Pandoc's **loose** kind: `iiii` and `ivi` parse, `did`
   and `ll` do not.
 
-Pinned in `tests/test_ordered_markers.py` and swept against Pandoc over every
-1–4 letter spelling in each case, both delimiters, one and two separators:
-22,608 spellings, zero disagreements. Issue #90.
+Pinned in `tests/test_ordered_markers.py`. Issue #90.
 
 ### Citations
 

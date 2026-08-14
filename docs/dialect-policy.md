@@ -301,10 +301,6 @@ folds the whole thing into one paragraph and reports nothing, and the author
 finds out from the rendered book. I2.1's exception for the required set covers
 this, and the required set is where a repair like it belongs.
 
-The corpora settle the direction rather than taste: 669 bullets and 160
-decimal markers follow prose across the manuscripts, and every one of them is
-a list the author meant.
-
 Two consequences follow, and both are load-bearing:
 
 - **Where mdfix cannot tell, it must not guess.** The fancy marker forms below
@@ -361,13 +357,13 @@ on the line’s width and on `--tab-stop`, and mdfix will not encode a reader
 flag (§4).
 
 **Fancy and example-list markers** (#90). `a. `, `A) `, `iv) `, `IV. `,
-`@lab. ` and `(@lab) ` are `OrderedList` to Pandoc and were paragraphs to
-mdfix, which meant the prose passes rewrote inside a list. They are now
-classified wherever Pandoc classifies them — which is wherever no paragraph is
-open, `lists_without_preceding_blankline` being off — together with Pandoc's
-two-column rule for uppercase markers ending in a period and its loose roman
-parser. Swept against Pandoc over 22,608 marker spellings, zero
-disagreements; see [ir-schema.md](ir-schema.md).
+`@lab. `, `(1) `, `#. ` and `(a) ` are `OrderedList` to Pandoc and were
+paragraphs to mdfix, which meant the prose passes rewrote inside a list. They
+are now classified wherever Pandoc classifies them — which is wherever no
+paragraph is open, `lists_without_preceding_blankline` being off — together
+with Pandoc's two-column rule for uppercase markers ending in a period, its
+loose roman parser, and the `p. 1` page-number exception. See
+[ir-schema.md](ir-schema.md).
 
 Closing it also closed a **silent structure loss** that had nothing to do with
 classification. `A.  First.` is a list; the Chicago sentence-space rule saw a

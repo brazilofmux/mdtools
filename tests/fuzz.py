@@ -58,6 +58,8 @@ BLOCKS = [
     # where no paragraph is open, so the generator's separators — which put
     # them after prose as often as after a blank — are the point.
     "a. alpha {n}\nb. beta {n}", "iv) roman {n}", "IV. upper {n}",
+    "#. hash {n}", "(1) paren-num {n}", "(a) paren-alpha {n}",
+    "p. 1 is a page {n}",
     "A.  initial {n}", "A. not a list {n}", "mix. roman word {n}",
     "@lab{n}. example", "(@lab{n}) example", "@. anonymous {n}",
     "Wrapped prose that ends a line\nC. and continues here {n}.",
