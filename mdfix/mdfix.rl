@@ -3622,23 +3622,8 @@ static int punct_ends_a_word(const char *p, const char *pe)
 /* fix_chicago_space_before_punct — now handled by Ragel scanner */
 
 /*
- * `!` and `?` are sentence-final only after a word.
- *
- * The rest of this rule keys on what *follows* the mark, which is enough for
- * `,` `;` `:` `.` and wrong for `!`. Khoisan orthography writes a click with a
- * leading `!` — `!Kung`, `!kia`, `!kanna` — so a rule that fires on "`!` then
- * a letter" re-spells every San term it meets. It is a content change to a
- * proper noun, and `! Kung` reads as ordinary prose, so nothing catches it:
- * the damage shipped in Volume 1 of *Evolution of the Sacred* (#102).
- *
- * A preceding letter or digit is the whole of the difference. English does
- * not omit the space after a sentence-final `!` — `Wow!Next` is a typo, and
- * that is the only shape this branch can legitimately claim. A `!` that
- * follows a space, `(`, `*`, `[` or the start of a line is an orthographic
- * click, a Markdown image, or a shell fragment.
- *
- * Measured over 511 files of manuscript: 4 firings, all Khoisan clicks, all
- * damage. Zero true positives in the corpus this rule has ever run on.
+ * `!`/`?` are sentence-final only after a word character. A leading `!` is
+ * a click (or image/shell), not a sentence end.
  */
 static int should_insert_space_after_punct(unsigned char punct, unsigned char next,
                                            int prev_is_word)
