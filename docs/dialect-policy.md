@@ -428,6 +428,20 @@ definitions), so the same term survived in a note and broke in the body two
 lines above. A rule that damages text is easier to see than a rule that
 damages it inconsistently.
 
+**NFC over-reporting** (#103). `unicode.non-nfc` reported the UAX #15 quick
+check's *maybe* as a finding, which the documentation called the safe
+direction for a warning that rewrites nothing. It was not safe: Yorùbá needs
+U+1ECC followed by U+0300 constantly and Unicode has no precomposed character
+for that pair, so the warning was permanent on correct text and
+`--normalize-nfc` reported lines whose bytes it had not touched. A candidate
+is now confirmed by normalizing and comparing. Verified against CPython's
+`unicodedata` over 202,240 base-and-mark sequences, zero disagreements in
+either direction.
+
+Worth keeping: *over-reporting is safe* is a claim about a rule, not a
+property of warnings. Here it meant a gate could not be run clean on a correct
+chapter — the same "warning people learn to skip" that #97 argues against.
+
 **Chicago ellipsis.** A spaced run (`. . .`) or a run of four or more dots now
 becomes U+2026 `…` rather than ASCII `...`, under every flag that rewrites
 one. `--chicago-punct-2` was the awkward half: it reached `...` by stripping

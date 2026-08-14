@@ -96,10 +96,16 @@ of the file was left unchecked).
 
 `unicode.non-nfc` is the exception to the line-level span above: it reports
 the exact code point, because "somewhere on this line is a combining mark in
-the wrong order" is not something a human can act on. It is also the one rule
-that may over-report — the UAX #15 quick check is allowed to answer *maybe*,
-and a maybe is reported. For a warning that changes nothing, over-reporting is
-the safe direction.
+the wrong order" is not something a human can act on.
+
+It used to over-report, and that was written down here as safe. It was not.
+The UAX #15 quick check answers *maybe* — "this mark could compose with what
+precedes it" — and a maybe was reported. Whether it composes depends on the
+pair: U+1ECC followed by U+0300 has no precomposed form, so Yorùbá `Ọ̀ṣun` is
+its own normal form and the warning was permanent on correct text (#103). A
+candidate is now confirmed by normalizing the line and comparing, so the rule
+agrees with `unicodedata` in both directions. The span still names the mark;
+confirmation answers *whether*, not *where*.
 
 **Not yet emitted:** the L1 encoding errors from #53 and the under-report
 warnings mdquery prints. Both are diagnostics in everything but format, and

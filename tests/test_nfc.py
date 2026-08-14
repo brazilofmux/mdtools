@@ -170,11 +170,20 @@ class DetectionTests(NFCTestCase):
 
 class QuickCheckAgreementTests(NFCTestCase):
     """
-    The quick check may answer Maybe, and mdfix reports Maybe as not-NFC.
+    The report agrees with `unicodedata` in **both** directions (issue #103).
 
-    That makes one direction a hard requirement and the other merely usual:
-    if mdfix says a document is clean, `unicodedata` must agree it is already
-    NFC. A false *clean* is a missed report; a false *dirty* is only noise.
+    It used to agree in one. The quick check is allowed to answer Maybe —
+    "this mark could compose with what precedes it" — and a Maybe was reported
+    as not-NFC, so a false *dirty* was written off as noise.
+
+    It is not noise. Yorùbá needs U+1ECC followed by U+0300 constantly
+    (`Ọ̀ṣun`, `ọ̀pẹ̀lẹ̀`) and Unicode has no precomposed character for that pair,
+    so the sequence is its own normal form and the warning was permanent on
+    correct text. `--normalize-nfc` then reported lines it had not changed.
+
+    A candidate is now confirmed by normalizing and comparing, which makes
+    both directions assertable: a false clean is a missed report, and a false
+    dirty is a warning nobody can act on.
     """
 
     # Long-settled blocks only. libutf carries Unicode 16.0 and CPython's
@@ -211,7 +220,7 @@ class QuickCheckAgreementTests(NFCTestCase):
                 out.append(ch + "\u0305\u0316")   # ccc 230 then 220: reversed
         return out
 
-    def test_clean_means_already_normalized(self) -> None:
+    def test_the_report_matches_the_oracle_exactly(self) -> None:
         samples = self._samples()
         self.assertGreater(len(samples), 4000)
         # One document, one line per sample: a single mdfix run rather than
@@ -220,15 +229,78 @@ class QuickCheckAgreementTests(NFCTestCase):
         rows = self._nfc_rows(text)
         reported = {r["line"] for r in rows}
 
-        missed = []
+        missed, spurious = [], []
         for i, sample in enumerate(samples, start=1):
             already_nfc = unicodedata.normalize("NFC", sample) == sample
             if i not in reported and not already_nfc:
                 missed.append((i, sample))
+            if i in reported and already_nfc:
+                spurious.append((i, sample))
         self.assertEqual(
             missed[:10], [],
             f"mdfix called these NFC but unicodedata "
             f"{unicodedata.unidata_version} disagrees: {missed[:10]}")
+        self.assertEqual(
+            spurious[:10], [],
+            f"mdfix reported these as non-NFC but unicodedata "
+            f"{unicodedata.unidata_version} says they already are: "
+            f"{spurious[:10]}")
+
+    def test_a_base_with_no_composition_is_not_reported(self) -> None:
+        # The report's own case. Unicode has no precomposed character for
+        # O-with-dot-below-and-grave, so the pair is its own normal form —
+        # and the quick check says Maybe about it forever.
+        for text in ("Test Ọ̀ṣun here.\n",   # Ọ̀ṣun
+                     "ọ̀pẹ̀lẹ̀\n",  # ọ̀pẹ̀lẹ̀
+                     "Ṣàngó\n"):             # Ṣàngó
+            with self.subTest(text=text):
+                self.assertEqual(unicodedata.normalize("NFC", text), text)
+                self.assertEqual(self._nfc_rows(text), [])
+
+    def test_a_genuinely_decomposed_sequence_still_is(self) -> None:
+        # Confirmation answers *whether*, not *where*: the span still names
+        # the mark, as it did before.
+        text = "Cafe\u0301 here.\n"
+        rows = self._nfc_rows(text)
+        self.assertEqual(len(rows), 1)
+        data = text.encode("utf-8")
+        self.assertEqual(data[rows[0]["start"]:rows[0]["end"]],
+                         "\u0301".encode("utf-8"))
+
+    def test_marks_out_of_order_still_report(self) -> None:
+        # Only the combining-class ordering half of the quick check catches
+        # this pair, and confirmation must not swallow it.
+        text = "a\u0301\u0323 here.\n"
+        rows = self._nfc_rows(text)
+        self.assertEqual(len(rows), 1)
+        data = text.encode("utf-8")
+        self.assertEqual(data[rows[0]["start"]:rows[0]["end"]],
+                         "\u0301".encode("utf-8"))
+
+    def test_a_false_candidate_does_not_hide_a_real_one(self) -> None:
+        # Both on one line: the Yoruba pair is a Maybe that never composes,
+        # and the `e` + acute after it does. Reporting at the first candidate
+        # would name the innocent sequence and point at the wrong place.
+        text = "\u1ecc\u0300 and Cafe\u0301.\n"
+        rows = self._nfc_rows(text)
+        self.assertEqual(len(rows), 1)
+        data = text.encode("utf-8")
+        self.assertEqual(data[rows[0]["start"]:rows[0]["end"]],
+                         "\u0301".encode("utf-8"))
+
+    def test_the_counter_does_not_claim_work_it_did_not_do(self) -> None:
+        # `N lines normalized` came from the same predicate, so a false dirty
+        # was also a false claim. A tool that reports work it did not do is
+        # hard to trust on the runs where it did.
+        path = self.dir / "yoruba.md"
+        source = "Test Ọ̀ṣun here.\n"
+        path.write_text(source, encoding="utf-8")
+        result = subprocess.run(
+            [str(MDFIX), "-i", "--normalize-nfc", str(path)],
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertNotIn("normalized to NFC", result.stdout)
+        self.assertEqual(path.read_text(encoding="utf-8"), source)
 
 
 class NormalizeTests(NFCTestCase):

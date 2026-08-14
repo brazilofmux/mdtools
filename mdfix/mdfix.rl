@@ -4398,11 +4398,10 @@ static long long utf8_first_bad(const char *s, int len, const char **why)
  * would edit the author's file as a side effect of reading it. Rewriting is
  * L3 and opt-in (--normalize-nfc).
  *
- * This is the UAX #15 quick check, not normalize-and-compare: per code point,
- * NFC_QC must be Yes and the canonical combining class must not go backwards.
- * Quick check is allowed to answer "maybe" (it reports a Maybe as not-NFC),
- * so a run may name a sequence that full normalization would leave alone.
- * Over-reporting is the safe direction for a warning that changes nothing.
+ * The UAX #15 quick check is the filter, not the answer. NFC_QC=Maybe means a
+ * mark *could* compose with what precedes it; whether it does depends on the
+ * pair, and most pairs have no precomposed form. A candidate is confirmed by
+ * normalizing the line and comparing.
  *
  * Called per line rather than per file, which is exact rather than merely
  * convenient: a line terminator is ASCII, so it is a starter with class 0 and
@@ -4412,11 +4411,47 @@ static long long utf8_first_bad(const char *s, int len, const char **why)
  * fails and stores its length in *plen, or -1. Assumes s is already known to
  * be well-formed UTF-8 — I1.1 runs first and refuses the file otherwise.
  */
+#define NFC_DST_MAX (MAX_LINE * 3 + 8)
+
+/*
+ * Does normalizing this line change it? 1 yes (with *at at the first code
+ * point that moves), 0 no, -1 cannot tell.
+ *
+ * Cannot-tell is reported as non-NFC: it means the line is longer than mdfix
+ * will accept anyway, or the normalizer refused, and over-reporting is the
+ * safe direction for a warning that rewrites nothing.
+ */
+static int nfc_line_differs(const char *s, int len, long long *at)
+{
+    static unsigned char dst[NFC_DST_MAX];
+    size_t nout = 0;
+
+    if (mdfix_nfc_normalize_bound((size_t)len) > sizeof dst)
+        return -1;
+    if (mdfix_nfc_normalize((const unsigned char *)s, (size_t)len,
+                            dst, sizeof dst, &nout) != MDFIX_NFC_OK)
+        return -1;
+    if (nout == (size_t)len && memcmp(s, dst, nout) == 0)
+        return 0;
+
+    size_t i = 0;
+    while (i < nout && i < (size_t)len && (unsigned char)s[i] == dst[i])
+        i++;
+    /* Back up to a code point boundary: the first differing *byte* can be a
+     * continuation, and a span must name a character. */
+    while (i > 0 && ((unsigned char)s[i] & 0xC0) == 0x80)
+        i--;
+    *at = (long long)i;
+    return 1;
+}
+
 static long long nfc_first_bad(const char *s, int len, int *plen)
 {
     *plen = 0;
     const unsigned char *p = (const unsigned char *)s;
     int i = 0, last_ccc = 0;
+    int confirmed = 0;              /* 0 not asked yet, 1 differs, -1 unknown */
+    long long first_change = 0;
 
     while (i < len) {
         if (p[i] < 0x80) {          /* ASCII: NFC_QC=Yes, ccc=0 */
@@ -4431,14 +4466,38 @@ static long long nfc_first_bad(const char *s, int len, int *plen)
 
         int ccc, qc;
         mdfix_nfc_ccc_qc(p + i, p + i + n, &ccc, &qc);
-        *plen = n;
-        if (qc != 0)
-            return i;               /* NFC_QC No or Maybe */
-        if (ccc != 0 && last_ccc > ccc)
-            return i;               /* marks out of canonical order */
+        /* NFC_QC No or Maybe, or marks out of canonical order. */
+        if (qc != 0 || (ccc != 0 && last_ccc > ccc)) {
+            if (confirmed == 0) {
+                confirmed = nfc_line_differs(s, len, &first_change);
+                if (confirmed == 0) {
+                    *plen = 0;
+                    return -1;      /* the whole line is already NFC */
+                }
+            }
+            /*
+             * Candidates before the first change are the quick check's
+             * Maybes: a mark that could have composed and did not. Keep
+             * scanning for the one that does, so the span still names the
+             * mark rather than the sequence it sits in.
+             */
+            if (confirmed < 0 || (long long)i >= first_change) {
+                *plen = n;
+                return i;
+            }
+        }
 
         last_ccc = ccc;
         i += n;
+    }
+    if (confirmed > 0) {
+        /* Unreachable in principle — a line that changes has a composing
+         * mark, and a composing mark is NFC_QC=Maybe. Reported rather than
+         * dropped if the tables ever disagree. */
+        const char *why2 = NULL;
+        int at = (int)first_change;
+        *plen = (p[at] < 0x80) ? 1 : utf8_sequence_len(p + at, len - at, &why2);
+        return first_change;
     }
     *plen = 0;
     return -1;
@@ -4451,10 +4510,9 @@ static long long nfc_first_bad(const char *s, int len, int *plen)
  *
  * NFC can expand, so the destination is sized with
  * `mdfix_nfc_normalize_bound` (UAX #15's 3x). Any non-OK status means
- * refuse rather than emit a prefix.
+ * refuse rather than emit a prefix. NFC_DST_MAX is that bound, shared with
+ * the confirmation step above.
  */
-#define NFC_DST_MAX (MAX_LINE * 3 + 8)
-
 static int normalize_lines_nfc(void)
 {
     static unsigned char dst[NFC_DST_MAX];
