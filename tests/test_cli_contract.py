@@ -21,6 +21,7 @@ deliberately broken environment and has to say 2.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -369,6 +370,77 @@ class DispatcherTests(ContractTestCase):
                 result = self._mdtools(verb, "--diff", "a.md")
                 self.assertIn("@@", result.stdout)
                 self.assertEqual((self.dir / "a.md").read_bytes(), before)
+
+
+class MdfixHelpTests(unittest.TestCase):
+    """
+    Every flag mdfix accepts is a flag `-h` names (issue #105).
+
+    A flag that works and is not listed is a flag nobody finds:
+    `--no-arrow-aside` is the one feature the slow32-book copy had that the
+    others did not — "notation arrows stay `→`" — so it is exactly what
+    someone arriving from a technical manuscript goes looking for, and `-h`
+    told them it did not exist.
+
+    The other direction matters as much: a documented flag the parser rejects
+    sends a reader to a usage error. mdfix parses its own arguments in C, so
+    neither can be derived from the other and both have to be checked.
+
+    Read out of `mdfix.rl` rather than the generated `.c` — the same source
+    `check-sync` pins — and matched on the parser's own idiom, so a `"--"` in
+    a scanner rule or a `--flag` in a comment is not mistaken for an option.
+    """
+
+    ACCEPTED = re.compile(r'strn?cmp\(argv\[argi\], "(--[a-z0-9-]+)"')
+    LISTED = re.compile(r'(--[a-z0-9-]+)')
+
+    def setUp(self) -> None:
+        if not MDFIX.is_file():
+            raise unittest.SkipTest(f"{MDFIX} not built; run `make -C mdfix`")
+        self.source = (ROOT / "mdfix" / "mdfix.rl").read_text("utf-8")
+
+    def _accepted(self) -> set:
+        return set(self.ACCEPTED.findall(self.source))
+
+    def _listed(self) -> set:
+        result = subprocess.run([str(MDFIX), "-h"],
+                                capture_output=True, text=True)
+        return set(self.LISTED.findall(result.stdout + result.stderr))
+
+    def test_the_parser_is_not_empty(self) -> None:
+        # Both sets come from pattern matching, and two empty sets agree.
+        accepted = self._accepted()
+        self.assertGreater(len(accepted), 15, accepted)
+        self.assertIn("--canonical", accepted)
+        self.assertGreater(len(self._listed()), 15)
+
+    def test_every_accepted_flag_is_documented(self) -> None:
+        undocumented = sorted(self._accepted() - self._listed())
+        self.assertEqual(undocumented, [],
+                         f"mdfix accepts these but `-h` does not list them: "
+                         f"{undocumented}")
+
+    def test_every_documented_flag_is_accepted(self) -> None:
+        # `--flag` here would be a promise the parser breaks.
+        unparsed = sorted(self._listed() - self._accepted())
+        self.assertEqual(unparsed, [],
+                         f"`-h` lists these but mdfix does not accept them: "
+                         f"{unparsed}")
+
+    def test_the_flag_it_was_filed_for_works(self) -> None:
+        # The scanner matches U+2192, not ASCII `->`. That character must
+        # survive --editorial when this flag is set.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "a.md"
+            source = "A note \u2192 an aside.\n"
+            path.write_text(source, encoding="utf-8")
+            out = Path(tmp) / "b.md"
+            result = subprocess.run(
+                [str(MDFIX), "-q", "--editorial", "--no-arrow-aside",
+                 str(path), str(out)],
+                capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertEqual(out.read_text(encoding="utf-8"), source)
 
 
 class SourceContractTests(unittest.TestCase):
