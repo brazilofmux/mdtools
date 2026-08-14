@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import json
 import random
-import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -281,68 +280,26 @@ class Runner:
 
 # Divergences the sweep knows about and does not re-report.
 #
-# Same discipline as the transform matrix's pin set: recorded so it cannot be
-# mistaken for done, and matched by *shape* rather than by seed number, since
-# a seed is only a document until the generator changes.
+# Empty, and kept empty on purpose. The one entry that lived here — R2 firing
+# on a wrapped document and not on the same document unwrapped — is fixed:
+# an indented line no longer enters list context when there is no list, so
+# the repair no longer depends on whether `--wrap` joined a continuation away
+# first. `test_fuzz_regressions.KnownDivergenceTests` pins it closed.
 #
-# `tests/test_fuzz_regressions.py` asserts each of these still reproduces, so
-# fixing one fails that file and forces this entry out with it.
-_LAZY_CONTINUATION = re.compile(rb"[ ]{4,}\S")
-_ORDERED_MARKER = re.compile(rb"\d+[.)][ \t]")
-
-
-def _blank_before_list_after_continuation(data: bytes) -> bool:
-    """
-    A paragraph, an indented lazy continuation, then an ordered marker,
-    as three adjacent lines.
-
-    mdfix's required blank-before-list repair fires when a list marker
-    directly follows paragraph text, and does not when a lazy continuation
-    line sits between them. `--wrap` joins that continuation away, so the
-    repair fires on the wrapped output and not on the unwrapped one — the
-    same document, two block structures.
-
-    R2's premise is now decided (dialect-policy §7): Pandoc 3.10 reads *no*
-    ordered marker as interrupting a paragraph — not even `1.` — and the
-    repair creates the list the author was plainly writing anyway. That is
-    what the required set is for.
-
-    What stays pinned is narrower and is still a wart: *whether* the repair
-    fires depends on whether a continuation line happened to be joined first,
-    so the same document takes two block structures depending on `--wrap`.
-    Deciding R2's premise did not decide that, and it is the reason this entry
-    survives rather than being deleted with the question that produced it.
-    """
-    lines = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n").split(b"\n")
-    for i in range(len(lines) - 2):
-        a, b, c = lines[i], lines[i + 1], lines[i + 2]
-        if not a or a[:1] in b" \t":
-            continue
-        if _LAZY_CONTINUATION.match(b) and _ORDERED_MARKER.match(c):
-            return True
-    return False
-
-
-KNOWN_DIVERGENCES = (
-    ("blank-before-list after a lazy continuation",
-     _blank_before_list_after_continuation),
-)
+# The discipline the tuple exists for stands. A divergence recorded here is
+# matched by *shape* rather than by seed number, since a seed is only a
+# document until the generator changes, and each entry must also be asserted
+# in `test_fuzz_regressions.py` — so fixing one fails that file and forces the
+# entry out with it, rather than leaving a filter that quietly hides the next
+# instance.
+KNOWN_DIVERGENCES: Tuple[Tuple[str, object], ...] = ()
 
 
 def is_known(data: bytes, rule: Optional[str] = None,
              detail: Optional[str] = None) -> Optional[str]:
-    """
-    The pinned R2/wrap I3.1 shape, and only that.
-
-    A crash, I4.1, or I5.1 on a document that happens to contain an indent
-    and an ordered marker is not this pin.
-    """
+    """The recorded I3.1 shapes, and only those. Nothing is recorded today."""
     if rule is not None and rule != "I3.1 block structure":
         return None
-    if detail is not None:
-        wrap_path = "--wrap" in detail or "--technical" in detail
-        if not wrap_path or "OrderedList" not in detail:
-            return None
     for name, matches in KNOWN_DIVERGENCES:
         if matches(data):
             return name

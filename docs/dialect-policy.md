@@ -365,6 +365,40 @@ with Pandoc's two-column rule for uppercase markers ending in a period, its
 loose roman parser, and the `p. 1` page-number exception. See
 [ir-schema.md](ir-schema.md).
 
+**Marker separators** — the follow-up sweep, and three more of the same kind.
+A tab separates (`1.\tx`; Pandoc expands tabs before parsing). A marker with
+nothing after it is an empty item, in every form, and end of line satisfies the
+two-column rule that `A. x` fails. And Pandoc's page-number exclusion for
+`p. 1` is one space wide, so `p.  1` and `p.\t1` are lists.
+
+The empty-item rule is the one part of the marker predicates that needs
+context, and the corpora said so immediately: `--wrap` puts a year at the head
+of a line, and `... learned since\n2003.` is not a one-item list. It is
+recognized only where a list may start.
+
+Two marker-normalization hazards came out with it, both found by the fuzzer
+within minutes of empty items becoming markers. `*` alone is a bullet, and so
+is `-` alone — but `-` alone is also a setext underline and a table's dash
+row, so normalizing the marker turned the paragraph above into a heading in
+one document and the whole thing into a table in another. The bullet pass now
+leaves an empty item alone: it is the one marker whose spelling carries
+structure.
+
+**Indented lines no longer enter list context on their own** (found by the
+same sweep). A line indented two spaces was treated as a list continuation
+whether or not any list existed, so a paragraph whose *first* line happened to
+be indented got the blank-after-list repair inserted into the middle of it.
+Across the manuscripts that was splitting wrapped sentences in two — in
+`outline-volume3.md`, five paragraphs cut mid-sentence under `--technical`.
+The guard is `list_content_col`, which survives a blank line where
+`prev_was_list_ctx` deliberately does not, so nested content after a blank is
+still inside its item.
+
+That also closed the fuzzer's last recorded divergence. R2 fired on a wrapped
+document and not on the same document unwrapped, because the continuation line
+hid the paragraph above from the repair; with no false list context there is
+nothing to hide behind, and `KNOWN_DIVERGENCES` is now empty.
+
 Closing it also closed a **silent structure loss** that had nothing to do with
 classification. `A.  First.` is a list; the Chicago sentence-space rule saw a
 period followed by two spaces, collapsed them, and `A. First.` is a name being

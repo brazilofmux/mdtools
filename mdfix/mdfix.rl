@@ -352,56 +352,6 @@ static int is_blank(const char *s)
     return 1;
 }
 
-/*
- * Find a bullet marker in line.  Returns offset of the marker char,
- * or -1 if this isn't a bullet line.
- * Matches: "- ", "* ", "+ " with optional leading whitespace.
- */
-static int find_bullet(const char *line)
-{
-    int i = 0;
-    while (line[i] == ' ' || line[i] == '\t')
-        i++;
-    if ((line[i] == '-' || line[i] == '*' || line[i] == '+')
-        && line[i + 1] == ' ')
-        return i;
-    return -1;
-}
-
-/*
- * A decimal ordered-list marker: `1. `, `1) `, `(1) `, `#. `, `#) `, `(#)`.
- *
- * `#` is Pandoc's default start number. Context-free, because these forms
- * still classify mid-paragraph so R2 can create the list the author meant.
- * The fancy spellings are in fancy_marker_len().
- */
-static int decimal_marker_len(const char *line)
-{
-    int i = 0;
-    while (line[i] == ' ' || line[i] == '\t')
-        i++;
-    int start = i;
-    int paren = (line[i] == '(');
-    if (paren)
-        i++;
-    if (line[i] == '#') {
-        i++;
-    } else if (isdigit((unsigned char)line[i])) {
-        while (isdigit((unsigned char)line[i]))
-            i++;
-    } else {
-        return 0;
-    }
-    if (paren) {
-        if (line[i] != ')' || line[i + 1] != ' ')
-            return 0;
-        return i + 2 - start;
-    }
-    if ((line[i] == '.' || line[i] == ')') && line[i + 1] == ' ')
-        return i + 2 - start;
-    return 0;
-}
-
 /* ATX heading: up to 3 leading spaces, then one or more #, then space or EOL */
 static int is_heading(const char *line)
 {
@@ -467,21 +417,90 @@ static int indent_columns(const char *line, int *out_chars)
 }
 
 /*
- * Columns of whitespace at `s`, which starts at column `col`.
+ * The separator after a list marker, in columns, or MARKER_SEP_EOL when the
+ * line ends there.
  *
- * Marker separators are measured in columns, not bytes, because Pandoc
- * expands tabs before parsing: `A.` then a tab reaches column 4, which is the
- * two columns the initials rule below wants.
+ * Measured in columns rather than bytes because Pandoc expands tabs before
+ * parsing: `A.` then a tab reaches column 4, which is the two columns the
+ * initials rule wants.
+ *
+ * Two things a literal `== ' '` test gets wrong, both found by sweeping the
+ * marker forms against Pandoc:
+ *
+ *   `1.\tx`  — a tab separates, and reaches two columns doing it.
+ *   `1.`     — an empty item. Pandoc reads a one-item `OrderedList`; a marker
+ *              wants a separator *or* the end of the line.
+ *
+ * End of line satisfies any width, which is why `A.` alone is a list while
+ * `A. x` is a name being abbreviated.
  */
-static int space_columns(const char *s, int col)
+#define MARKER_SEP_EOL 99
+
+static int marker_sep_columns(const char *s, int col)
 {
-    int width = 0;
-    for (int i = 0; s[i] == ' ' || s[i] == '\t'; i++) {
+    int i = 0, width = 0;
+    while (s[i] == ' ' || s[i] == '\t') {
         int w = (s[i] == '\t') ? (MD_TAB_STOP - (col % MD_TAB_STOP)) : 1;
         col += w;
         width += w;
+        i++;
     }
-    return width;
+    return (s[i] == '\0') ? MARKER_SEP_EOL : width;
+}
+
+/*
+ * Find a bullet marker in line.  Returns offset of the marker char,
+ * or -1 if this isn't a bullet line.
+ * Matches: "- ", "* ", "+ " with optional leading whitespace — and a marker
+ * alone on its line, which is an empty item rather than prose.
+ */
+static int find_bullet(const char *line)
+{
+    int chars = 0;
+    int col = indent_columns(line, &chars);
+    int i = chars;
+
+    if (line[i] != '-' && line[i] != '*' && line[i] != '+')
+        return -1;
+    if (marker_sep_columns(line + i + 1, col + 1) < 1)
+        return -1;
+    return i;
+}
+
+/*
+ * A decimal ordered-list marker: `1. `, `1) `, `(1) `, `#. `, `#) `, `(#)`.
+ *
+ * `#` is Pandoc's default start number. Context-free, because these forms
+ * still classify mid-paragraph so R2 can create the list the author meant.
+ * The fancy spellings are in fancy_marker_len().
+ */
+static int decimal_marker_len(const char *line)
+{
+    int chars = 0;
+    int col = indent_columns(line, &chars);
+    int i = chars;
+    int paren = (line[i] == '(');
+
+    if (paren)
+        i++;
+    if (line[i] == '#') {
+        i++;
+    } else if (isdigit((unsigned char)line[i])) {
+        while (isdigit((unsigned char)line[i]))
+            i++;
+    } else {
+        return 0;
+    }
+    if (paren) {
+        if (line[i] != ')')
+            return 0;
+    } else if (line[i] != '.' && line[i] != ')') {
+        return 0;
+    }
+    i++;
+    if (marker_sep_columns(line + i, col + i - chars) < 1)
+        return 0;
+    return i - chars + 1;
 }
 
 /*
@@ -620,15 +639,16 @@ static int fancy_marker_len(const char *line)
         if (len != 1 && !roman)
             return 0;
 
-        /* Pandoc reads lowercase `p.` + digit as a page number, not a list. */
+        /*
+         * Pandoc reads lowercase `p.` + digit as a page number, not a list —
+         * but only across exactly one space. `p.  1` and `p.\t1` are lists,
+         * which is the same shape as the initials rule: a second column says
+         * the author meant a marker.
+         */
         if (!paren && len == 1 && !upper && line[body] == 'p'
-            && line[j] == '.') {
-            int k = j + 1;
-            while (line[k] == ' ' || line[k] == '\t')
-                k++;
-            if (isdigit((unsigned char)line[k]))
-                return 0;
-        }
+            && line[j] == '.' && line[j + 1] == ' '
+            && isdigit((unsigned char)line[j + 2]))
+            return 0;
 
         /*
          * Two columns after an uppercase marker ending in a period: one
@@ -643,7 +663,7 @@ static int fancy_marker_len(const char *line)
     }
 
     col += i - chars;
-    if (space_columns(line + i, col) < need)
+    if (marker_sep_columns(line + i, col) < need)
         return 0;
     return i - chars + 1;
 }
@@ -663,6 +683,30 @@ static int ordered_marker_len(const char *line)
 static int is_ordered(const char *line)
 {
     return ordered_marker_len(line) > 0;
+}
+
+/*
+ * A marker with nothing after it — Pandoc's empty list item.
+ *
+ * Separate from the marker predicates because it is the one part of them that
+ * needs context: `2003.` alone on a line is an `OrderedList` where a list may
+ * begin and a wrapped year where one may not.
+ */
+static int marker_leaves_no_content(const char *line)
+{
+    int chars = 0;
+    indent_columns(line, &chars);
+    int i = chars;
+    int len = ordered_marker_len(line);
+
+    if (len > 0) {
+        i += len - 1;                 /* len counts one separator column */
+    } else if (find_bullet(line) >= 0) {
+        i += 1;                       /* the bullet character */
+    } else {
+        return 0;
+    }
+    return is_blank(line + i);
 }
 
 /*
@@ -873,6 +917,16 @@ static enum linetype classify_ctx(const char *line, int paragraph_open)
     if (is_fmatter_delim(line))      return LT_FMATTER;
     if (is_code_fence(line))         return LT_CODEFENCE;
     if (is_heading(line))            return LT_HEADING;
+    /*
+     * An empty item is a list only where a list may start. The decimal forms
+     * are otherwise context-free so R2 can create the list a marker after
+     * prose was meant to be — but nothing was meant by a hard-wrapped
+     * `... learned since 2003.`, where the wrapper put the year at the head
+     * of a line and the period after it. Pandoc reads that as prose, and two
+     * of the manuscripts contain exactly it.
+     */
+    if (paragraph_open && marker_leaves_no_content(line))
+        return LT_TEXT;
     if (find_bullet(line) >= 0)      return LT_BULLET;
     if (decimal_marker_len(line) > 0) return LT_ORDERED;
     if (!paragraph_open && fancy_marker_len(line) > 0)
@@ -3008,6 +3062,15 @@ static int fix_bullet(char *line, int linenum)
         return 0;
     int pos = find_bullet(line);
     if (pos < 0 || line[pos] == '-')
+        return 0;
+    /*
+     * Never on an empty item. `*` alone is a bullet, and `-` alone is a
+     * bullet, but `-` alone is also a table's dash row and a setext
+     * underline — so the marker this pass exists to normalize is the one
+     * whose spelling carries structure. The fuzzer found both: `*` under a
+     * paragraph became a heading, and `*` under `---` became a table.
+     */
+    if (is_blank(line + pos + 1))
         return 0;
 
     if (opt_verbose)
@@ -5502,7 +5565,14 @@ static void process(FILE *out)
 
         /* Apply post-scanner C fixers */
         fix_trailing_ws(line, i + 1, i);
-        fix_bullet(line, i + 1);
+        /*
+         * Only on a line this context calls a bullet. `*` alone under a
+         * paragraph is not one — and normalizing it to `-` there turns the
+         * paragraph above into a setext heading, which the fuzzer found the
+         * moment an empty item became a marker.
+         */
+        if (type == LT_BULLET)
+            fix_bullet(line, i + 1);
         /* `#. x` is a list, not a heading; R3 must not insert a space there. */
         if (!is_list_type(type)) {
             fix_heading_fmt(line, i + 1);
@@ -5528,7 +5598,19 @@ static void process(FILE *out)
             int content_col = list_content_column(line);
             if (content_col >= 0)
                 list_content_col = content_col;
-        } else if (type == LT_TEXT && is_list_continuation(line)) {
+        } else if (type == LT_TEXT && is_list_continuation(line)
+                   && (in_list_context || list_content_col > 0)) {
+            /*
+             * An indented line continues a list only when there is a list to
+             * continue. `list_content_col` is the test that survives a blank
+             * line, which `prev_was_list_ctx` deliberately does not — nested
+             * content after a blank is still inside its item.
+             *
+             * Without the guard, a paragraph whose *first* line happens to be
+             * indented two spaces entered list context on its own, and the
+             * blank-after-list repair then split it in two. No list was
+             * involved anywhere in the document.
+             */
             prev_was_list_ctx = 1;
             /*
              * A nested item raises list_content_col; an outdented continuation

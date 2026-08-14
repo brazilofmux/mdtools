@@ -132,23 +132,24 @@ class GeneratorTests(FuzzTestCase):
                 self.assertTrue(any(lo <= p <= hi for p in points),
                                 f"no {name} in the generated corpus")
 
-    def test_known_divergence_does_not_swallow_other_failures(self) -> None:
-        pin = (b"A paragraph of prose number 1 with words.\n"
-               b"    indented continuation\n2. two 4\n")
+    def test_nothing_is_filtered_while_the_pin_set_is_empty(self) -> None:
+        # The R2/wrap entry is fixed and gone. An empty filter is the whole
+        # point of that being true: every violation the sweep sees is a
+        # failure, with nothing standing between it and the report.
+        self.assertEqual(fuzz.KNOWN_DIVERGENCES, ())
+        was_pinned = (b"A paragraph of prose number 1 with words.\n"
+                      b"    indented continuation\n2. two 4\n")
         wrap = "--wrap=40: ['Para', 'OrderedList'] != ['Para']"
-        self.assertIsNotNone(
-            fuzz.is_known(pin, "I3.1 block structure", wrap))
-        # Indent and a marker that are not adjacent are not the pin.
-        elsewhere = b"    indented code\n\npara\n\n1. one\n"
         self.assertIsNone(
-            fuzz.is_known(elsewhere, "I3.1 block structure", wrap))
-        # A crash / I4.1 / I5.1 on the pin-shaped document still fails.
-        self.assertIsNone(fuzz.is_known(pin, "crash",
-                                        "--canonical: signal 11"))
-        self.assertIsNone(fuzz.is_known(pin, "I4.1 totality",
-                                        "covered 3 of 10"))
-        self.assertIsNone(fuzz.is_known(pin, "I5.1 identity",
-                                        "empty edit list changed the file"))
+            fuzz.is_known(was_pinned, "I3.1 block structure", wrap))
+
+    def test_the_filter_still_only_reaches_block_structure(self) -> None:
+        # Guarding the shape of the mechanism rather than its contents: a
+        # crash is never a recorded divergence, whatever gets recorded later.
+        data = b"para\n\n1. one\n"
+        for rule in ("crash", "I4.1 totality", "I5.1 identity"):
+            with self.subTest(rule=rule):
+                self.assertIsNone(fuzz.is_known(data, rule, "detail"))
 
     def test_shrinking_actually_shrinks(self) -> None:
         # A shrinker that returns its input is a shrinker nobody notices is
