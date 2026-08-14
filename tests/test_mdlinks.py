@@ -117,13 +117,8 @@ class ReferenceTests(LinksTestCase):
         self.assertEqual(self._check(path), [])
 
     def test_a_bare_bracket_in_a_file_with_no_definitions_is_prose(self) -> None:
-        # The policy this reverses (issue #100) read: "bare [brackets] without
-        # a definition are broken refs, not plain text — so accidental
-        # editorial markers stay visible." The corpus disagreed. Across five
-        # manuscripts and 511 files the rule produced 1,275 findings and not
-        # one was a link the author meant: cross-reference apparatus, stage
-        # directions, editorial asides. A document that defines no reference
-        # anywhere is not using reference links.
+        # A file that defines no reference is not using reference links, so a
+        # bare `[label]` is prose.
         path = self._write("a.md", "See [sic] in the prose.\n")
         self.assertEqual(self._rules(path), [])
 

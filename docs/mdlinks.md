@@ -66,10 +66,6 @@ destination, then checked the same way as inline links (missing file, broken
 anchor). Collapsed forms `[text][]` resolve with the link text as the label.
 Labels match CommonMark rules (whitespace collapsed, case-insensitive).
 
-Undefined **shortcuts** (`[brackets]` with no matching definition) are
-errors. CommonMark would leave them as plain text; mdlinks treats them as
-broken references so accidental editorial markers stay visible.
-
 Links inside **table cells, list items and headings** are checked, because the
 inline records cover them. That was the point of scanning those: five of the
 eleven links in this repository's own architecture document live in tables.
