@@ -210,8 +210,15 @@ def check(docs: Sequence[Document]) -> List[Finding]:
                 used.add(key)
                 if key not in doc.definitions:
                     shown = label or link.label or link.text
-                    add(doc, link, "links.undefined-reference",
-                        f"no definition for [{shown}]")
+                    if link.form != "shortcut":
+                        # Full/collapsed spelling is unambiguous.
+                        add(doc, link, "links.undefined-reference",
+                            f"no definition for [{shown}]")
+                    elif doc.definitions:
+                        # A shortcut is a warning only when this file defines a reference.
+                        add(doc, link, "links.undefined-reference",
+                            f"no definition for [{shown}]",
+                            severity="warning")
                     continue
                 definition = doc.definitions[key]
                 # The destination lives in the definition, so that is what a

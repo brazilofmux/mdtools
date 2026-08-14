@@ -116,11 +116,34 @@ class ReferenceTests(LinksTestCase):
         path = self._write("a.md", "See [id] here.\n\n[id]: http://y\n")
         self.assertEqual(self._check(path), [])
 
-    def test_undefined_shortcut_is_an_error(self) -> None:
-        # Policy: bare [brackets] without a definition are broken refs,
-        # not plain text — so accidental editorial markers stay visible.
+    def test_a_bare_bracket_in_a_file_with_no_definitions_is_prose(self) -> None:
+        # A file that defines no reference is not using reference links, so a
+        # bare `[label]` is prose.
         path = self._write("a.md", "See [sic] in the prose.\n")
-        self.assertEqual(self._rules(path), ["links.undefined-reference"])
+        self.assertEqual(self._rules(path), [])
+
+    def test_a_bare_bracket_is_a_warning_where_the_file_uses_references(self) -> None:
+        # Evidence that the spelling means something here, so the rule stays
+        # live — as a warning, because Pandoc renders an undefined shortcut
+        # literally. The reader sees brackets; nothing resolved wrongly.
+        path = self._write("a.md",
+                           "See [used] and [sic].\n\n[used]: http://y\n")
+        findings = self._check(path)
+        self.assertEqual([f.rule for f in findings],
+                         ["links.undefined-reference"])
+        self.assertEqual(findings[0].severity, "warning")
+
+    def test_an_undefined_full_reference_is_still_an_error(self) -> None:
+        # `[text][label]` and `[text][]` say what they are. Nobody writes that
+        # spelling in prose, so a missing definition is a mistake whatever
+        # else is in the file.
+        for source in ("See [x][missing].\n", "See [missing][].\n"):
+            with self.subTest(source=source):
+                path = self._write("a.md", source)
+                findings = self._check(path)
+                self.assertEqual([f.rule for f in findings],
+                                 ["links.undefined-reference"])
+                self.assertEqual(findings[0].severity, "error")
 
     def test_labels_are_case_insensitive(self) -> None:
         path = self._write("a.md", "See [x][ID].\n\n[id]: http://y\n")

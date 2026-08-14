@@ -30,7 +30,8 @@ text. Percent-escapes in the fragment are decoded before comparison.
 | Rule | Severity | |
 |---|---|---|
 | `links.broken-anchor` | error | `#anchor` no heading provides |
-| `links.undefined-reference` | error | `[x][label]`, collapsed `[text][]`, or shortcut `[label]` with no definition |
+| `links.undefined-reference` | error | `[x][label]` or collapsed `[text][]` with no definition |
+| `links.undefined-reference` | warning | shortcut `[label]` with no definition, **in a file that defines at least one** |
 | `links.undefined-footnote` | error | a footnote reference with no definition |
 | `links.missing-file` | error | a relative path not on disk (inline **or** via a resolved reference definition) |
 | `links.unused-definition` | warning | a definition nothing uses |
@@ -38,14 +39,32 @@ text. Percent-escapes in the fragment are decoded before comparison.
 
 Errors exit 1; warnings alone exit 0 unless `--warnings` is passed.
 
+### Why a bare `[label]` is judged by its document
+
+`[x][label]` and `[text][]` say what they are; nobody writes that spelling in
+prose, so a missing definition is a mistake whatever else is in the file.
+
+A bare `[label]` is not that. It is also how prose uses brackets — cross-
+reference apparatus, stage directions, editorial asides — and Pandoc reads an
+undefined one as **literal text**, which is exactly what the author sees on
+the page. So mdlinks asks the document: a file that defines no reference
+anywhere is not using reference links, and its brackets are prose.
+
+This reverses an earlier policy that called every bare bracket a broken
+reference so that "accidental editorial markers stay visible". The corpus
+settled it: across five manuscripts and 511 files the rule produced **1,275
+findings and not one was a link the author meant** (issue #100). A rule that
+has never been right is not coverage, and `--suppress` was the only relief —
+all-or-nothing, silencing the case the rule exists for along with the noise.
+
+Where the file *does* use reference links, the finding survives as a warning:
+the evidence says the spelling means something here, and the consequence is
+still only brackets on the page rather than a link that leads somewhere wrong.
+
 Reference-style and shortcut links are **followed** to their definition
 destination, then checked the same way as inline links (missing file, broken
 anchor). Collapsed forms `[text][]` resolve with the link text as the label.
 Labels match CommonMark rules (whitespace collapsed, case-insensitive).
-
-Undefined **shortcuts** (`[brackets]` with no matching definition) are
-errors. CommonMark would leave them as plain text; mdlinks treats them as
-broken references so accidental editorial markers stay visible.
 
 Links inside **table cells, list items and headings** are checked, because the
 inline records cover them. That was the point of scanning those: five of the
