@@ -6379,8 +6379,9 @@ static void process(FILE *out)
         fix_pandoc_safe_links(line, i + 1);
         fix_blockquote_space(line, i + 1);
 
-        /* Ragel scanner: arrow aside, bold-colon, Chicago punct, abbrevs */
-        apply_scanner(line, i + 1);
+        /* A table row is not a sentence; Chicago/arrow must not move `|`. */
+        if (!pipe_table_line[i])
+            apply_scanner(line, i + 1);
 
         /* Apply post-scanner C fixers */
         fix_trailing_ws(line, i + 1, i);

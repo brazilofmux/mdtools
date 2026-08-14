@@ -83,9 +83,12 @@ consumer asking "what blocks are in this file" filters them out; a serializer
 must not.
 
 `table.form` is one of `pipe`, `simple`, `grid`, `multiline`. The last three
-are `protected`; **`pipe` is not** — mdfix rewrites punctuation inside pipe
-cells (dialect-policy §7 gap 4). `htmlKind` is one of `comment`, `cdata`,
-`processing-instruction`, `declaration`, `element`.
+are `protected`; **`pipe` is not**, though the reason is now a small one:
+no prose pass runs on a table row (#117), but trailing whitespace after the
+final `|` is still normalized, so the block is not reproduced byte for byte.
+
+`htmlKind` is one of `comment`, `cdata`, `processing-instruction`,
+`declaration`, `element`.
 
 `heading.style` is `atx` or `setext`. A setext record spans both lines, text
 and underline. The underline must start at **column 0** — CommonMark allows
@@ -169,9 +172,10 @@ from a line block. Pinned with `pandoc -t json`:
 | a | b | / | 1 | 2 |               -> LineBlock
 ```
 
-Distinguishing them is new in this schema. mdfix's fixer still treats both as
-prose, which is why both carry `"protected": false` — the IR reports the
-structure correctly while being honest that the fixer does not yet respect it.
+Distinguishing them is new in this schema. Line blocks stay unprotected
+because the fixer still treats them as prose. Pipe tables stay unprotected
+only because `fix_trailing_ws` still strips whitespace after the final `|`
+— no prose pass runs on a table row.
 
 ## Nested prose
 

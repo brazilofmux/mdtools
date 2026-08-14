@@ -241,6 +241,50 @@ class MdfixTableTests(unittest.TestCase):
         # Table cells stay protected.
         self.assertIn(f"A {ARROW} B", out)
 
+    def test_a_pipe_row_is_not_a_sentence(self) -> None:
+        # §7's fourth gap, closed (#117). The scanner reads a line as prose,
+        # and a table row is not one: `| ...  | ...` gives space-before-punct
+        # a space in front of what it takes for sentence punctuation, so it
+        # deleted the space and welded the delimiter to the cell — structure,
+        # not typography. Verbatim from the MUSH reference library.
+        source = (
+            "| Code | Kind  | Meaning |\n"
+            "|------|-------|---------|\n"
+            "| `%0` | arg 0 | The first argument. |\n"
+            "| ...  | ...   | ... |\n"
+            "| `%9` | arg 9 | The tenth argument. |\n"
+        )
+        self.assertEqual(self._fix(source, "--canonical"), source)
+
+    def test_column_padding_survives(self) -> None:
+        # chicago.sentence-space read the padding as a double space after a
+        # sentence. Cosmetic to Pandoc, which ignores padding — but a table
+        # nobody can read in the source is still a table that was damaged.
+        source = ("| Code | Kind |\n|---|---|\n"
+                  "| (etc.)      | ANSI  |\n")
+        self.assertEqual(self._fix(source, "--canonical"), source)
+
+    def test_an_arrow_in_a_cell_survives(self) -> None:
+        # The change nobody reported and the corpus found: arrow-aside was
+        # rewriting notation arrows inside cells across 22 files.
+        source = (f"| Stage | Becomes |\n|---|---|\n"
+                  f"| `switch` {ARROW} jump table | `indirectbr` |\n")
+        self.assertEqual(self._fix(source, "--canonical"), source)
+
+    def test_only_the_table_is_exempt(self) -> None:
+        # The guard must not reach past the table, or it would silence the
+        # pass on ordinary prose that happens to follow one.
+        source = (f"| a | b |\n|---|---|\n| 1 | 2 |\n\n"
+                  f"Prose A {ARROW} B after the table.\n")
+        out = self._fix(source, "--canonical")
+        self.assertIn("| 1 | 2 |", out)
+        self.assertNotIn(f"A {ARROW} B", out)
+
+    def test_a_pipe_table_is_idempotent_under_canonical(self) -> None:
+        source = ("| Code | Kind  |\n|------|-------|\n| ...  | ...   |\n")
+        once = self._fix(source, "--canonical")
+        self.assertEqual(self._fix(once, "--canonical"), once)
+
     def test_margin_table_ends_list_context(self) -> None:
         # A table at the margin is left of the item's content column, so it
         # ends the list and a later four-space block is margin indented code.
