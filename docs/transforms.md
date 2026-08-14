@@ -24,9 +24,17 @@ list it produced.
 | Blank line **before** a list | `Intro:` then `- one` reads as `Para` | `Para`, `BulletList` | The list is swallowed into the paragraph and stops being a list |
 | Blank line **after** a list | `- one` then `After.` reads as `BulletList` | `BulletList`, `Para` | The following paragraph is swallowed into the last item |
 | Space after the ATX marker | `#Title` reads as `Para` | `Header` | A heading stops being a heading |
+| Second column after a run of uppercase markers | `A. First` then `B. Second` reads as `Para` | `OrderedList` | The list is one space short of existing, and the space is invisible |
 
-That is the whole set. Three repairs, each of which changes the document's
+That is the whole set. Four repairs, each of which changes the document's
 meaning by its absence.
+
+The last one is narrower than the others and deliberately so. Pandoc wants two
+columns after `A.` precisely so that "B. Russell wrote" is not a list, and a
+*single* short marker is genuinely ambiguous — it is reported and never
+rewritten (`list.marker-ambiguous`, issue #97). Two or more with consecutive
+letters at the same indent is not ambiguous, and that run is what generated
+Markdown produces when it means a list.
 
 `--no-required` disables them. Output is then not guaranteed Pandoc-readable,
 so it exists for inspection — seeing what a file looks like untouched — and
@@ -114,5 +122,5 @@ being written, the always-on pass rewrote the arrows in the table above.
 `--no-arrow-aside` still overrides it, which the SLOW-32 book pipeline
 depends on.
 
-A bare `mdfix` now performs the three required repairs and nothing else. On
+A bare `mdfix` now performs the four required repairs and nothing else. On
 this repository's own markdown it changes nothing at all.

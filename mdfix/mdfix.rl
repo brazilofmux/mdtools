@@ -131,6 +131,7 @@ enum fixcat {
     FIX_FENCE_CANONICAL,
     FIX_PANDOC_SAFE_LINKS,
     FIX_SCRIVENER_SPLIT_EMPH,
+    FIX_MARKER_COLUMN,
     NUM_FIXES
 };
 
@@ -158,6 +159,7 @@ static const char *fix_labels[] = {
     "fences: canonical delimiter formatting",
     "links: bare URLs wrapped for Pandoc",
     "scrivener: split heading emphasis repaired",
+    "second column added after an uppercase marker",
 };
 
 /*
@@ -191,6 +193,7 @@ static const char *fix_rules[] = {
     "fence.canonical",
     "link.autolink-bare",
     "heading.scrivener-split",
+    "list.marker-column",
 };
 
 
@@ -1428,6 +1431,11 @@ static int is_headerless_table_header(const char *line);
  * emit_ir or it will join header to delimiter.
  */
 static unsigned char pipe_table_line[MAX_LINES];
+
+/* Lines R4 gave a second column to. They are a list the author wrote and
+ * Pandoc cannot see, so process() reads them as one even where a paragraph
+ * is open — which is what lets R2 space them. */
+static unsigned char marker_run_line[MAX_LINES];
 
 static void mark_pipe_tables(void)
 {
@@ -4715,6 +4723,164 @@ static int normalize_lines_nfc(void)
     return 0;
 }
 
+/*
+ * An uppercase marker one column short: `A. text`.
+ *
+ * Pandoc wants two columns after `A.` so that "B. Russell wrote" is not a
+ * list, and this is what that costs — the shape generated Markdown produces
+ * when it means a list. Returns the letter, or 0.
+ */
+static char short_initial_marker(const char *line, int *indent_chars)
+{
+    int chars = 0;
+    indent_columns(line, &chars);
+    if (!isupper((unsigned char)line[chars]) || line[chars + 1] != '.')
+        return 0;
+    if (line[chars + 2] != ' ' || line[chars + 3] == ' '
+        || line[chars + 3] == '\t' || line[chars + 3] == '\0')
+        return 0;
+    if (indent_chars)
+        *indent_chars = chars;
+    return line[chars];
+}
+
+/*
+ * R4: give a run of uppercase markers the second column Pandoc wants.
+ *
+ * `A. First` then `B. Second` is one paragraph to Pandoc and a list to every
+ * reader, and the difference is one space nobody can see. A run of two or
+ * more with consecutive letters at the same indent is not ambiguous — the
+ * repair makes the document say what it means, which is what the required
+ * set is for (dialect-policy §7). A single one is ambiguous and is diagnosed
+ * instead, never rewritten.
+ *
+ * Runs inside a fence or front matter are left alone: those are verbatim.
+ */
+static void repair_initial_runs(void)
+{
+    memset(marker_run_line, 0, (size_t)nlines);
+    struct fence_state fence = {0, 0, 0, 0, 0};
+    int fmatter_close = frontmatter_close_line();
+    int i = (fmatter_close > 0) ? fmatter_close + 1 : 0;
+
+    for (; i < nlines; i++) {
+        if (fence.active) {
+            if (is_fence_closer(lines[i], &fence))
+                fence.active = 0;
+            continue;
+        }
+        if (parse_fence_opener(lines[i], &fence))
+            continue;
+
+        int indent = 0;
+        char letter = short_initial_marker(lines[i], &indent);
+        if (!letter)
+            continue;
+
+        int end = i;
+        for (int j = i + 1; j < nlines; j++) {
+            int next_indent = 0;
+            char next = short_initial_marker(lines[j], &next_indent);
+            if (next != letter + (j - i) || next_indent != indent)
+                break;
+            end = j;
+        }
+        if (end == i)
+            continue;               /* a singleton: ambiguous, see below */
+
+        for (int j = i; j <= end; j++) {
+            int len = (int)strlen(lines[j]);
+            if (len + 1 > MAX_LINE - 1)
+                continue;           /* no room; leave it for the diagnostic */
+            memmove(lines[j] + indent + 3, lines[j] + indent + 2,
+                    (size_t)(len - indent - 2) + 1);
+            lines[j][indent + 2] = ' ';
+            marker_run_line[j] = 1;
+            record_fix(FIX_MARKER_COLUMN, j + 1);
+            if (opt_verbose)
+                fprintf(stderr, "  line %d: second column added after '%c.'\n",
+                        j + 1, lines[j][indent]);
+        }
+        i = end;
+    }
+}
+
+/*
+ * Marker shapes whose reading turns on something the page does not show.
+ *
+ * Each is a line that opens a block, where Pandoc's answer and the author's
+ * intent can come apart and mdfix must not pick. Reported, never repaired —
+ * see docs/diagnostics.md and issue #97.
+ */
+enum marker_doubt {
+    DOUBT_NONE = 0,
+    DOUBT_INITIALS,     /* `A. text` — a list item, or a name abbreviated */
+    DOUBT_CITATION,     /* `@key. text` — an example list, or a citation */
+    DOUBT_ROMAN_WORD    /* `mix. text` — a numeral, or an English word */
+};
+
+/* Past this, a roman numeral is not a list position. `ii.` through `xxx.`
+ * are ordinary markers; `cd.` (400) and `mix.` (1009) are words that happen
+ * to parse. */
+#define ROMAN_LIST_MAX 30
+
+static enum marker_doubt marker_doubt_at(const char *line)
+{
+    int chars = 0;
+    indent_columns(line, &chars);
+    const char *s = line + chars;
+
+    if (short_initial_marker(line, NULL))
+        return DOUBT_INITIALS;
+
+    /*
+     * Everything below doubts a marker Pandoc *does* read, so ask the marker
+     * predicate rather than re-deriving one. `cc.fth` in a wrapped path is
+     * not a marker at all — there is no separator after the delimiter — and
+     * an earlier cut of this reported it.
+     */
+    if (fancy_marker_len(line) <= 0)
+        return DOUBT_NONE;
+
+    if (s[0] == '@' || (s[0] == '(' && s[1] == '@')) {
+        /* An anonymous `@.` is a list marker and nothing else; a labelled one
+         * is spelled exactly like a citation key. */
+        int label = (s[0] == '(') ? 2 : 1;
+        return (s[label] == '.' || s[label] == ')') ? DOUBT_NONE
+                                                    : DOUBT_CITATION;
+    }
+
+    if (islower((unsigned char)s[0])) {
+        int j = 0;
+        while (isalpha((unsigned char)s[j]))
+            j++;
+        int value = 0;
+        if (j >= 2 && roman_numeral(s, 0, &value) == j
+            && value > ROMAN_LIST_MAX)
+            return DOUBT_ROMAN_WORD;
+    }
+    return DOUBT_NONE;
+}
+
+static const char *marker_doubt_message(enum marker_doubt doubt)
+{
+    switch (doubt) {
+    case DOUBT_INITIALS:
+        return "`A. text` opening a block is a paragraph to Pandoc: an "
+               "uppercase marker wants two columns. Add one to make it a "
+               "list, or leave it if the letter is an initial";
+    case DOUBT_CITATION:
+        return "`@key.` opening a block is an example-list marker to Pandoc, "
+               "not a citation. Move it off the start of the block if a "
+               "citation was meant";
+    case DOUBT_ROMAN_WORD:
+        return "this word parses as a roman numeral, so Pandoc reads it as an "
+               "ordered-list marker. Escape the delimiter if it is a word";
+    default:
+        return "";
+    }
+}
+
 static int read_all(FILE *fp)
 {
     char *buf = NULL;
@@ -5466,9 +5632,12 @@ static void process(FILE *out)
 
     for (int i = 0; i < nlines; i++) {
         char *line = lines[i];
-        enum linetype type = classify_ctx(line,
-                                          paragraph_is_open(had_blank,
-                                                            prev_was_para));
+        int paragraph_open = paragraph_is_open(had_blank, prev_was_para);
+        enum linetype type = classify_ctx(line, paragraph_open);
+        /* R4 decided this line is a marker. Pandoc will agree once R2 has
+         * put a blank in front of it, and R2 only acts on a list. */
+        if (marker_run_line[i] && type == LT_TEXT)
+            type = LT_ORDERED;
 
         /* YAML frontmatter: open only at line 0 when a closer exists.
          * Close at the precomputed line (--- or ...), not by LT_FMATTER —
@@ -5739,6 +5908,18 @@ static void process(FILE *out)
             /* prev_was_list_ctx is left alone: code nested in a list item is
              * still inside that item. */
             continue;
+        }
+
+        /*
+         * The shapes mdfix must not resolve (#97). Only where a block opens:
+         * mid-paragraph, Pandoc and the author agree the line is prose, and
+         * saying so would be pure noise.
+         */
+        if (!paragraph_open) {
+            enum marker_doubt doubt = marker_doubt_at(line);
+            if (doubt != DOUBT_NONE)
+                emit_diagnostic("list.marker-ambiguous", "warning", i + 1,
+                                marker_doubt_message(doubt));
         }
 
         /*
@@ -6814,6 +6995,8 @@ static void usage(const char *prog)
         "                                      swallowed into the item)\n"
         "  R3. Space after the ATX marker     (#Title is a paragraph,\n"
         "                                      not a heading)\n"
+        "  R4. Second column after a run of   (A. one / B. two is one\n"
+        "      uppercase markers               paragraph without it)\n"
         "\n"
         "Fixes (opt-in with --editorial):\n"
         "  1. Bullet markers normalized to -  (linter: list_bullet_style)\n"
@@ -7409,6 +7592,15 @@ static int process_file(const char *input_path, const char *output_path)
         free_lines();
         return 1;
     }
+
+    /*
+     * R4 rewrites lines[] rather than a line in flight, because a run is a
+     * property of several lines and the repair has to be decided before
+     * anything classifies them. Everything downstream then sees an ordinary
+     * list, so R2 and R3 space it without knowing this pass exists.
+     */
+    if (opt_required)
+        repair_initial_runs();
 
     /* ── Write / lint ── */
     int write_rc = 0;

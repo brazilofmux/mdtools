@@ -428,6 +428,27 @@ definitions), so the same term survived in a note and broke in the body two
 lines above. A rule that damages text is easier to see than a rule that
 damages it inconsistently.
 
+**Marker doubt, split two ways** (#97). #90 taught mdfix to read every marker
+form Pandoc reads; what was left is the set of lines where Pandoc's reading and
+the author's intent come apart. The priority the tool is built on — resolve
+what is unambiguous, report what is not — divides them cleanly.
+
+**R4** repairs the run. `A. First` then `B. Second` is one paragraph to Pandoc
+and a list to every reader, and the difference is one space nobody can see.
+Two or more with consecutive letters at the same indent is not ambiguous, and
+a repaired run classifies as a list so R2 spaces it — without that the columns
+land inside a paragraph and change nothing, which is what the first cut did.
+
+**`list.marker-ambiguous`** reports the rest and rewrites none of it: a lone
+`A. text` (a list item, or a name abbreviated — the case the two-column rule
+exists for), `@key.` opening a block (an example list to Pandoc, a citation to
+a reader), and a word that parses as a roman numeral. It stays quiet
+mid-paragraph, where Pandoc and the author agree the line is prose.
+
+Over 511 files: **zero** diagnostics and **zero** output changes. A trap for
+what arrives rather than a backlog, which is what makes a hit worth reading —
+the same argument the noise budget in #100 and #102 turned on.
+
 **NFC over-reporting** (#103). `unicode.non-nfc` reported the UAX #15 quick
 check's *maybe* as a finding, which the documentation called the safe
 direction for a warning that rewrites nothing. It was not safe: Yorùbá needs
