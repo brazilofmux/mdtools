@@ -38,6 +38,64 @@ tool built on it; [docs/mdterms.md](docs/mdterms.md) and
 and configuration. [docs/vendoring.md](docs/vendoring.md) covers the Unicode
 tables mdfix carries and how a refresh is verified.
 
+## Status and scope
+
+In daily use against four book-length manuscripts, and young as a public
+repository. What that means in practice:
+
+**Stable, and treated as API.** The IR schema (`mdtools-ir-3`), the edit
+schema (`mdtools-edits-1`), the diagnostic rule identifiers, and the `0` / `1`
+/ `2` exit codes. The IR's own stability rule is written down in
+[docs/ir-schema.md](docs/ir-schema.md): it may gain optional fields and new
+kinds without a rename, and anything that changes what an existing field means
+gets a new schema name, which the header record makes detectable.
+
+**Not stable, and not your problem.** Everything inside. `mdfix.rl` is around
+seven thousand lines and will be rearranged. The contracts above exist so that
+can happen without telling you.
+
+### Which passes are safe
+
+A bare `mdfix` performs the four **required** repairs and nothing else — the
+ones without which Pandoc reads the document as something other than what was
+written. They are listed, with the block each one produces unfixed and fixed,
+in [docs/transforms.md](docs/transforms.md).
+
+`--editorial`, `--canonical` and `--technical` are different in kind: they
+rewrite prose. Bullet style, heading emphasis, Chicago punctuation, wrapping.
+They are opinions, they are correct for these manuscripts, and they may not be
+correct for yours. Look before you leap:
+
+```bash
+mdfix -n --diagnostics --canonical chapter.md   # what would change, and why
+```
+
+`-i` keeps a `.bak`. Version control is better.
+
+### Where the bugs probably are
+
+The evidence base is one language family. Every prose-damage bug found so far
+came from running these tools over ~511 files of English with transliterated
+Khoisan, Yorùbá, Hebrew and Greek, and each was a rule that was right for
+English and wrong for something else:
+
+- the Chicago space-after-punctuation pass re-spelled every Khoisan click
+  (`!Kung` → `! Kung`) and shipped in a printed volume before anyone noticed;
+- the NFC check reported correct Yorùbá as unnormalized, permanently, because
+  a quick check said *maybe* and nobody confirmed it;
+- a required repair split hard-wrapped sentences in two wherever a paragraph's
+  first line happened to be indented.
+
+Devanagari, Arabic, CJK and Cyrillic at volume are where the next one is. If a
+tool changes text you did not expect it to change, that is a bug and worth
+reporting even if it looks small — those three did.
+
+### Support
+
+Issues and pull requests are welcome. No support is promised and no release
+cadence exists; this is a working tool that happens to be readable. `make
+check` is what CI runs, and it wants to stay green.
+
 ## Canonical history (mdfix)
 
 As of the import (2026-08-11), copies ranked:
