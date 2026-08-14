@@ -428,18 +428,19 @@ class MdfixHelpTests(unittest.TestCase):
                          f"{unparsed}")
 
     def test_the_flag_it_was_filed_for_works(self) -> None:
-        # Documented *and* functional: the issue's evidence that it was only
-        # the help text that was wrong.
+        # The scanner matches U+2192, not ASCII `->`. That character must
+        # survive --editorial when this flag is set.
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "a.md"
-            path.write_text("A note -> an aside.\n", encoding="utf-8")
+            source = "A note \u2192 an aside.\n"
+            path.write_text(source, encoding="utf-8")
             out = Path(tmp) / "b.md"
             result = subprocess.run(
                 [str(MDFIX), "-q", "--editorial", "--no-arrow-aside",
                  str(path), str(out)],
                 capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, msg=result.stderr)
-            self.assertIn("->", out.read_text(encoding="utf-8"))
+            self.assertEqual(out.read_text(encoding="utf-8"), source)
 
 
 class SourceContractTests(unittest.TestCase):
