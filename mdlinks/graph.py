@@ -210,8 +210,23 @@ def check(docs: Sequence[Document]) -> List[Finding]:
                 used.add(key)
                 if key not in doc.definitions:
                     shown = label or link.label or link.text
-                    add(doc, link, "links.undefined-reference",
-                        f"no definition for [{shown}]")
+                    if link.form != "shortcut":
+                        # `[text][label]` and `[text][]` say what they are.
+                        # Nobody writes that spelling in prose, so a missing
+                        # definition is a mistake whatever else is in the file.
+                        add(doc, link, "links.undefined-reference",
+                            f"no definition for [{shown}]")
+                    elif doc.definitions:
+                        # A bare `[text]` is a link only in a document that
+                        # uses reference links. Where the file defines none,
+                        # brackets are prose — cross-references, stage
+                        # directions, editorial asides — and Pandoc agrees:
+                        # it renders them literally, which is what the author
+                        # sees on the page. Warning, not error: the finding is
+                        # "you may have meant a link", not "this is broken".
+                        add(doc, link, "links.undefined-reference",
+                            f"no definition for [{shown}]",
+                            severity="warning")
                     continue
                 definition = doc.definitions[key]
                 # The destination lives in the definition, so that is what a
