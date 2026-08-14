@@ -363,8 +363,7 @@ counts match `pandoc -t json` exactly, in all thirteen documents.
 
 Cell boundaries are not modelled — a record inside a table locates the
 construct, and a consumer that edits must respect `protected` on the table
-record above it. Emphasis and strong are not emitted; `heading.plain` already
-resolves them where it matters.
+record above it. Heading slugs still come from `heading.plain`.
 
 ## Known divergences from Pandoc
 

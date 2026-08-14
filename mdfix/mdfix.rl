@@ -2212,9 +2212,7 @@ static int find_emphasis(const char *text, struct emph_span *out, int max)
             int text_off = 0, text_len = 0;
             span = inline_link_len(text + i, &text_off, &text_len);
             if (span) {
-                /* The whole link, destination and text alike. Emphasis
-                 * inside link text is the recursive inline tree, which is
-                 * the rest of #88 and not this. */
+                /* Emphasis inside link text is the recursive inline tree. */
                 i += span;
                 continue;
             }
@@ -2530,7 +2528,11 @@ static void emit_inline(FILE *out, const char *text, long long base,
 
     while (text[i]) {
         /* In source order with the rest, and only where the scan reaches:
-         * a pair inside a code span or a link is skipped with it. */
+         * a pair inside a code span or a link is skipped with it. Drain
+         * starts the scan jumped past (reference, shortcut, footnote,
+         * citation) so a later pair on this line is still emitted. */
+        while (next_emph < nemph && emph[next_emph].start < i)
+            next_emph++;
         while (next_emph < nemph && emph[next_emph].start == i) {
             const struct emph_span *e = &emph[next_emph++];
             ir_inline(out, e->strong ? "strong" : "emphasis",

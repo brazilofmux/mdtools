@@ -110,6 +110,17 @@ class RecordTests(EmphasisTestCase):
         self.assertEqual(self._emph("*one* and *two*\n"),
                          [("emphasis", "one"), ("emphasis", "two")])
 
+    def test_a_later_pair_survives_a_skipped_inner_start(self) -> None:
+        # find_emphasis records the inner pair; emit_inline skips the
+        # enclosing [..] as one construct. Drain those starts so a later
+        # simple pair on the same line is still emitted.
+        self.assertEqual(
+            self._emph("See [the *foo* guide][id] and *bar*.\n\n[id]: x.md\n"),
+            [("emphasis", "bar")])
+        self.assertEqual(
+            self._emph("See [the *foo* guide] and *bar*.\n"),
+            [("emphasis", "bar")])
+
     def test_records_arrive_in_source_order(self) -> None:
         kinds = [r["kind"] for r in self._records("*a* `c` **b**\n")
                  if r["kind"] in ("emphasis", "strong", "code_span")]
