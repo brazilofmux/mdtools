@@ -120,7 +120,9 @@ def _target(record: dict) -> Optional[Target]:
 def read(path: Path, mdfix: Optional[str] = None) -> Document:
     doc = Document(path=path)
     headings: List[str] = []
-    for record in raw_records([path], mdfix):
+    records = list(raw_records([path], mdfix))
+    def_starts = {r["start"] for r in records if r.get("kind") == "footnote_def"}
+    for record in records:
         kind = record.get("kind")
         if kind == "heading":
             headings.append(record.get("plain") or record.get("text") or "")
@@ -145,8 +147,9 @@ def read(path: Path, mdfix: Optional[str] = None) -> Document:
         elif kind == "footnote_def":
             doc.footnotes.setdefault(record.get("label", ""), record["line"])
         elif kind == "footnote_ref":
+            in_body = record.get("parent") in def_starts
             doc.footnote_refs.append((record.get("label", ""), record["line"],
-                                      record["start"], record["end"]))
+                                      record["start"], record["end"], in_body))
     doc.anchors = assign_slugs(headings)
     return doc
 
@@ -240,12 +243,28 @@ def check(docs: Sequence[Document]) -> List[Finding]:
                     message=f"[{label}] is defined but never used"))
 
         seen_notes = {label for label, *_ in doc.footnote_refs}
-        for label, line, start, end in doc.footnote_refs:
+        first_use: Dict[str, int] = {}
+        for label, line, start, end, in_body in doc.footnote_refs:
             if label not in doc.footnotes:
                 findings.append(Finding(
                     path=str(doc.path), rule="links.undefined-footnote",
                     severity="error", line=line, start=start, end=end,
                     message=f"no definition for footnote {label}"))
+                continue
+            # A token inside a definition body is not a document reference.
+            if in_body:
+                continue
+            # Pandoc has no reuse syntax: a second document reference clones
+            # the note body and renumbers every note after it.
+            if label in first_use:
+                findings.append(Finding(
+                    path=str(doc.path), rule="links.reused-footnote",
+                    severity="error", line=line, start=start, end=end,
+                    message=f"footnote {label} is already referenced on line "
+                            f"{first_use[label]}; Pandoc will print the note "
+                            f"twice and renumber the rest"))
+            else:
+                first_use[label] = line
         for label, line in doc.footnotes.items():
             if label not in seen_notes:
                 findings.append(Finding(

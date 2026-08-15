@@ -33,11 +33,40 @@ text. Percent-escapes in the fragment are decoded before comparison.
 | `links.undefined-reference` | error | `[x][label]` or collapsed `[text][]` with no definition |
 | `links.undefined-reference` | warning | shortcut `[label]` with no definition, **in a file that defines at least one** |
 | `links.undefined-footnote` | error | a footnote reference with no definition |
+| `links.reused-footnote` | error | a footnote referenced more than once |
 | `links.missing-file` | error | a relative path not on disk (inline **or** via a resolved reference definition) |
 | `links.unused-definition` | warning | a definition nothing uses |
 | `links.unused-footnote` | warning | a footnote definition nothing references |
 
 Errors exit 1; warnings alone exit 0 unless `--warnings` is passed.
+
+### Why a footnote used twice is an error
+
+Pandoc has no syntax for reusing a footnote. A second reference does not link
+twice to one note — it **duplicates the note body** and renumbers every note
+after it:
+
+```console
+$ pandoc -t html dupref.md | grep '<li id='
+<li id="fn1"><p>The note body.…</p></li>
+<li id="fn2"><p>The note body.…</p></li>     ← same text, second number
+<li id="fn3"><p>Second note.…</p></li>       ← was note 2 in the source
+```
+
+So unlike a bare `[label]`, there is no reading in which the source is right,
+and the finding is an error rather than a warning.
+
+It is also the one footnote defect a careful author cannot catch. The source
+is valid, every reference resolves, `links.undefined-footnote` has nothing to
+say because the note *is* defined, and the duplication does not exist in the
+manuscript — only in the rendered book. It reached print in two volumes
+(issue #115), in a chapter that defines 24 notes and prints 31.
+
+**Check-only, deliberately.** Dropping the second reference is right when two
+consecutive paragraphs share a note and wrong when the second sits
+mid-paragraph against a distinct claim that would lose its citation. Both
+shapes occurred in the same chapter, and telling them apart needs the
+argument, not the graph.
 
 ### Why a bare `[label]` is judged by its document
 
