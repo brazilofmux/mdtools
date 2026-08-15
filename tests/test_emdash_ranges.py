@@ -163,9 +163,18 @@ class BulletMarkerTests(DashTestCase):
         self.assertEqual(self._fix(source, "--canonical"),
                          "> * -- tight against the marker\n")
 
-    def test_quoted_emphasis_still_joins(self) -> None:
-        out = self._fix("> *emph* -- aside\n", "--chicago-punct")
+    def test_emphasis_after_a_list_marker_still_joins(self) -> None:
+        # Was `> *emph* -- aside`, which no longer converts: block quote
+        # content is exempt from the prose passes since #125. The property
+        # it was guarding is unchanged and still observable — a `*` is only
+        # a marker when it *opens* the line, so one behind a bullet marker
+        # closes emphasis and joins.
+        out = self._fix("- *emph* -- aside\n", "--chicago-punct")
         self.assertIn(f"*emph*{EM}aside", out)
+
+    def test_a_quoted_dash_is_left_to_the_quotation(self) -> None:
+        source = "> *emph* -- aside\n"
+        self.assertEqual(self._fix(source, "--chicago-punct"), source)
 
 
 class ProtectedTests(DashTestCase):

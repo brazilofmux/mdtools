@@ -1441,6 +1441,49 @@ static int is_headerless_table_header(const char *line);
  */
 static unsigned char pipe_table_line[MAX_LINES];
 
+static unsigned char block_quote_line[MAX_LINES];
+
+/*
+ * Every line Pandoc reads as block quote content, including the lazy
+ * continuations that carry no `>`.
+ *
+ * A per-line `is_blockquote_line` test misses those, and they are ordinary
+ * quoted prose: `> …prints it ;` wrapped onto a second line is still the
+ * 1910 edition's punctuation. A fenced `>` is code, not a quote.
+ */
+static void mark_block_quotes(void)
+{
+    struct fence_state fence = {0, 0, 0, 0, 0};
+    memset(block_quote_line, 0, (size_t)nlines);
+
+    for (int i = 0; i < nlines; i++) {
+        if (fence.active) {
+            if (is_fence_closer(lines[i], &fence))
+                fence.active = 0;
+            continue;
+        }
+        if (parse_fence_opener(lines[i], &fence))
+            continue;
+        if (!is_blockquote_line(lines[i]))
+            continue;
+
+        block_quote_line[i] = 1;
+        /* A blank line ends the quote; so does anything that opens a block
+         * of its own. Everything else is the paragraph continuing. */
+        for (int j = i + 1; j < nlines; j++) {
+            if (is_blank(lines[j]))
+                break;
+            if (!is_blockquote_line(lines[j])
+                && (classify(lines[j]) != LT_TEXT
+                    || parse_fence_opener(lines[j], &fence)))
+                break;
+            block_quote_line[j] = 1;
+            i = j;
+        }
+    }
+    fence.active = 0;
+}
+
 /* Lines R4 gave a second column to. They are a list the author wrote and
  * Pandoc cannot see, so process() reads them as one even where a paragraph
  * is open — which is what lets R2 space them. */
@@ -5219,7 +5262,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 5223 "mdfix.c"
+#line 5266 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -5227,20 +5270,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 5231 "mdfix.c"
+#line 5274 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 5637 "mdfix.rl"
+#line 5680 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 5381 "mdfix.rl"
+#line 5424 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -5280,7 +5323,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 5243 "mdfix.rl"
+#line 5286 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial || ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -5317,19 +5360,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 5236 "mdfix.rl"
+#line 5279 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 5236 "mdfix.rl"
+#line 5279 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 5572 "mdfix.rl"
+#line 5615 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -5353,7 +5396,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 5617 "mdfix.rl"
+#line 5660 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -5374,7 +5417,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 5595 "mdfix.rl"
+#line 5638 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -5397,13 +5440,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 5637 "mdfix.rl"
+#line 5680 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 5511 "mdfix.rl"
+#line 5554 "mdfix.rl"
 	{te = p+1;{
                 /* Before the mark is emitted, while `out` still ends at the
                  * character in front of it. */
@@ -5430,7 +5473,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 5423 "mdfix.rl"
+#line 5466 "mdfix.rl"
 	{te = p+1;{
                 /*
                  * Either Chicago flag answers "is this run an ellipsis?"
@@ -5481,13 +5524,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 5637 "mdfix.rl"
+#line 5680 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 5473 "mdfix.rl"
+#line 5516 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -5526,7 +5569,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 5537 "mdfix.rl"
+#line 5580 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -5562,7 +5605,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 5305 "mdfix.rl"
+#line 5348 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5575,7 +5618,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 5279 "mdfix.rl"
+#line 5322 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5589,7 +5632,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 5317 "mdfix.rl"
+#line 5360 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5602,7 +5645,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 5292 "mdfix.rl"
+#line 5335 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5616,7 +5659,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 5329 "mdfix.rl"
+#line 5372 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -5669,7 +5712,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 5236 "mdfix.rl"
+#line 5279 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -5682,7 +5725,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 5686 "mdfix.c"
+#line 5729 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -5708,7 +5751,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 5712 "mdfix.c"
+#line 5755 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -5752,7 +5795,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 5756 "mdfix.c"
+#line 5799 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -5801,7 +5844,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 5805 "mdfix.c"
+#line 5848 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -5820,7 +5863,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 5824 "mdfix.c"
+#line 5867 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -5846,7 +5889,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 5850 "mdfix.c"
+#line 5893 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -5895,7 +5938,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 5899 "mdfix.c"
+#line 5942 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -5975,7 +6018,7 @@ case 13:
 
 	}
 
-#line 5644 "mdfix.rl"
+#line 5687 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';
@@ -6064,6 +6107,7 @@ static void process(FILE *out)
     if (opt_required)
         repair_initial_runs();
     mark_pipe_tables();
+    mark_block_quotes();
     struct fence_state fence = {0, 0, 0, 0, 0};
     enum raw_html_kind raw_html = RAW_HTML_NONE;
 
@@ -6435,8 +6479,10 @@ static void process(FILE *out)
         fix_pandoc_safe_links(line, i + 1);
         fix_blockquote_space(line, i + 1);
 
-        /* A table row is not a sentence; Chicago/arrow must not move `|`. */
-        if (!pipe_table_line[i])
+        /* A table row is not a sentence; Chicago/arrow must not move `|`.
+         * Block quote content is someone else's text, and restyling a
+         * quotation is an edit to it, not to the author's prose (#125). */
+        if (!pipe_table_line[i] && !block_quote_line[i])
             apply_scanner(line, i + 1);
 
         /* Apply post-scanner C fixers */

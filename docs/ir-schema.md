@@ -65,7 +65,7 @@ closed, the flag flips and the consumer sees it.
 | `heading` | `level`, `style`, `text`, `plain` | `false` | `Header` |
 | `paragraph` | | `false` | `Para` |
 | `list` | | `false` | `BulletList` / `OrderedList` |
-| `block_quote` | | `false` | `BlockQuote` |
+| `block_quote` | | `false` | `BlockQuote` — see below |
 | `code_fence` | `unterminated` | `true` | `CodeBlock` |
 | `code_indented` | | `true` | `CodeBlock` |
 | `table` | `form` | see below | `Table` |
@@ -89,6 +89,11 @@ final `|` is still normalized, so the block is not reproduced byte for byte.
 
 `htmlKind` is one of `comment`, `cdata`, `processing-instruction`,
 `declaration`, `element`.
+
+A `block_quote` is `protected: false`, and like `pipe` the reason is a small
+one: no prose pass runs on quote content (#125), but `blockquote.space`
+normalizes the `>` marker and trailing whitespace is still trimmed, so the
+block is not reproduced byte for byte.
 
 `heading.style` is `atx` or `setext`. A setext record spans both lines, text
 and underline. The underline must start at **column 0** — CommonMark allows

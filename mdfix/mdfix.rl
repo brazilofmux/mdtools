@@ -1433,6 +1433,49 @@ static int is_headerless_table_header(const char *line);
  */
 static unsigned char pipe_table_line[MAX_LINES];
 
+static unsigned char block_quote_line[MAX_LINES];
+
+/*
+ * Every line Pandoc reads as block quote content, including the lazy
+ * continuations that carry no `>`.
+ *
+ * A per-line `is_blockquote_line` test misses those, and they are ordinary
+ * quoted prose: `> …prints it ;` wrapped onto a second line is still the
+ * 1910 edition's punctuation. A fenced `>` is code, not a quote.
+ */
+static void mark_block_quotes(void)
+{
+    struct fence_state fence = {0, 0, 0, 0, 0};
+    memset(block_quote_line, 0, (size_t)nlines);
+
+    for (int i = 0; i < nlines; i++) {
+        if (fence.active) {
+            if (is_fence_closer(lines[i], &fence))
+                fence.active = 0;
+            continue;
+        }
+        if (parse_fence_opener(lines[i], &fence))
+            continue;
+        if (!is_blockquote_line(lines[i]))
+            continue;
+
+        block_quote_line[i] = 1;
+        /* A blank line ends the quote; so does anything that opens a block
+         * of its own. Everything else is the paragraph continuing. */
+        for (int j = i + 1; j < nlines; j++) {
+            if (is_blank(lines[j]))
+                break;
+            if (!is_blockquote_line(lines[j])
+                && (classify(lines[j]) != LT_TEXT
+                    || parse_fence_opener(lines[j], &fence)))
+                break;
+            block_quote_line[j] = 1;
+            i = j;
+        }
+    }
+    fence.active = 0;
+}
+
 /* Lines R4 gave a second column to. They are a list the author wrote and
  * Pandoc cannot see, so process() reads them as one even where a paragraph
  * is open — which is what lets R2 space them. */
@@ -5729,6 +5772,7 @@ static void process(FILE *out)
     if (opt_required)
         repair_initial_runs();
     mark_pipe_tables();
+    mark_block_quotes();
     struct fence_state fence = {0, 0, 0, 0, 0};
     enum raw_html_kind raw_html = RAW_HTML_NONE;
 
@@ -6100,8 +6144,10 @@ static void process(FILE *out)
         fix_pandoc_safe_links(line, i + 1);
         fix_blockquote_space(line, i + 1);
 
-        /* A table row is not a sentence; Chicago/arrow must not move `|`. */
-        if (!pipe_table_line[i])
+        /* A table row is not a sentence; Chicago/arrow must not move `|`.
+         * Block quote content is someone else's text, and restyling a
+         * quotation is an edit to it, not to the author's prose (#125). */
+        if (!pipe_table_line[i] && !block_quote_line[i])
             apply_scanner(line, i + 1);
 
         /* Apply post-scanner C fixers */
