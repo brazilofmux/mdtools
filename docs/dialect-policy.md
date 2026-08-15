@@ -239,8 +239,26 @@ reference definitions. `--canonical` may normalize these; a content pass may
 not.
 
 **Prose.** The only text eligible for rewriting, wrapping, Chicago punctuation,
-or lexical variation. Paragraphs, list item content, block quote content, and
-the contents of `<div>` blocks.
+or lexical variation. Paragraphs, list item content, and the contents of
+`<div>` blocks.
+
+**Quoted.** Block quote content: prose, but not the author's. mdfix's prose
+passes do not run inside one (#125). A block quote is by definition someone
+else's text, so a rule meant for the author's style is an edit to a
+quotation — and the failure is silent, because a downstream verification
+harness normalizes punctuation before matching, so the document drifts from
+the source while the check still reports agreement.
+
+This is a revision of an earlier reading of this section, which put block
+quote content in **Prose**. The asymmetry decides it: wrongly editing a
+quotation falsifies evidence, while wrongly leaving a callout alone costs a
+spaced dash in an aside. `blockquote.space` still runs, because it owns the
+marker rather than the content.
+
+**prosevary still varies quoted prose**, which is a larger version of the same
+question and is not settled here — paraphrasing a quotation is worse than
+restyling its punctuation. It is generate-then-gate with a human reading the
+diff, which is why it has not bitten; it is recorded so it stays visible.
 
 **Unknown.** A construct the reader does not classify is treated as **verbatim
 and diagnosed**, never as prose. This is the default, and it is the direction
@@ -273,7 +291,7 @@ reproduced byte for byte; "prose" means eligible for rewriting.
 | Raw HTML block | `RawBlock` | protected | protected | ok |
 | `<div>` / `<span>` | `Div` / `Span` | prose inside | prose inside | ok, by design |
 | YAML front matter | metadata | protected | protected | ok |
-| Block quote | `BlockQuote` | prose inside | prose inside | ok |
+| Block quote | `BlockQuote` | **quoted — no prose pass** | prose inside | ok, see §6 |
 | Bullet / ordered list | `BulletList` / `OrderedList` | marker normalized | prose inside | ok |
 | Reference / footnote def | — | structural | protected | ok |
 | Thematic break | `HorizontalRule` | protected | protected | ok |
@@ -529,6 +547,22 @@ And only for `--`. The first attempt widened `is_dash_join_char` itself, which
 the em-dash *respacing* rule also uses, and closed up 4,798 spaced em-dashes
 across 264 files of finished prose. Measuring the blast radius is what caught
 it; the tests did not.
+
+**Quoted content** (#125). The Chicago passes ran on block quote *contents*,
+so `> …prints it ;` — J. B. Baillie's 1910 spacing, quoted verbatim — came
+back as `> …prints it;`. A series whose appendices describe its quotations as
+verified against the source stops being able to say so, and the check that
+would catch it normalizes punctuation before matching.
+
+The prose scanner no longer runs inside a block quote, including the lazy
+continuations that carry no `>` and are still quote content to Pandoc. Same
+shape as the table rows above, and the same reasoning: a profile is a bundle
+of things safe to apply *without looking*, and restyling someone else's
+punctuation is not one of them.
+
+Measured over six corpora, 578 files: 86 files change, 370 lines, and every
+one is a quote line. 103 of the block quotes involved are the Hegel and
+Foucault quotations in `~/philosophers`; 32 files are scripture in `~/bible`.
 
 **Chicago ellipsis.** A spaced run (`. . .`) or a run of four or more dots now
 becomes U+2026 `…` rather than ASCII `...`, under every flag that rewrites
