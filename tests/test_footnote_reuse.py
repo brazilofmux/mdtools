@@ -86,6 +86,14 @@ class OracleTests(FootnoteTestCase):
         single = REUSED.replace(" Later, again.[^1]", " Later, again.")
         self.assertEqual(len(self._rendered_notes(single)), 2)
 
+    def test_a_body_reference_does_not_print_an_extra_note(self) -> None:
+        source = ("A.[^1] B.[^2]\n\n"
+                  "[^1]: See.[^2]\n\n"
+                  "[^2]: Shared.\n")
+        notes = self._rendered_notes(source)
+        self.assertEqual(len(notes), 2)
+        self.assertEqual(sum("Shared." in n for n in notes), 1)
+
 
 class DetectionTests(FootnoteTestCase):
     def test_a_reused_footnote_is_reported(self) -> None:
@@ -138,6 +146,18 @@ class DetectionTests(FootnoteTestCase):
     def test_a_definition_is_not_a_reference(self) -> None:
         # `[^1]:` opening a definition must not count as a use of `[^1]`.
         source = "Once.[^1]\n\n[^1]: Body mentioning nothing.\n"
+        self.assertEqual(self._rules(self._doc(source)), [])
+
+    def test_a_body_reference_is_not_a_document_use(self) -> None:
+        # Pandoc leaves `[^2]` inside `[^1]:` as literal text; it does not
+        # print note 2 twice. The IR still emits the token.
+        source = ("A.[^1] B.[^2]\n\n"
+                  "[^1]: See.[^2]\n\n"
+                  "[^2]: Shared.\n")
+        self.assertEqual(self._rules(self._doc(source)), [])
+
+    def test_a_self_mention_in_the_body_is_not_reuse(self) -> None:
+        source = "Once.[^1]\n\n[^1]: Mentions itself.[^1]\n"
         self.assertEqual(self._rules(self._doc(source)), [])
 
 

@@ -134,7 +134,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     "form": link.form, "destination": link.destination,
                     "label": link.label, "text": link.text,
                 }, ensure_ascii=False))
-            for label, line, start, end in doc.footnote_refs:
+            for label, line, start, end, *_ in doc.footnote_refs:
                 print(json.dumps({
                     "kind": "footnote_ref", "path": str(doc.path),
                     "line": line, "start": start, "end": end,
