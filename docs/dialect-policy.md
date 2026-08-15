@@ -501,6 +501,35 @@ a verbatim quotation of computer output is the standard exception, so
 quoting a literal rather than speech — including this repository's own docs
 quoting their own section names.
 
+**Ranges and definition bullets** (#119). `chicago.emdash-spacing` converts
+` -- ` to an em-dash, which is what an author means by it in prose. Two things
+it got wrong, both from one crude predicate that has been
+alphanumerics-and-closers since the initial import.
+
+A numeric range was converted. `1--3` is a range, Chicago 6.78 makes a range
+an en-dash, and Pandoc's `smart` already renders `--` as one — so the input
+was correct and the pass made it wrong, at a 100% hit rate on the 19 ranges in
+the corpora. Left alone now, on the same reasoning as the ellipsis above:
+passing an author's shorthand through is not the same as emitting it.
+
+A definition bullet was skipped. `- **shall** -- The behavior…` did not
+convert because the character before the dash is the `*` closing the bold,
+while the aside two lines below it did — leaving a document less consistent
+after the pass than before, which is what made the reporter normalize the
+dashes outside mdfix. An inline-markup delimiter now ends a word for this
+rule, with two guards the corpus insisted on:
+
+- **only when the dash is spaced on both sides.** A backtick hard against it
+  is a command-line flag inside a code span, and the unspaced form ate
+  `` `--editorial` `` in this repository's own README.
+- **not when the marker opens the line.** `* -- text` is a list item, and
+  joining it would eat the marker.
+
+And only for `--`. The first attempt widened `is_dash_join_char` itself, which
+the em-dash *respacing* rule also uses, and closed up 4,798 spaced em-dashes
+across 264 files of finished prose. Measuring the blast radius is what caught
+it; the tests did not.
+
 **Chicago ellipsis.** A spaced run (`. . .`) or a run of four or more dots now
 becomes U+2026 `…` rather than ASCII `...`, under every flag that rewrites
 one. `--chicago-punct-2` was the awkward half: it reached `...` by stripping
