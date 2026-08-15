@@ -208,6 +208,7 @@ static int  opt_inplace  = 0;
 static int  opt_quiet    = 0;
 static int  opt_trail_ws = 0;
 static int  opt_no_arrow_aside = 0;
+static int  opt_no_quote_punct = 0;
 static int  opt_chicago_punct = 0;
 static int  opt_chicago_punct2 = 0;
 static int  opt_serial_comma_lint = 0;
@@ -3800,6 +3801,13 @@ static int should_insert_space_after_punct(unsigned char punct, unsigned char ne
         return 0;
     if ((punct == ',' || punct == '.') && isdigit(next))
         return 0;
+    /* `;` against a letter is a token separator, not a clause. */
+    if (punct == ';')
+        return 0;
+    /* `:` introduces a clause only after a word and before an ASCII capital
+     * (so `Foo::Bar` stays). */
+    if (punct == ':' && (!isupper(next) || !prev_is_word))
+        return 0;
     if (next == '"' || next == '\'')
         return 0;
     if (next == '[' || next == ')' || next == ']' || next == '}' || next == '/')
@@ -5103,6 +5111,7 @@ struct scan_ctx {
     int    do_chicago_punct2;
     int    do_chicago_abbrev;
     int    skip_punct2;
+    int    no_quote_punct;
     int    skip_abbrev;
     int    spaced_emdash;
     int    linenum;
@@ -5501,7 +5510,9 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
                             if (sp < pe && isupper((unsigned char)*sp))
                                 do_swap = 1;
                         }
-                        if (do_swap && !ctx->skip_punct2 && ctx->do_chicago_punct2) {
+                        if (do_swap && !ctx->skip_punct2
+                            && !ctx->no_quote_punct
+                            && ctx->do_chicago_punct2) {
                             EMIT_CHAR(punct);
                             EMIT_CHAR('"');
                             BUMP(FIX_CHI_QUOTE_TERMINAL_PUNCT);
@@ -5643,6 +5654,7 @@ static int apply_scanner_raw(char *line, int hits[NUM_FIXES])
     ctx.editorial         = opt_editorial;
     ctx.do_chicago_punct  = opt_chicago_punct;
     ctx.do_chicago_punct2 = opt_chicago_punct2;
+    ctx.no_quote_punct    = opt_no_quote_punct;
     ctx.do_chicago_abbrev = opt_chicago_abbrev;
     ctx.skip_punct2       = should_skip_chicago_punct2(line);
     ctx.skip_abbrev       = should_skip_chicago_abbrev(line);
@@ -7028,6 +7040,10 @@ static void usage(const char *prog)
         "        Keep notation arrows: `a -> b` stays an arrow instead of\n"
         "        becoming an em-dash aside. For technical prose where the\n"
         "        arrow means something\n"
+        "  --no-quote-punct\n"
+        "        Leave punctuation where the author put it around a closing\n"
+        "        quote. Chicago moves a period or comma inside; a verbatim\n"
+        "        quotation of computer output is the standard exception\n"
         "  --no-required\n"
         "        Disable the required (L2) repairs. Output is then not\n"
         "        guaranteed Pandoc-readable; for inspection, not for writing\n"
@@ -7085,7 +7101,8 @@ static void usage(const char *prog)
         "\n"
         "Fixes (opt-in with --chicago-punct-2):\n"
         " 10. Remove space before punctuation (word , -> word,)\n"
-        " 11. Normalize space after ,;:?!     (\"Hi,there\" -> \"Hi, there\")\n"
+        " 11. Normalize space after , ? !     (\"Hi,there\" -> \"Hi, there\")\n"
+        "      and after : before a capital  (\":\" in a token is syntax)\n"
         " 12. Move . and , inside quotes      (\"word\". -> \"word.\")\n"
         "\n"
         "Lint (opt-in with --serial-comma-lint):\n"
@@ -7753,6 +7770,11 @@ int main(int argc, char *argv[])
         }
         if (strcmp(argv[argi], "--no-arrow-aside") == 0) {
             opt_no_arrow_aside = 1;
+            argi++;
+            continue;
+        }
+        if (strcmp(argv[argi], "--no-quote-punct") == 0) {
+            opt_no_quote_punct = 1;
             argi++;
             continue;
         }
