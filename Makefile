@@ -4,7 +4,7 @@ BINDIR  ?= $(PREFIX)/bin
 LIBDIR  ?= $(PREFIX)/lib/mdtools
 PYTHON  ?= python3
 
-.PHONY: all mdfix prosevary-check mdquery-check mdterms-check mdlinks-check mdtools-check install uninstall clean test check-sync asan fuzz check
+.PHONY: all mdfix prosevary-check mdquery-check mdterms-check mdlinks-check mdtools-check install uninstall clean test check-sync slow32-check asan fuzz check
 
 all: mdfix
 
@@ -77,6 +77,13 @@ test: mdfix prosevary-check mdquery-check mdterms-check mdlinks-check \
 # committed .c must keep working without it.
 check-sync:
 	$(MAKE) -C mdfix check-sync
+
+# Build the SLOW-32 guest mdfix and verify host/guest behavior parity.
+# Needs the slow-32 repo (override SLOW32_ROOT / SLOW32_LLVM as needed);
+# fails rather than skips when it is missing, and is not part of `make test`.
+slow32-check:
+	$(MAKE) -C mdfix mdfix slow32
+	mdfix/test-slow32.sh
 
 # Sanitizer pass over the repo's own markdown. Catches the class of bug the
 # test suite cannot see: a few bytes written past a heap allocation.

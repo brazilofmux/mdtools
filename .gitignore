@@ -3,6 +3,11 @@ mdfix/mdfix
 mdfix/mdfix-asan
 mdfix/mdfix-asan.dSYM/
 
+# SLOW-32 guest build (make -C mdfix slow32)
+mdfix/mdfix.s32x
+mdfix/*.s32o
+mdfix/vendor/*.s32o
+
 # Python
 __pycache__/
 *.py[cod]

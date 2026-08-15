@@ -62,7 +62,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>   /* strncasecmp */
+#ifndef __slow32__
+#include <strings.h>   /* strncasecmp; SLOW-32 declares it in string.h */
+#endif
 #include <ctype.h>
 #include "vendor/utf_width.h"
 #include "vendor/utf_nfc.h"
@@ -73,15 +75,58 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifdef __slow32__
+/*
+ * SLOW-32 compatibility. The guest libc has open/close/access/unlink/
+ * rename/lstat/fdopen/getline/fmemopen/open_memstream, but not the
+ * POSIX calls the atomic-save path leans on. Each shim below degrades
+ * a documented step rather than faking the guarantee:
+ *
+ *   mkstemp  finds a free name with access() then opens it — NOT atomic
+ *            (the guest MMIO open has no O_EXCL). Fine single-process,
+ *            which is the only way a SLOW-32 guest runs.
+ *   link     always fails, so the .bak path takes its existing
+ *            rename-aside fallback (backup still made, less atomically).
+ *   fsync    no-op; MMIO writes land in the host kernel synchronously,
+ *            so there is no guest-side buffer left to force out. Host
+ *            power-loss durability is out of scope for an emulator.
+ *   fchmod / fchown
+ *            no-ops: the saved file keeps the temp file's default mode,
+ *            and ownership transfer is meaningless in the emulator.
+ */
+static int mkstemp(char *template_path) {
+    size_t len = strlen(template_path);
+    int attempt;
+    if (len < 6 || strcmp(template_path + len - 6, "XXXXXX") != 0)
+        return -1;
+    for (attempt = 0; attempt < 1000; attempt++) {
+        snprintf(template_path + len - 6, 7, "%06d", attempt);
+        if (access(template_path, F_OK) != 0)
+            return open(template_path, O_RDWR | O_CREAT | O_TRUNC);
+    }
+    return -1;
+}
+static int link(const char *oldpath, const char *newpath) {
+    (void)oldpath; (void)newpath;
+    return -1;
+}
+static int fsync(int fd) { (void)fd; return 0; }
+static int fchmod(int fd, unsigned int mode) { (void)fd; (void)mode; return 0; }
+static int fchown(int fd, unsigned int uid, unsigned int gid) {
+    (void)fd; (void)uid; (void)gid;
+    return 0;
+}
+#endif
 
-#line 78 "mdfix.c"
+
+#line 123 "mdfix.c"
 static const int mdfix_scanner_start = 14;
 static const int mdfix_scanner_error = -1;
 
 static const int mdfix_scanner_en_main = 14;
 
 
-#line 77 "mdfix.rl"
+#line 122 "mdfix.rl"
 
 
 #define MAX_LINE  8192
@@ -5303,7 +5348,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 5307 "mdfix.c"
+#line 5352 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -5311,20 +5356,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 5315 "mdfix.c"
+#line 5360 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 5721 "mdfix.rl"
+#line 5766 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 5465 "mdfix.rl"
+#line 5510 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -5364,7 +5409,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 5327 "mdfix.rl"
+#line 5372 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial || ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -5401,19 +5446,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 5320 "mdfix.rl"
+#line 5365 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 5320 "mdfix.rl"
+#line 5365 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 5656 "mdfix.rl"
+#line 5701 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -5437,7 +5482,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 5701 "mdfix.rl"
+#line 5746 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -5458,7 +5503,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 5679 "mdfix.rl"
+#line 5724 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -5481,13 +5526,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 5721 "mdfix.rl"
+#line 5766 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 5595 "mdfix.rl"
+#line 5640 "mdfix.rl"
 	{te = p+1;{
                 /* Before the mark is emitted, while `out` still ends at the
                  * character in front of it. */
@@ -5514,7 +5559,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 5507 "mdfix.rl"
+#line 5552 "mdfix.rl"
 	{te = p+1;{
                 /*
                  * Either Chicago flag answers "is this run an ellipsis?"
@@ -5565,13 +5610,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 5721 "mdfix.rl"
+#line 5766 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 5557 "mdfix.rl"
+#line 5602 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -5610,7 +5655,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 5621 "mdfix.rl"
+#line 5666 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -5646,7 +5691,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 5389 "mdfix.rl"
+#line 5434 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5659,7 +5704,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 5363 "mdfix.rl"
+#line 5408 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5673,7 +5718,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 5401 "mdfix.rl"
+#line 5446 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5686,7 +5731,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 5376 "mdfix.rl"
+#line 5421 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5700,7 +5745,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 5413 "mdfix.rl"
+#line 5458 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -5753,7 +5798,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 5320 "mdfix.rl"
+#line 5365 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -5766,7 +5811,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 5770 "mdfix.c"
+#line 5815 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -5792,7 +5837,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 5796 "mdfix.c"
+#line 5841 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -5836,7 +5881,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 5840 "mdfix.c"
+#line 5885 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -5885,7 +5930,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 5889 "mdfix.c"
+#line 5934 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -5904,7 +5949,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 5908 "mdfix.c"
+#line 5953 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -5930,7 +5975,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 5934 "mdfix.c"
+#line 5979 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -5979,7 +6024,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 5983 "mdfix.c"
+#line 6028 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -6059,7 +6104,7 @@ case 13:
 
 	}
 
-#line 5728 "mdfix.rl"
+#line 5773 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';

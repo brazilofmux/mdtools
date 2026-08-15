@@ -2,12 +2,49 @@ RAGEL  ?= ragel
 CC     ?= cc
 CFLAGS ?= -O2
 
-.PHONY: all clean asan check-sync
+# SLOW-32 cross build (make slow32). Needs the slow-32 repo's toolchain and
+# a clang with the slow32 backend; override these when they live elsewhere.
+SLOW32_ROOT ?= $(HOME)/slow-32
+SLOW32_LLVM ?= $(HOME)/llvm-project/build/bin
+S32_CLANG    = $(SLOW32_LLVM)/clang
+S32_LLC      = $(SLOW32_LLVM)/llc
+S32_AS       = $(SLOW32_ROOT)/tools/assembler/slow32asm
+S32_LD       = $(SLOW32_ROOT)/tools/linker/s32-ld
+S32_RUNTIME  = $(SLOW32_ROOT)/runtime
+S32_CFLAGS   = -target slow32-unknown-none -S -emit-llvm -O1 \
+               -nostdinc -fno-builtin -I$(S32_RUNTIME)/include -I.
+S32_SRCS     = mdfix.c vendor/utf_width.c vendor/utf_nfc.c vendor/utf_word.c
+
+.PHONY: all clean asan check-sync slow32
 
 all: mdfix
 
 mdfix: mdfix.c vendor/utf_width.c vendor/utf_nfc.c vendor/utf_word.c
 	$(CC) $(CFLAGS) -o $@ mdfix.c vendor/utf_width.c vendor/utf_nfc.c vendor/utf_word.c
+
+# SLOW-32 guest binary. Every buffer line is a full MAX_LINE (8K) malloc by
+# design — overflow headroom for the in-place fixers — so heap scales at
+# 8K x lines. 224M of heap covers a ~28k-line whole-book file; the guest
+# address space caps at 256M, so this is close to as generous as it gets.
+# The 8M stack absorbs ragel -G2's large frames (256K provably overflowed).
+slow32: mdfix.s32x
+
+mdfix.s32x: $(S32_SRCS)
+	@set -e; \
+	for src in $(S32_SRCS); do \
+		base=$${src%.c}; \
+		$(S32_CLANG) $(S32_CFLAGS) $$src -o $$base.s32.ll; \
+		$(S32_LLC) -mtriple=slow32-unknown-none $$base.s32.ll -o $$base.s32.s; \
+		$(S32_AS) $$base.s32.s $$base.s32o >/dev/null; \
+	done
+	$(S32_LD) --mmio 64K --heap-size 224M --stack-size 8M --rodata-size 4M \
+		-o $@ \
+		$(S32_RUNTIME)/crt0.s32o \
+		mdfix.s32o vendor/utf_width.s32o vendor/utf_nfc.s32o \
+		vendor/utf_word.s32o \
+		$(S32_RUNTIME)/libc_mmio.s32a $(S32_RUNTIME)/libs32.s32a
+	@rm -f mdfix.s32.ll mdfix.s32.s vendor/*.s32.ll vendor/*.s32.s
+	@echo "Built $@ — run with: $(SLOW32_ROOT)/tools/emulator/slow32-fast $@"
 
 # Sanitizer build. Every fixer mutates its line in place and several of them
 # lengthen it, so a wrong-sized line allocation overflows the heap by a few
@@ -87,4 +124,5 @@ check-sync:
 
 clean:
 	rm -rf mdfix mdfix-asan mdfix-asan.dSYM
+	rm -f mdfix.s32x mdfix.s32o vendor/*.s32o
 	# Keep mdfix.c in the tree; only drop the binary.

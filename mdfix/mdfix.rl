@@ -60,7 +60,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>   /* strncasecmp */
+#ifndef __slow32__
+#include <strings.h>   /* strncasecmp; SLOW-32 declares it in string.h */
+#endif
 #include <ctype.h>
 #include "vendor/utf_width.h"
 #include "vendor/utf_nfc.h"
@@ -70,6 +72,49 @@
 #include <limits.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#ifdef __slow32__
+/*
+ * SLOW-32 compatibility. The guest libc has open/close/access/unlink/
+ * rename/lstat/fdopen/getline/fmemopen/open_memstream, but not the
+ * POSIX calls the atomic-save path leans on. Each shim below degrades
+ * a documented step rather than faking the guarantee:
+ *
+ *   mkstemp  finds a free name with access() then opens it — NOT atomic
+ *            (the guest MMIO open has no O_EXCL). Fine single-process,
+ *            which is the only way a SLOW-32 guest runs.
+ *   link     always fails, so the .bak path takes its existing
+ *            rename-aside fallback (backup still made, less atomically).
+ *   fsync    no-op; MMIO writes land in the host kernel synchronously,
+ *            so there is no guest-side buffer left to force out. Host
+ *            power-loss durability is out of scope for an emulator.
+ *   fchmod / fchown
+ *            no-ops: the saved file keeps the temp file's default mode,
+ *            and ownership transfer is meaningless in the emulator.
+ */
+static int mkstemp(char *template_path) {
+    size_t len = strlen(template_path);
+    int attempt;
+    if (len < 6 || strcmp(template_path + len - 6, "XXXXXX") != 0)
+        return -1;
+    for (attempt = 0; attempt < 1000; attempt++) {
+        snprintf(template_path + len - 6, 7, "%06d", attempt);
+        if (access(template_path, F_OK) != 0)
+            return open(template_path, O_RDWR | O_CREAT | O_TRUNC);
+    }
+    return -1;
+}
+static int link(const char *oldpath, const char *newpath) {
+    (void)oldpath; (void)newpath;
+    return -1;
+}
+static int fsync(int fd) { (void)fd; return 0; }
+static int fchmod(int fd, unsigned int mode) { (void)fd; (void)mode; return 0; }
+static int fchown(int fd, unsigned int uid, unsigned int gid) {
+    (void)fd; (void)uid; (void)gid;
+    return 0;
+}
+#endif
 
 %%{
     machine mdfix_scanner;
