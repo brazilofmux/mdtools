@@ -134,6 +134,40 @@ class QuotedContentTests(QuotedTestCase):
         self.assertIn("> not a quote ; here", out)
         self.assertIn("Prose; here.", out)
 
+    def test_a_marker_inside_html_is_not_a_quote(self) -> None:
+        source = ("<!--\n> not a quote ; here\n-->\nAuthor ; here.\n")
+        out = self._fix(source, "--canonical")
+        self.assertIn("> not a quote ; here", out)
+        self.assertIn("Author; here.", out)
+
+    def test_an_indented_marker_is_not_a_quote(self) -> None:
+        source = ("    > not a quote ; here\nAuthor ; here.\n")
+        out = self._fix(source, "--canonical")
+        self.assertIn("> not a quote ; here", out)
+        self.assertIn("Author; here.", out)
+
+    def test_a_list_item_quote_is_still_a_quotation(self) -> None:
+        for source in ("- > quote ; here\n", "1. > quote ; here\n"):
+            with self.subTest(source=source):
+                self.assertEqual(self._fix(source, "--canonical"), source)
+
+    def test_a_lazy_line_after_a_list_item_quote_stays_quoted(self) -> None:
+        source = "- > quote ; here\nstill -- aside\n"
+        out = self._fix(source, "--chicago-punct")
+        self.assertIn("quote ; here", out)
+        self.assertIn("--", out)
+        self.assertNotIn(EM, out)
+
+    def test_a_list_shaped_lazy_line_is_still_the_quotation(self) -> None:
+        # Pandoc's markdown reader does not start a list here; classify() does.
+        source = "> quote ; here\n- still -- aside\n"
+        out = self._fix(source, "--chicago-punct")
+        self.assertIn("quote ; here", out)
+        self.assertIn("--", out)
+        self.assertNotIn(EM, out)
+        if PANDOC:
+            self.assertEqual(self._blocks(source), ["BlockQuote"])
+
 
 class MarkerTests(QuotedTestCase):
     """The pass that owns the construct still runs."""
@@ -164,9 +198,11 @@ class AuthorsProseTests(QuotedTestCase):
                          "- an item; here\n")
 
     def test_wrapping_still_leaves_quotes_alone(self) -> None:
-        # Long-standing behaviour, pinned here because the new marking runs
-        # beside `is_wrappable_at` and a regression would look like this.
         source = "> " + "word " * 40 + "end\n"
+        self.assertEqual(self._fix(source, "--wrap=40"), source)
+
+    def test_wrapping_leaves_a_lazy_continuation_alone(self) -> None:
+        source = "> short\n" + "word " * 20 + "end\n"
         self.assertEqual(self._fix(source, "--wrap=40"), source)
 
 

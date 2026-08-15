@@ -1435,17 +1435,47 @@ static unsigned char pipe_table_line[MAX_LINES];
 
 static unsigned char block_quote_line[MAX_LINES];
 
+static int list_marker_bytes(const char *line);
+
+/* CommonMark quote opener: 0–3 columns, then `>`. Four spaces is code. */
+static int is_quote_opener(const char *line)
+{
+    int chars = 0;
+    int col = indent_columns(line, &chars);
+    if (col > 3)
+        return 0;
+    return line[chars] == '>';
+}
+
+/* A list item whose body is a quote is still a quote (`- > …`, `1. > …`). */
+static int line_opens_block_quote(const char *line)
+{
+    if (is_quote_opener(line))
+        return 1;
+    int marker = list_marker_bytes(line);
+    return marker >= 0 && is_quote_opener(line + marker);
+}
+
+/* Interruptions in the pinned Pandoc reader, not R2's mid-paragraph lists. */
+static int quote_run_stops(const char *line, struct fence_state *fence)
+{
+    if (is_blank(line))
+        return 1;
+    if (is_heading(line))
+        return 1;
+    if (parse_fence_opener(line, fence))
+        return 1;
+    return 0;
+}
+
 /*
- * Every line Pandoc reads as block quote content, including the lazy
- * continuations that carry no `>`.
- *
- * A per-line `is_blockquote_line` test misses those, and they are ordinary
- * quoted prose: `> …prints it ;` wrapped onto a second line is still the
- * 1910 edition's punctuation. A fenced `>` is code, not a quote.
+ * Quote content includes lazy lines that carry no `>`. A fenced or
+ * indented `>` is not a quote, nor is one inside raw HTML.
  */
 static void mark_block_quotes(void)
 {
     struct fence_state fence = {0, 0, 0, 0, 0};
+    enum raw_html_kind raw_html = RAW_HTML_NONE;
     memset(block_quote_line, 0, (size_t)nlines);
 
     for (int i = 0; i < nlines; i++) {
@@ -1454,20 +1484,29 @@ static void mark_block_quotes(void)
                 fence.active = 0;
             continue;
         }
+        if (raw_html != RAW_HTML_NONE) {
+            if (raw_html_line_has_end(lines[i], raw_html))
+                raw_html = RAW_HTML_NONE;
+            continue;
+        }
         if (parse_fence_opener(lines[i], &fence))
             continue;
-        if (!is_blockquote_line(lines[i]))
+        {
+            enum raw_html_kind kind = raw_html_open_kind(lines[i]);
+            if (kind != RAW_HTML_NONE) {
+                const char *lt = strchr(lines[i], '<');
+                const char *after = lt ? lt + 1 : lines[i] + 1;
+                if (!raw_html_line_has_end(after, kind))
+                    raw_html = kind;
+                continue;
+            }
+        }
+        if (!line_opens_block_quote(lines[i]))
             continue;
 
         block_quote_line[i] = 1;
-        /* A blank line ends the quote; so does anything that opens a block
-         * of its own. Everything else is the paragraph continuing. */
         for (int j = i + 1; j < nlines; j++) {
-            if (is_blank(lines[j]))
-                break;
-            if (!is_blockquote_line(lines[j])
-                && (classify(lines[j]) != LT_TEXT
-                    || parse_fence_opener(lines[j], &fence)))
+            if (quote_run_stops(lines[j], &fence))
                 break;
             block_quote_line[j] = 1;
             i = j;
@@ -1502,6 +1541,8 @@ static void mark_pipe_tables(void)
 static int is_wrappable_at(const char *line, enum linetype type, int index)
 {
     if (index >= 0 && index < nlines && pipe_table_line[index])
+        return 0;
+    if (index >= 0 && index < nlines && block_quote_line[index])
         return 0;
     if (type != LT_TEXT)
         return 0;
@@ -6102,13 +6143,15 @@ static void process(FILE *out)
          * when the preceding line ends with a colon.
          *
          * Fancy markers are not lists mid-paragraph, so R2 cannot fire
-         * on them there.
+         * on them there. A list-shaped lazy line after a quote is
+         * still the quote to Pandoc — do not invent a list.
          */
         if (opt_required
             && !had_blank
             && is_list_type(type)
             && !in_list_context
-            && prev_content_type != LT_BLANK)
+            && prev_content_type != LT_BLANK
+            && !block_quote_line[i])
         {
             flush_paragraph(out);
             if (opt_verbose)
@@ -6123,12 +6166,14 @@ static void process(FILE *out)
          * If we're leaving a list into non-list content with no
          * intervening blank line, the markdown structure is ambiguous.
          * Exception: indented continuation lines are part of the list item.
+         * A lazy line after a list-item quote is still the quote.
          */
         if (opt_required
             && !had_blank
             && !is_list_type(type)
             && in_list_context
-            && !is_list_continuation(line))
+            && !is_list_continuation(line)
+            && !block_quote_line[i])
         {
             flush_paragraph(out);
             if (opt_verbose)
@@ -6144,9 +6189,7 @@ static void process(FILE *out)
         fix_pandoc_safe_links(line, i + 1);
         fix_blockquote_space(line, i + 1);
 
-        /* A table row is not a sentence; Chicago/arrow must not move `|`.
-         * Block quote content is someone else's text, and restyling a
-         * quotation is an edit to it, not to the author's prose (#125). */
+        /* A table row is not a sentence; a quote line is someone else's text. */
         if (!pipe_table_line[i] && !block_quote_line[i])
             apply_scanner(line, i + 1);
 
