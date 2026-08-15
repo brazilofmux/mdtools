@@ -240,12 +240,29 @@ def check(docs: Sequence[Document]) -> List[Finding]:
                     message=f"[{label}] is defined but never used"))
 
         seen_notes = {label for label, *_ in doc.footnote_refs}
+        first_use: Dict[str, int] = {}
         for label, line, start, end in doc.footnote_refs:
             if label not in doc.footnotes:
                 findings.append(Finding(
                     path=str(doc.path), rule="links.undefined-footnote",
                     severity="error", line=line, start=start, end=end,
                     message=f"no definition for footnote {label}"))
+                continue
+            # Pandoc has no syntax for reusing a footnote. A second reference
+            # does not link twice to one note: it *duplicates the body* and
+            # renumbers every note after it, so a chapter defining 24 prints
+            # 31. Nothing about the source looks wrong, every reference
+            # resolves, and the duplication does not exist in the manuscript
+            # the author reads — which is how it reached print (#115).
+            if label in first_use:
+                findings.append(Finding(
+                    path=str(doc.path), rule="links.reused-footnote",
+                    severity="error", line=line, start=start, end=end,
+                    message=f"footnote {label} is already referenced on line "
+                            f"{first_use[label]}; Pandoc will print the note "
+                            f"twice and renumber the rest"))
+            else:
+                first_use[label] = line
         for label, line in doc.footnotes.items():
             if label not in seen_notes:
                 findings.append(Finding(
