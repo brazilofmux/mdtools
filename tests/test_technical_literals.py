@@ -123,10 +123,8 @@ class LiteralTests(LiteralTestCase):
                          "Hi, there and more.\n")
 
     def test_a_period_was_never_in_this_branch(self) -> None:
-        # I assumed it was, and the suite said otherwise. The scanner rule is
-        # `[,;:?!]` — a period is claimed by the ellipsis and abbreviation
-        # machinery instead, and never gets a space inserted after it. Pinned
-        # so the next person does not have to rediscover it.
+        # The scanner rule is `[,;:?!]`. A period is claimed by the ellipsis
+        # and abbreviation machinery and never gets a space after it.
         source = "One end.Next one.\n"
         self.assertEqual(self._fix(source, "--chicago-punct-2"), source)
 
@@ -155,9 +153,13 @@ class QuoteTerminalTests(LiteralTestCase):
                 self.assertEqual(self._fix(self.OUTPUT, *flags), self.OUTPUT)
 
     def test_the_opt_out_leaves_the_rest_of_the_profile_alone(self) -> None:
-        # It turns off one rule, not the pass: a heading still gets its space.
-        out = self._fix("#Title\n\nBody.\n", "--canonical", "--no-quote-punct")
+        # The flag turns off one rule, not the pass.
+        out = self._fix(
+            '#Title\n\nHi,there and "Huh? (Type X for help)".\n',
+            "--canonical", "--no-quote-punct")
         self.assertTrue(out.startswith("# Title"))
+        self.assertIn("Hi, there", out)
+        self.assertIn('"Huh? (Type X for help)".', out)
 
 
 if __name__ == "__main__":

@@ -3801,28 +3801,11 @@ static int should_insert_space_after_punct(unsigned char punct, unsigned char ne
         return 0;
     if ((punct == ',' || punct == '.') && isdigit(next))
         return 0;
-    /*
-     * `;` never introduces a clause without a space in English, so a `;`
-     * with a letter hard against it is a separator inside a token: an exit
-     * alias list, a CSS-ish property, a shell fragment. Nine firings of this
-     * branch across 511 files of manuscript, and the two semicolons were both
-     * damage — `"Out;out;o"` documents aliases the server would reject with a
-     * space in them (#118).
-     */
+    /* `;` against a letter is a token separator, not a clause. */
     if (punct == ';')
         return 0;
-    /*
-     * `:` keeps the one shape the branch has ever repaired: a colon
-     * introducing a capitalized clause, which is what a language model emits
-     * when it drops the space — `…a summary document for you:Here's the…`.
-     *
-     * Joining two lowercase tokens it is syntax, not punctuation: `dbref:
-     * timestamp` is not a valid objid, and `height: width:length` is not a
-     * ratio. All six of those in the corpus were damage.
-     *
-     * The word before it does the rest: `Foo::Bar` has a colon in front of
-     * its second colon, not a word, so a namespace is never split.
-     */
+    /* `:` introduces a clause only after a word and before an ASCII capital
+     * (so `Foo::Bar` stays). */
     if (punct == ':' && (!isupper(next) || !prev_is_word))
         return 0;
     if (next == '"' || next == '\'')

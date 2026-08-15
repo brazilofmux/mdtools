@@ -3809,28 +3809,11 @@ static int should_insert_space_after_punct(unsigned char punct, unsigned char ne
         return 0;
     if ((punct == ',' || punct == '.') && isdigit(next))
         return 0;
-    /*
-     * `;` never introduces a clause without a space in English, so a `;`
-     * with a letter hard against it is a separator inside a token: an exit
-     * alias list, a CSS-ish property, a shell fragment. Nine firings of this
-     * branch across 511 files of manuscript, and the two semicolons were both
-     * damage — `"Out;out;o"` documents aliases the server would reject with a
-     * space in them (#118).
-     */
+    /* `;` against a letter is a token separator, not a clause. */
     if (punct == ';')
         return 0;
-    /*
-     * `:` keeps the one shape the branch has ever repaired: a colon
-     * introducing a capitalized clause, which is what a language model emits
-     * when it drops the space — `…a summary document for you:Here's the…`.
-     *
-     * Joining two lowercase tokens it is syntax, not punctuation: `dbref:
-     * timestamp` is not a valid objid, and `height: width:length` is not a
-     * ratio. All six of those in the corpus were damage.
-     *
-     * The word before it does the rest: `Foo::Bar` has a colon in front of
-     * its second colon, not a word, so a namespace is never split.
-     */
+    /* `:` introduces a clause only after a word and before an ASCII capital
+     * (so `Foo::Bar` stays). */
     if (punct == ':' && (!isupper(next) || !prev_is_word))
         return 0;
     if (next == '"' || next == '\'')
@@ -5209,7 +5192,7 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
     ctx->oi = 0;
 
     
-#line 5213 "mdfix.c"
+#line 5196 "mdfix.c"
 	{
 	cs = mdfix_scanner_start;
 	ts = 0;
@@ -5217,20 +5200,20 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
 	act = 0;
 	}
 
-#line 5221 "mdfix.c"
+#line 5204 "mdfix.c"
 	{
 	if ( p == pe )
 		goto _test_eof;
 	switch ( cs )
 	{
 tr0:
-#line 5613 "mdfix.rl"
+#line 5596 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr1:
-#line 5357 "mdfix.rl"
+#line 5340 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->do_chicago_punct) {
                     EMIT_DATA(ts, te);
@@ -5270,7 +5253,7 @@ tr1:
             }}
 	goto st14;
 tr2:
-#line 5233 "mdfix.rl"
+#line 5216 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial || ctx->no_arrow_aside) {
                     /* Arrows are notation here (A -> B pipelines, ISD node ->
@@ -5307,19 +5290,19 @@ tr2:
             }}
 	goto st14;
 tr7:
-#line 5226 "mdfix.rl"
+#line 5209 "mdfix.rl"
 	{te = p+1;{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr8:
-#line 5226 "mdfix.rl"
+#line 5209 "mdfix.rl"
 	{{p = ((te))-1;}{
                 EMIT_DATA(ts, te);
             }}
 	goto st14;
 tr12:
-#line 5548 "mdfix.rl"
+#line 5531 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     /* Word-boundary guard */
@@ -5343,7 +5326,7 @@ tr12:
             }}
 	goto st14;
 tr15:
-#line 5593 "mdfix.rl"
+#line 5576 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -5364,7 +5347,7 @@ tr15:
             }}
 	goto st14;
 tr17:
-#line 5571 "mdfix.rl"
+#line 5554 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_abbrev && ctx->do_chicago_abbrev) {
                     int at_boundary = (ts == input)
@@ -5387,13 +5370,13 @@ tr17:
             }}
 	goto st14;
 tr18:
-#line 5613 "mdfix.rl"
+#line 5596 "mdfix.rl"
 	{te = p+1;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr21:
-#line 5487 "mdfix.rl"
+#line 5470 "mdfix.rl"
 	{te = p+1;{
                 /* Before the mark is emitted, while `out` still ends at the
                  * character in front of it. */
@@ -5420,7 +5403,7 @@ tr21:
             }}
 	goto st14;
 tr25:
-#line 5399 "mdfix.rl"
+#line 5382 "mdfix.rl"
 	{te = p+1;{
                 /*
                  * Either Chicago flag answers "is this run an ellipsis?"
@@ -5471,13 +5454,13 @@ tr25:
             }}
 	goto st14;
 tr29:
-#line 5613 "mdfix.rl"
+#line 5596 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_CHAR((*p));
             }}
 	goto st14;
 tr32:
-#line 5449 "mdfix.rl"
+#line 5432 "mdfix.rl"
 	{te = p;p--;{
                 int run = (int)(te - ts);
 
@@ -5516,7 +5499,7 @@ tr32:
             }}
 	goto st14;
 tr33:
-#line 5513 "mdfix.rl"
+#line 5496 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->skip_punct2 || !ctx->do_chicago_punct2) {
                     /* Check context for conservative swap */
@@ -5552,7 +5535,7 @@ tr33:
             }}
 	goto st14;
 tr35:
-#line 5295 "mdfix.rl"
+#line 5278 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5565,7 +5548,7 @@ tr35:
             }}
 	goto st14;
 tr36:
-#line 5269 "mdfix.rl"
+#line 5252 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5579,7 +5562,7 @@ tr36:
             }}
 	goto st14;
 tr37:
-#line 5307 "mdfix.rl"
+#line 5290 "mdfix.rl"
 	{te = p;p--;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5592,7 +5575,7 @@ tr37:
             }}
 	goto st14;
 tr38:
-#line 5282 "mdfix.rl"
+#line 5265 "mdfix.rl"
 	{te = p+1;{
                 if (!ctx->editorial) {
                     EMIT_DATA(ts, te);
@@ -5606,7 +5589,7 @@ tr38:
             }}
 	goto st14;
 tr39:
-#line 5319 "mdfix.rl"
+#line 5302 "mdfix.rl"
 	{te = p+1;{
                 /* Check context: is this between word-ish chars? */
                 int prev = ctx->oi - 1;
@@ -5645,7 +5628,7 @@ tr39:
             }}
 	goto st14;
 tr41:
-#line 5226 "mdfix.rl"
+#line 5209 "mdfix.rl"
 	{te = p;p--;{
                 EMIT_DATA(ts, te);
             }}
@@ -5658,7 +5641,7 @@ st14:
 case 14:
 #line 1 "NONE"
 	{ts = p;}
-#line 5662 "mdfix.c"
+#line 5645 "mdfix.c"
 	switch( (*p) ) {
 		case -30: goto tr19;
 		case 32: goto st16;
@@ -5684,7 +5667,7 @@ st15:
 	if ( ++p == pe )
 		goto _test_eof15;
 case 15:
-#line 5688 "mdfix.c"
+#line 5671 "mdfix.c"
 	switch( (*p) ) {
 		case -128: goto st0;
 		case -122: goto st1;
@@ -5728,7 +5711,7 @@ st18:
 	if ( ++p == pe )
 		goto _test_eof18;
 case 18:
-#line 5732 "mdfix.c"
+#line 5715 "mdfix.c"
 	if ( (*p) == 42 )
 		goto st2;
 	goto tr29;
@@ -5777,7 +5760,7 @@ st22:
 	if ( ++p == pe )
 		goto _test_eof22;
 case 22:
-#line 5781 "mdfix.c"
+#line 5764 "mdfix.c"
 	if ( (*p) == 96 )
 		goto tr40;
 	goto st4;
@@ -5796,7 +5779,7 @@ st23:
 	if ( ++p == pe )
 		goto _test_eof23;
 case 23:
-#line 5800 "mdfix.c"
+#line 5783 "mdfix.c"
 	if ( (*p) == 96 )
 		goto st6;
 	goto st5;
@@ -5822,7 +5805,7 @@ st24:
 	if ( ++p == pe )
 		goto _test_eof24;
 case 24:
-#line 5826 "mdfix.c"
+#line 5809 "mdfix.c"
 	switch( (*p) ) {
 		case 46: goto st7;
 		case 116: goto st9;
@@ -5871,7 +5854,7 @@ st25:
 	if ( ++p == pe )
 		goto _test_eof25;
 case 25:
-#line 5875 "mdfix.c"
+#line 5858 "mdfix.c"
 	if ( (*p) == 46 )
 		goto st12;
 	goto tr29;
@@ -5951,7 +5934,7 @@ case 13:
 
 	}
 
-#line 5620 "mdfix.rl"
+#line 5603 "mdfix.rl"
 
 
     ctx->out[ctx->oi] = '\0';
