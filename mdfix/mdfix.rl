@@ -3724,6 +3724,37 @@ static int is_dash_join_char(unsigned char c)
     return isalnum(c) || c == '"' || c == '\'' || c == ')' || c == ']' || c == '}';
 }
 
+/*
+ * An inline-markup delimiter, which ends a word as much as a closing bracket
+ * does. Leaving these out is why `- **shall** -- The behavior…` did not
+ * convert while the aside two lines below it did — a document less consistent
+ * after the pass than before (#119).
+ *
+ * It counts only when the dash is spaced on both sides, and both halves of
+ * that are load-bearing. Deliberately not folded into `is_dash_join_char`:
+ * that predicate is shared with the rule respacing an em-dash the author
+ * already typed, and widening it there closed up 4,798 spaced em-dashes
+ * across 264 files of finished prose. And a backtick hard against the dash is
+ * a command-line flag inside a code span — `` `--editorial` `` — which the
+ * unspaced form would have eaten in this repository's own README.
+ */
+static int is_dash_markup_close(unsigned char c)
+{
+    return c == '*' || c == '_' || c == '`';
+}
+
+/* A `*` or `_` opening the line is a bullet marker, not the end of emphasis:
+ * `* -- text` is a list item, and joining it would eat the marker. */
+static int dash_join_is_line_marker(const char *out, int at)
+{
+    if (out[at] != '*' && out[at] != '_' && out[at] != '-' && out[at] != '+')
+        return 0;
+    for (int k = 0; k < at; k++)
+        if (out[k] != ' ' && out[k] != '\t')
+            return 0;
+    return 1;
+}
+
 /* fix_chicago_emdash_spacing — now handled by Ragel scanner */
 
 /* fix_chicago_ellipsis — now handled by Ragel scanner */
@@ -5316,9 +5347,30 @@ static void run_scanner(struct scan_ctx *ctx, const char *input, int len)
                     while (next < pe && (*next == ' ' || *next == '\t'))
                         next++;
 
-                    if (prev >= 0 && next < pe
-                        && is_dash_join_char((unsigned char)ctx->out[prev])
-                        && is_dash_join_char((unsigned char)*next)) {
+                    /*
+                     * A range, not an aside: Chicago 6.78 makes `1--3` an
+                     * en-dash, and Pandoc's `smart` already renders `--` as
+                     * one. Emitting an em-dash turned correct input into
+                     * wrong output — and the spaced form, an em-dash with
+                     * spaces between two digits, is a construction Chicago
+                     * has no use for at all.
+                     */
+                    int digits = (prev >= 0 && next < pe
+                                  && isdigit((unsigned char)ctx->out[prev])
+                                  && isdigit((unsigned char)*next));
+
+                    int spaced = had_space_before && had_space_after;
+                    int prev_ok = prev >= 0
+                        && (is_dash_join_char((unsigned char)ctx->out[prev])
+                            || (spaced && is_dash_markup_close(
+                                    (unsigned char)ctx->out[prev])));
+                    int next_ok = next < pe
+                        && (is_dash_join_char((unsigned char)*next)
+                            || (spaced && is_dash_markup_close(
+                                    (unsigned char)*next)));
+
+                    if (prev_ok && next_ok && !digits
+                        && !dash_join_is_line_marker(ctx->out, prev)) {
                         /* Trim trailing spaces from output */
                         while (ctx->oi > 0
                                && (ctx->out[ctx->oi-1] == ' '
