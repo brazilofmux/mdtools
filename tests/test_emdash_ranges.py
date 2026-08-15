@@ -150,17 +150,39 @@ class BulletMarkerTests(DashTestCase):
         out = self._fix("Text *emph* -- and more.\n", "--chicago-punct")
         self.assertIn(f"*emph*{EM}and", out)
 
+    def test_a_quoted_star_bullet_is_not_eaten(self) -> None:
+        source = "> * -- a quoted star bullet\n"
+        for flags in ("--chicago-punct", "--canonical"):
+            with self.subTest(flags=flags):
+                self.assertEqual(self._fix(source, flags), source)
+
+    def test_a_tight_quoted_star_bullet_is_not_eaten(self) -> None:
+        source = ">* -- tight against the marker\n"
+        self.assertEqual(self._fix(source, "--chicago-punct"), source)
+        # --canonical adds the space after `>` first; the dash must stay.
+        self.assertEqual(self._fix(source, "--canonical"),
+                         "> * -- tight against the marker\n")
+
+    def test_quoted_emphasis_still_joins(self) -> None:
+        out = self._fix("> *emph* -- aside\n", "--chicago-punct")
+        self.assertIn(f"*emph*{EM}aside", out)
+
 
 class ProtectedTests(DashTestCase):
     def test_a_flag_in_a_code_span_is_untouched(self) -> None:
-        # The reason the markup join needs a space on both sides. A backtick
-        # hard against the dash is a command-line flag, and an earlier cut of
-        # this ate one in the repository's own README:
-        #   add `--editorial --no-arrow-aside`  ->  add ` — editorial …
+        # Corpus check: a complete code span, so the `--` action never
+        # sees the bytes. Keep it so a later scanner change cannot eat
+        # the README form.
         source = "Pass `--editorial --no-arrow-aside` to the tool.\n"
         for flags in ("--canonical", "--technical"):
             with self.subTest(flags=flags):
                 self.assertIn("`--editorial", self._fix(source, flags))
+
+    def test_an_unspaced_closer_does_not_join(self) -> None:
+        # The spacing guard: a closer then unspaced `--` is not an aside.
+        # This is the case that would move if `spaced &&` were dropped.
+        source = "See `%M`--NOT to `%R`.\n"
+        self.assertEqual(self._fix(source, "--chicago-punct"), source)
 
     def test_a_code_span_is_untouched(self) -> None:
         source = "Run `git log -- path/to/file` for that.\n"
