@@ -475,6 +475,32 @@ A pipe table is still `protected: false` in the IR, and now for one small
 reason rather than a large one: `fix_trailing_ws` normalizes whitespace after
 the final `|`. Pandoc ignores it; the flag stays honest about it.
 
+**Technical literals under Chicago spacing** (#118). `space-after-punct`
+inserted a space after `:` and `;` wherever a letter followed, so
+`dbref:timestamp` became an objid the server rejects and `"Out;out;o"`
+documented exit aliases that cannot contain spaces. The same shape as the
+click consonants: a rule that is right for an English sentence and wrong for a
+token that merely contains the character.
+
+Measured before choosing a rule rather than after. Nine firings over 511 files
+— eight damage, and one repair:
+
+    …create a summary document for you:Here's the summary of…
+
+which is a language model dropping the space, and the shape the tool exists
+for. The discriminator was on the page: every damaged case joins two lowercase
+tokens and the repair introduces a capitalized clause. So `:` inserts only
+before an uppercase letter and only after a word, which also leaves `Foo::Bar`
+alone; `;` inserts never, English having no use for a semicolon run against
+the next word.
+
+The report's third case is `chicago.quote-terminal-punct` moving a period
+inside a closing quote. That is Chicago's American rule and stays the default;
+a verbatim quotation of computer output is the standard exception, so
+`--no-quote-punct` turns it off. 15 firings across the corpora, most of them
+quoting a literal rather than speech — including this repository's own docs
+quoting their own section names.
+
 **Chicago ellipsis.** A spaced run (`. . .`) or a run of four or more dots now
 becomes U+2026 `…` rather than ASCII `...`, under every flag that rewrites
 one. `--chicago-punct-2` was the awkward half: it reached `...` by stripping
