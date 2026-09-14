@@ -145,12 +145,15 @@ path is deliberately not MLX-specific — it also covers llama.cpp, LM Studio,
 and vLLM.
 
 ```bash
-# terminal 1 — any OpenAI-compatible server; mlx_lm.server defaults to :8080
-mlx_lm.server --model mlx-community/Josiefied-Qwen3-30B-A3B-abliterated-v2-6bit
+# terminal 1 — any OpenAI-compatible server; mlx_lm.server defaults to :8080.
+# Qwen3.5+ templates think by default and ignore the old /no_think soft
+# switch; turn it off at the server or the judge's budget goes to reasoning.
+mlx_lm.server --model froggeric/Qwen3.6-35B-A3B-Uncensored-Heretic-MLX-4bit \
+    --chat-template-args '{"enable_thinking": false}'
 
 # terminal 2 — prove the judge actually rejects before trusting it
 python3 -m prosevary --test-judge --judge openai \
-    --judge-model mlx-community/Josiefied-Qwen3-30B-A3B-abliterated-v2-6bit
+    --judge-model froggeric/Qwen3.6-35B-A3B-Uncensored-Heretic-MLX-4bit
 
 # then a real dry run with metrics
 python3 -m prosevary --gen openai --judge openai --report chapter.md
