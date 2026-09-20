@@ -130,6 +130,27 @@ class FreezeSet:
         return None
 
 
+def check_forbidden(
+    original: str, candidate: str, patterns: Iterable["re.Pattern[str]"]
+) -> Optional[str]:
+    """
+    Return None unless the candidate *introduces* a forbidden pattern.
+
+    The freeze set names what must survive; this names what must not
+    appear. A pattern is judged by count, not presence: an original that
+    already contains it (a quotation with "I" in it, say) may keep it, and a
+    candidate is rejected only when it has more matches than the original.
+    That keeps the gate from rejecting every candidate for a sentence the
+    author wrote that way on purpose.
+    """
+    for pat in patterns:
+        need = len(pat.findall(original))
+        got = len(pat.findall(candidate))
+        if got > need:
+            return f"forbidden {pat.pattern!r}: introduces {got - need}"
+    return None
+
+
 def count_term_occurrences(text: str, term: str) -> int:
     """Count protected term occurrences under glossary boundary rules."""
     if not term:

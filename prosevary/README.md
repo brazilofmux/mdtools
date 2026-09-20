@@ -137,6 +137,33 @@ To force a write with inert gates, pass `--allow-inert-gates` (logged in run
 metadata). Demo synonyms never include meaning-changing pairs such as
 `demonstrate → prove` (see issue #4).
 
+## Skipping sections and forbidding patterns
+
+Two gates that need no model, both off unless asked for.
+
+`--skip-section REGEX` (repeatable; else `$PROSEVARY_SKIP_SECTIONS`,
+`;`-separated) leaves every block under a matching heading untouched,
+subsections included, until the next heading of the same or a higher
+level. A chapter's `## Sources` is citation apparatus, not prose; nothing
+is gained by rewording it and the record is at risk. Skipped paragraphs
+are not regions: they are reproduced byte for byte and counted in the
+verbose header (`33 prose regions, 3 skipped`).
+
+`--forbid REGEX` (repeatable; else `$PROSEVARY_FORBID`) rejects a
+candidate that *introduces* a match the original lacks, counted per
+pattern, so an original that already contains the token — a quotation
+with "I" in it — keeps it, and only a candidate with more matches is
+refused. It runs after freeze and before the embedder, so a paraphrase
+that slips into the first person never reaches the judge. The freeze set
+names what must survive; this names what must not appear. For an
+impersonal register:
+
+```bash
+prosevary --skip-section '^Sources$' --forbid '\b(I|my|we|our)\b' chapter.md
+```
+
+Rejections read `reject-forbid: forbidden '...': introduces N`.
+
 ## Model backends
 
 Three transports for generate/judge: `null` (offline), `ollama` (native

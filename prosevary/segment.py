@@ -18,7 +18,7 @@ import tempfile
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Dict, Iterator, List, Optional, Pattern, Sequence, Tuple
 
 from mdquery.ir import raw_records
 
@@ -261,6 +261,9 @@ class Region:
 class Document:
     lines: List[Line]
     regions: List[Region]
+    # Prose blocks left verbatim because a --skip-section pattern matched an
+    # enclosing heading. Counted so a run can say what it declined to touch.
+    skipped_regions: int = 0
     # Every record's (kind, text) in source order. The IR is total, so
     # concatenating these reproduces the file — which is what makes
     # reconstruct() exact rather than approximate.
@@ -301,12 +304,19 @@ class Document:
         return "".join(out)
 
 
-def parse(source: str) -> Document:
+def parse(source: str, skip_sections: Sequence[Pattern[str]] = ()) -> Document:
     """
     Segment `source` using mdfix's structural IR.
 
     The IR reader wants a path, so the text is written to a temp file. That is
     the price of not carrying a second parser, and it is a cheap one.
+
+    `skip_sections` are patterns searched against heading text. A heading
+    that matches protects its whole section — every block until the next
+    heading of the same or a higher level, subsections included — so a
+    `## Sources` list of citations, or an `## Intervals` paragraph of dates,
+    is never offered for rewriting. Paragraphs under a matching heading are
+    reproduced byte for byte; they are not regions.
     """
     data = source.encode("utf-8")
     with tempfile.TemporaryDirectory() as tmp:
@@ -320,6 +330,16 @@ def parse(source: str) -> Document:
 
     pieces: List[Tuple[str, str, Optional[int]]] = []
     regions: List[Region] = []
+    skipped = 0
+    # (level, text) for every heading enclosing the current position.
+    heading_stack: List[Tuple[int, str]] = []
+
+    def under_skipped_heading() -> bool:
+        if not skip_sections:
+            return False
+        return any(
+            pat.search(text) for _, text in heading_stack for pat in skip_sections
+        )
 
     def add_region(record: dict, start: int, end: int) -> None:
         span = text_slice(data, start, end)
@@ -340,6 +360,18 @@ def parse(source: str) -> Document:
 
     for record in top:
         start, end = record["start"], record["end"]
+        if record["kind"] == "heading":
+            level = int(record.get("level") or 1)
+            while heading_stack and heading_stack[-1][0] >= level:
+                heading_stack.pop()
+            heading_stack.append((level, str(record.get("text") or "")))
+        if under_skipped_heading():
+            # Verbatim, whatever it is; a container's prose children stay
+            # inside it. The concatenation is still the original bytes.
+            if record["kind"] == PROSE_KIND:
+                skipped += 1
+            pieces.append((record["kind"], text_slice(data, start, end), None))
+            continue
         if record["kind"] == PROSE_KIND:
             add_region(record, start, end)
             continue
@@ -362,7 +394,8 @@ def parse(source: str) -> Document:
             pieces.append((record["kind"], text_slice(data, start, end), None))
 
     lines = _lines_from(data, top)
-    return Document(lines=lines, regions=regions, _pieces=pieces)
+    return Document(lines=lines, regions=regions, _pieces=pieces,
+                    skipped_regions=skipped)
 
 
 def text_slice(data: bytes, start: int, end: int) -> str:

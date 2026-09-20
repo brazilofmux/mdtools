@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -114,6 +115,16 @@ def report_stored_run(store: Store, run_id: int) -> int:
     )
     print(format_report(metrics, title=f"run {run_id}"))
     return 0
+
+
+def _compile_patterns(cli: Optional[List[str]], env_name: str) -> List["re.Pattern[str]"]:
+    """CLI list wins; else the environment variable split on ';'; else none."""
+    raw: List[str]
+    if cli:
+        raw = list(cli)
+    else:
+        raw = [x for x in os.environ.get(env_name, "").split(";") if x.strip()]
+    return [re.compile(x.strip()) for x in raw]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -225,6 +236,24 @@ def main(argv: list[str] | None = None) -> int:
         help="Model name for the judge (else $PROSEVARY_JUDGE_MODEL)",
     )
     p.add_argument(
+        "--skip-section",
+        action="append",
+        default=None,
+        metavar="REGEX",
+        help="Leave every block under a heading matching REGEX untouched, "
+        "subsections included; repeatable (else $PROSEVARY_SKIP_SECTIONS, "
+        "';'-separated). E.g. '^Sources$'",
+    )
+    p.add_argument(
+        "--forbid",
+        action="append",
+        default=None,
+        metavar="REGEX",
+        help="Reject a candidate that introduces a match for REGEX the "
+        "original lacks; repeatable (else $PROSEVARY_FORBID, ';'-separated). "
+        r"E.g. '\b(I|my|we|our)\b' for an impersonal register",
+    )
+    p.add_argument(
         "--test-judge",
         action="store_true",
         help="Run the judge probes (meaning-changing rewrites it must reject) "
@@ -277,6 +306,15 @@ def main(argv: list[str] | None = None) -> int:
             f"error: --max-sentences must be an integer >= 1, got {args.max_sentences}",
             file=sys.stderr,
         )
+        return 2
+
+    # Pattern flags: CLI wins; else the environment; a bad regex is a usage
+    # error, not a traceback deep in the run.
+    try:
+        skip_sections = _compile_patterns(args.skip_section, "PROSEVARY_SKIP_SECTIONS")
+        forbid = _compile_patterns(args.forbid, "PROSEVARY_FORBID")
+    except re.error as exc:
+        print(f"error: bad regex: {exc}", file=sys.stderr)
         return 2
 
     # Validate the input *before* anything resolves a path from it or opens a
@@ -398,7 +436,7 @@ def main(argv: list[str] | None = None) -> int:
     store.import_glossary(glossary)
 
     source = args.input.read_text(encoding="utf-8")
-    doc = parse(source)
+    doc = parse(source, skip_sections=skip_sections)
 
     # Explicit Ollama embed: server must list the configured model (auto
     # already skips Ollama when the model is missing).
@@ -431,7 +469,7 @@ def main(argv: list[str] | None = None) -> int:
         store.close()
         return 2
 
-    gates = active_gates(embedder, judge)
+    gates = active_gates(embedder, judge, forbid)
     inert = [g for g in ("tau", "judge") if g not in gates]
     run_notes = ""
 
@@ -439,12 +477,18 @@ def main(argv: list[str] | None = None) -> int:
         n_sent = sum(len(r.sentences) for r in doc.regions)
         print(
             f"prosevary {__version__}: {args.input} — "
-            f"{len(doc.regions)} prose regions, {n_sent} sentences\n"
+            f"{len(doc.regions)} prose regions, {n_sent} sentences"
+            f"{f', {doc.skipped_regions} skipped' if doc.skipped_regions else ''}\n"
             f"  embed={embedder.model_id}  gen={generator.model_id}  "
             f"judge={judge.model_id}  tau={args.tau}  k={args.k}\n"
             f"  gates={'+'.join(gates)}"
             f"{'  inert=' + '+'.join(inert) if inert else ''}\n"
-            f"  glossary={gloss_path or '(none)'} ({len(glossary)} terms)  db={args.db}",
+            f"  glossary={gloss_path or '(none)'} ({len(glossary)} terms)  db={args.db}"
+            + (
+                f"\n  skip={[p.pattern for p in skip_sections]}"
+                if skip_sections else ""
+            )
+            + (f"\n  forbid={[p.pattern for p in forbid]}" if forbid else ""),
             file=sys.stderr,
         )
 
@@ -489,6 +533,7 @@ def main(argv: list[str] | None = None) -> int:
         source_path=str(args.input),
         max_sentences=args.max_sentences,
         notes=run_notes,
+        forbid=forbid,
     )
 
     accepted = result.accepted

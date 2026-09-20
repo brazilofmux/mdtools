@@ -5,12 +5,13 @@ Generate-then-gate pipeline over a Document.
 from __future__ import annotations
 
 import random
+import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from .candidates import all_candidates
 from .embed import Embedder, cosine
-from .freeze import FreezeSet, load_glossary_terms, sentence_freeze
+from .freeze import FreezeSet, check_forbidden, load_glossary_terms, sentence_freeze
 from .llm import Generator, Judge
 from .segment import Document, _restore_trailing_closers, iter_sentences
 from .store import Store
@@ -44,14 +45,19 @@ class PipelineResult:
         return sum(1 for d in self.decisions if d.status == "kept")
 
 
-def active_gates(embedder: Embedder, judge: Judge) -> List[str]:
+def active_gates(
+    embedder: Embedder, judge: Judge, forbid: Sequence["re.Pattern[str]"] = ()
+) -> List[str]:
     """
     Names of the gates that actually assess a candidate on these backends.
 
     Offline fallbacks (HashEmbedder, NullJudge) are inert: reporting them as
-    though they ran would overstate how much a rewrite was vetted.
+    though they ran would overstate how much a rewrite was vetted. The forbid
+    gate is deterministic like freeze and is listed only when patterns exist.
     """
     gates = ["freeze"]
+    if forbid:
+        gates.append("forbid")
     if getattr(embedder, "semantic", True):
         gates.append("tau")
     if getattr(judge, "enforcing", True):
@@ -73,9 +79,10 @@ def run_pipeline(
     source_path: str = "",
     max_sentences: Optional[int] = None,
     notes: str = "",
+    forbid: Sequence["re.Pattern[str]"] = (),
 ) -> PipelineResult:
     rng = random.Random(seed)
-    gates = active_gates(embedder, judge)
+    gates = active_gates(embedder, judge, forbid)
     passed_reason = "passed " + "+".join(gates)
     # A non-semantic embedder must not gate. Its cosine is a token-overlap
     # score, so it rates a one-word synonym swap ~0.92 and a genuine rewrite
@@ -131,6 +138,10 @@ def run_pipeline(
             fail = freeze.check(original, cand)
             if fail:
                 last_status, last_reason = "reject-freeze", fail
+                continue
+            fail = check_forbidden(original, cand, forbid)
+            if fail:
+                last_status, last_reason = "reject-forbid", fail
                 continue
             cvec = embedder.embed_cached(cand, store)
             cos = cosine(orig_vec, cvec)
