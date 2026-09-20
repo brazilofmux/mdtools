@@ -7,7 +7,7 @@ import re
 import unittest
 
 from prosevary.freeze import check_forbidden
-from prosevary.pipeline import active_gates
+from prosevary.pipeline import _fold_ws, active_gates
 from prosevary.segment import parse
 
 DOC = (
@@ -101,6 +101,13 @@ class ForbidTests(unittest.TestCase):
         self.assertEqual(
             active_gates(E(), J(), [self.FIRST_PERSON]), ["freeze", "forbid"]
         )
+
+
+class WhitespaceNoOpTests(unittest.TestCase):
+    def test_line_joined_original_is_not_a_rewrite(self) -> None:
+        original = "The translator records\nthe exit."
+        self.assertEqual(_fold_ws(original), _fold_ws("The translator records the exit."))
+        self.assertNotEqual(_fold_ws(original), _fold_ws("The translator logs the exit."))
 
 
 if __name__ == "__main__":

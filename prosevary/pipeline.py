@@ -65,6 +65,10 @@ def active_gates(
     return gates
 
 
+def _fold_ws(text: str) -> str:
+    return " ".join(text.split())
+
+
 def run_pipeline(
     doc: Document,
     store: Store,
@@ -118,12 +122,19 @@ def run_pipeline(
         # delimiter afterwards meant the bytes written to the document were
         # not the string freeze checked, the judge accepted, or the run log
         # recorded — three records of a rewrite that never existed.
+        # A candidate that differs from the original only in whitespace is
+        # the original with its line breaks joined, which a generator echoing
+        # its input produces often. It is not a rewrite: accepting it counted
+        # as a change, spent a judge call, and unwrapped a paragraph.
         seen_cands = {original}
+        seen_folded = {_fold_ws(original)}
         normalized = []
         for cand in cands:
             cand = _restore_trailing_closers(original, cand)
-            if cand not in seen_cands:
+            folded = _fold_ws(cand)
+            if cand not in seen_cands and folded not in seen_folded:
                 seen_cands.add(cand)
+                seen_folded.add(folded)
                 normalized.append(cand)
         cands = normalized
         chosen: Optional[str] = None
