@@ -104,6 +104,11 @@ static int mkstemp(char *template_path) {
     }
     return -1;
 }
+/* The guest libc declares link and fchmod since 2026-10 (link fails,
+ * fchmod refuses a change of mode); these are mdfix's own, under their
+ * own names, so its no-op policy does not depend on the library's. */
+#define link mdfix_link
+#define fchmod mdfix_fchmod
 static int link(const char *oldpath, const char *newpath) {
     (void)oldpath; (void)newpath;
     return -1;
