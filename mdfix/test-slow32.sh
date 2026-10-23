@@ -30,6 +30,29 @@ trap 'rm -rf "$WORK"' EXIT
 # stats share stdout with the guest.
 guest_rc() { grep -o 'Exit code: [0-9]*' "$1" | awk '{print $3}'; }
 
+# Preflight: the guest's exit code is read out of the emulator's summary
+# line, so the harness is useless if that line is absent — and it reports
+# the absence as a byte-parity failure on every run, which is a lie about
+# what went wrong. It happened: slow32-fast scans the *whole* argv for its
+# own options and deletes what it finds, so mdfix's `-q` put the emulator
+# into quiet mode and 97 checks failed with `guest=none`.
+#
+# No flags here, so nothing can be stolen. If this line is missing, the
+# problem is the emulator or the binary, not mdfix's output.
+"$EMU" mdfix.s32x -n ../README.md >"$WORK/preflight.out" 2>&1
+if [ -z "$(guest_rc "$WORK/preflight.out")" ]; then
+    echo "test-slow32: the emulator printed no 'Exit code:' summary."
+    echo "  This is an environment failure, not a parity failure."
+    echo "  Check that $EMU still prints its summary, and that it is not"
+    echo "  consuming an option meant for the guest (it removes -q/--quiet,"
+    echo "  -c, -p/--probe, --allow and --deny from argv wherever they"
+    echo "  appear, including after the binary name)."
+    exit 1
+fi
+
+# Deliberately no `-q`: the emulator claims that flag for itself before the
+# guest ever sees it. Both binaries get identical arguments either way, and
+# the summaries land on stdout rather than in the compared output files.
 PROFILES=(
   ""
   "--canonical"
@@ -45,10 +68,10 @@ while IFS= read -r f; do
         runs=$((runs+1))
         rm -f "$WORK/host.md" "$WORK/guest.md"
         # shellcheck disable=SC2086
-        ./mdfix -q $p "$f" "$WORK/host.md" >/dev/null 2>&1
+        ./mdfix $p "$f" "$WORK/host.md" >/dev/null 2>&1
         host_rc=$?
         # shellcheck disable=SC2086
-        "$EMU" mdfix.s32x -q $p "$f" "$WORK/guest.md" >"$WORK/guest.out" 2>&1
+        "$EMU" mdfix.s32x $p "$f" "$WORK/guest.md" >"$WORK/guest.out" 2>&1
         grc=$(guest_rc "$WORK/guest.out")
         if [ "$host_rc" != "${grc:-MISSING}" ]; then
             echo "RC MISMATCH   $f [$p]: host=$host_rc guest=${grc:-none}"
@@ -64,8 +87,8 @@ done < <(find .. -name '*.md' -not -path '*/.git/*')
 # In-place save: transformed file and .bak must both match the host's.
 cp ../tests/fixtures/fences/input.md "$WORK/h.md"
 cp ../tests/fixtures/fences/input.md "$WORK/g.md"
-./mdfix -q --canonical -i "$WORK/h.md" >/dev/null 2>&1
-"$EMU" mdfix.s32x -q --canonical -i "$WORK/g.md" >/dev/null 2>&1
+./mdfix --canonical -i "$WORK/h.md" >/dev/null 2>&1
+"$EMU" mdfix.s32x --canonical -i "$WORK/g.md" >/dev/null 2>&1
 cmp -s "$WORK/h.md" "$WORK/g.md" || { echo "IN-PLACE MISMATCH"; fails=$((fails+1)); }
 cmp -s "$WORK/h.md.bak" "$WORK/g.md.bak" || { echo "BAK MISMATCH"; fails=$((fails+1)); }
 leftovers=$(find "$WORK" -name '*.bak.*' -o -name '*XXXXXX*' -o -name '*.md.[0-9]*' | wc -l)
@@ -80,9 +103,9 @@ cmp -s "$WORK/h.diff" "$WORK/g.diff" || { echo "DIFF MISMATCH"; fails=$((fails+1
 # --canonical-lint runs the fmemopen convergence loop; gate must agree
 # on both a dirty and an already-canonical file.
 for f in ../tests/fixtures/fences/input.md ../tests/fixtures/fences/mdfix-canonical.md; do
-    ./mdfix -q --canonical-lint "$f" >/dev/null 2>&1
+    ./mdfix --canonical-lint "$f" >/dev/null 2>&1
     host_rc=$?
-    "$EMU" mdfix.s32x -q --canonical-lint "$f" >"$WORK/lint.out" 2>&1
+    "$EMU" mdfix.s32x --canonical-lint "$f" >"$WORK/lint.out" 2>&1
     grc=$(guest_rc "$WORK/lint.out")
     [ "$host_rc" = "${grc:-MISSING}" ] || { echo "LINT RC MISMATCH $f"; fails=$((fails+1)); }
 done
